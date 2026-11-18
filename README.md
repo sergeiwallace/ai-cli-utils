@@ -24,6 +24,9 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | Feature | Description |
 |---------|-------------|
 | **Session management** | `ai c 1`, `ai g 1`, `ai p 1`, `ai cx 1` — named tmux sessions with auto-resume on disconnect |
+| **Human session names** | `ai c` names each new session with a short human first name (for example `ada`) from a shared registry (git ref, Dolt or SQLite); `ai locate-session` finds which host holds one, and `ai reconcile-names` frees the names of retired sessions |
+| **Session migration** | `ai migrate-session OLD NEW` renames a session and carries its worktree, branch, transcripts, virtual environments, tasks and issues; `--finish` completes whatever was left while the new session ran |
+| **Session lifecycle** | `ai sessions list/stop/wind-down/relaunch` with durable run state per session; `ai -X/--restart-session` restarts a session behind safety gates; `ai sessions relaunch --boot` brings sessions back after a reboot |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -35,6 +38,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
+| **iTerm2 restore** | `ai iterm2 restore` reopens recorded sessions in their panes after a terminal quit or a reboot, recording why each one ended |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
 | **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |
@@ -171,7 +175,7 @@ session is already running, `ai c NAME` attaches to it, so `ai attach` is not ne
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
 | `ai cos -r` | Resume this machine's chief-of-staff session |
-| `ai sessions` | List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every session of every host that publishes them |
+| `ai sessions` | List running sessions within the machine profile's visibility limit. Use `ai sessions list -a` to include other session states |
 <!-- start-resume-attach:end -->
 
 ### Command index
@@ -206,7 +210,9 @@ after changing a command's help, never edit it by hand.
 | [`ai deploy`](docs/reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](docs/reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
 | [`ai g`](docs/reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](docs/reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](docs/reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](docs/reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
 | [`ai iterm2 sessions`](docs/reference/cli.md#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
@@ -214,8 +220,9 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
-| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client and kind |
+| [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](docs/reference/cli.md#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
 | [`ai ls`](docs/reference/cli.md#ai-ls) | List tmux sessions (fzf picker when available) |
 | [`ai memory`](docs/reference/cli.md#ai-memory) | Memory-file watchers and helpers |
@@ -232,16 +239,11 @@ after changing a command's help, never edit it by hand.
 | [`ai ps cron`](docs/reference/cli.md#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](docs/reference/cli.md#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
+| [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](docs/reference/cli.md#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](docs/reference/cli.md#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](docs/reference/cli.md#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](docs/reference/cli.md#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](docs/reference/cli.md#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](docs/reference/cli.md#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](docs/reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](docs/reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](docs/reference/cli.md#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -249,6 +251,7 @@ after changing a command's help, never edit it by hand.
 | [`ai release-name`](docs/reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](docs/reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
 | [`ai retire-session`](docs/reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](docs/reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](docs/reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](docs/reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](docs/reference/cli.md#ai-session-reaper-status) | Show stale-session reaper status |
@@ -259,7 +262,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions boot-unit status`](docs/reference/cli.md#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](docs/reference/cli.md#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](docs/reference/cli.md#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](docs/reference/cli.md#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](docs/reference/cli.md#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](docs/reference/cli.md#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](docs/reference/cli.md#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -271,6 +274,8 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions repair-policy`](docs/reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](docs/reference/cli.md#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
@@ -711,7 +716,12 @@ A name is picked from the name database: a generated list of first names of 3 to
 letters with common English words removed, plus any name added by hand. The picker
 never hands out a held name, a name one typo away from a held name, or a name whose
 title would be a prefix of another session's. A name you choose with `-N` passes the
-same checks. If it is not in the database yet, `ai` asks
+same checks. On a database registry (the local SQLite one, or the fleet's Dolt one) each
+name also has a general status, `unreviewed`, `rejected` or `approved`, and may be approved
+or rejected for one repository, host or session only. The picker hands out only approved
+names that no verdict rejects for the launch, and refuses when the status data cannot be
+read. A name you choose needs no approval, but a rejected one needs a session approval,
+and a scoped rejection always refuses it. If it is not in the database yet, `ai` asks
 `cleo is not in the name database. Add it? [y/n]`. Answering `n`, or choosing a name
 that is refused, leads to `Name to use instead, or "auto" to pick one:`, which takes
 another name (added without a second question) or `auto`. A value outside the limits
@@ -732,6 +742,7 @@ them on one machine:
 # max_name_length = 4       # used only where no shared name registry exists
 # registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
 # registry_push_timeout_seconds = 60   # one push to a shared registry
+# registry_clone_timeout_seconds = 60  # a host's first clone of a Dolt registry (300 on Windows)
 ```
 
 An older release seeded these four keys active. The first `ai` command after an
@@ -742,8 +753,12 @@ The registry is the first repository under the projects directory that ships
 `config/session-names.toml`. That file names a git ref, and every machine reserves
 names on it with a fast-forward push, so two machines can never take the same name.
 It also sets the length limits for every machine that uses it, plus per-host
-`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With no such
-repository, the registry is a local directory seeded with the shipped list.
+`enabled` values in `[hosts.<host id>]` and defaults in `[defaults]`. With
+`registry_backend = "dolt"` and `schema = 2` the registry is a Dolt database on its own ref
+of that repository's remote (`registry_dolt_ref`, default `refs/dolt/session-names`), reached
+through the `dolt` program, which each such machine needs installed. With no such
+repository, the registry is a local SQLite file seeded with the shipped list, every name
+approved.
 `ai show-name-config` prints each setting with the layer that set it.
 
 Offline, a launch takes one of the spare names its machine reserved earlier and
@@ -763,7 +778,13 @@ activation.
 | `ai release-name NAME` | Release one name by hand, after the same two absence tests; nothing bypasses them. An unactivated spare has no worktree or transcript to test, so it is released when no offline launch has taken it and only by the host that holds it. |
 | `ai reassign-name NAME -t/--to HOST -r/--reason TEXT` | Move a name's reconciliation to another host id; the name stays held. |
 | `ai check-names [-j/--json]` | Report every held name outside the length limits, grouped by host with the command to run there; exit 1 when one is too long. |
-| `ai list-names [-j/--json]` | Every held name with its title, host, client and kind, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. |
+| `ai list-names [-j/--json] [-p/--pool]` | Every held name with its title, host, client, kind and general status, and on this machine whether it runs; then each session here named before the registry (`no name`), with the command that resumes it. JSON lists the registry rows only. `-p/--pool` lists every name in the database with its status and holder. |
+| `ai set-name-status -a/--actor WHO [-r/--reason TEXT] STATUS NAME...` | Set the general status (`unreviewed`, `rejected` or `approved`) of every name given, in one write; refuses the whole call when one is not in the database. |
+| `ai set-name-verdict -s/--scope repo\|host\|session -v/--value V -a/--actor WHO [-r/--reason TEXT] [-d/--delete] VERDICT NAME...` | Approve or reject names for one repository, host or session only, or remove that verdict. |
+| `ai find-names [-s/--status S] [-k/--scope KIND] [-v/--value V] [-m/--machine M] [-t/--state STATE] [-H/--history NAME] [-j/--json]` | Names matching every filter, with their verdicts and holder; `-H/--history` lists every past value of one name (fleet Dolt registry only). |
+| `ai list-migrations [-j/--json]` | Every recorded rename and its state. |
+| `ai import-names [-f/--from-ref REF] [-d/--dry-run]` | Copy the git-ref registry into the fleet's Dolt database in one commit, printing what it holds; a second run finds nothing to import. |
+| `ai seed-name-verdicts -f/--file PATH` | Apply the owner's approvals from a seed file, each at the scope it was given, once the file matches the owner-approved oracle the fleet repository pins. |
 | `ai list-name-candidates [-r/--repo ALIAS] [-L/--max-length N]` | Free names per length and the letter tiers the picker would use. |
 | `ai locate-session NAME [-j/--json]` | Which host holds a session, whether it is active, its worktree, and the messaging rung that reaches it. |
 | `ai probe-transcripts [-j/--json]` | Prove each installed client's transcript probe answers `present` for its newest record, `absent` for a fresh directory and `unknown` for a missing store root; a store with no record yet skips `present`; exit 1 when a case fails. |
@@ -933,20 +954,20 @@ unrelated project-registry discovery prompts.
 ### Listing sessions
 
 ```bash
-ai sessions                       # Running sessions of this host and its paired host, as a table
+ai sessions                       # Running sessions allowed by the machine profile
 ai sessions list -a/--all         # Add exited, stale and unknown sessions
-ai sessions list -S/--scope fleet # Every host that publishes its sessions; host or pair narrow it
+ai sessions list -S/--scope fleet # All publishing hosts when the machine profile permits it
 ai sessions list -g/--group-by status -s/--sort-by changed,name
 ai sessions list -j/--json        # This host's records with earlier_boot_gone, unchanged by the options above
 ```
 
 The table groups rows by host (this host first) and puts running sessions at the top of each
-group. Other hosts' rows come from the snapshots each host publishes with `ai sessions publish`
-(see [Session boot relaunch](#session-boot-relaunch)); a host that does not publish is not shown,
-and the time of each snapshot is printed under the table. The pair is `[sessions_list] pair_host`,
-or the default `[remote.machines]` alias when that is empty. The defaults are the `[sessions_list]`
-table of `config.toml`, read on every call and documented in
-[docs/reference/sessions-list-defaults.toml](docs/reference/sessions-list-defaults.toml).
+group. Other hosts' rows come from timestamped copies of their session records that each host
+writes to Git with `ai sessions publish` (see [Session boot relaunch](#session-boot-relaunch)).
+Personal profiles include their configured machine host group by default. Work, client, and
+unclassified profiles show local records only. For group listing in both directions, configure
+the same `[machine] session_group_members` on each host. See the
+[session listing configuration](docs/reference/sessions-list-defaults.toml).
 
 ### Remote sessions
 
@@ -1221,6 +1242,7 @@ ai c -F --dry-run           # Print the resolved plan; registers and starts noth
 ai c chief-2 -R -m box      # Run the chief on remote machine `box`: named, homed and registered there
 ai cos -R -m box            # Same, through the shorthand
 ai cos 1 -r -R -p env       # From another machine: attach to or resume chief 1 on the remote machine
+ai cx -F -N ada -R -m box   # The chief named ada on `box`: env-box-chief-ada; another running chief is refused
 ```
 
 Every one of these attaches, resumes or creates, decided on the machine the chief runs on (the remote one with `-R`):
@@ -1232,7 +1254,7 @@ Every one of these attaches, resumes or creates, decided on the machine the chie
 | nothing | create and register it; with `-r`, refuse with "no resumable chief session …" |
 | a different chief is running | refuse, naming the running chief and the command that attaches to it |
 
-An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered.
+An unnumbered request (`ai cos`, `ai c --chief`, `ai c chief`) means whichever chief is running or registered. A `-N/--name NAME` request means the chief named `{session_name}-NAME` only: it attaches to or resumes that chief, creates it when none is running, and refuses while a different chief is running.
 
 The name is `{repo-alias}-{host-alias}-{session_name}-[suffix-]{index}`, with the index allocated from the same lowest-free-slot scan as any other session unless you name it, and the worktree lands at `<project>/.worktrees/` under that name. A positional `chief` or `chief-N` (your `session_name`) is the chief launch itself, with everything `--chief` does; any other name carrying that segment (`chief-x`) is refused without the flag, so an ordinary session can never pass for the chief. With no `session_name` configured, no positional name is a chief launch.
 
@@ -1240,7 +1262,7 @@ Worktree isolation is **on**, like every other session: a session working in a m
 
 `-k/--machine-key` and `-H/--fm-home` are refused without `-F`, so neither silently applies to an ordinary session. The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); with neither `-k` nor `$AI_MACHINE_ID` set (a non-interactive shell, such as the remote side of `-R`, can miss an rc-file export) the one seeded home under `homes_dir` is used, and several are refused; a chief launch refuses a missing or unseeded home and refuses a second chief while the first is running (it names the command that attaches to it). A chief running in tmux under a registration that names another (a later launch overwrote it and died) is still found by its tmux session name and re-registered when you attach. On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json` (with `chief_instance_key = "<instance_key_prefix>/<machine-key>"`), then hands off to the ordinary launch with `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
 
-A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k` and `-H`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
+A chief does not have to run on the machine it coordinates: cross-machine messaging (Agent Mail, Buzz, git-inbox, native SendMessage) reaches it wherever it runs. With `-R/--remote` (and optionally `-m MACHINE`) the local `ai` only plans the ssh hand-off and forwards `--chief`, `-k`, `-H` and `-N`; the remote `ai` resolves the remote machine's chief home, attaches to, resumes or creates the chief there (refusing a different live one), writes the registration there and names the session under the remote host's alias (`c-r-{repo-alias}-{remote-alias}-{session_name}-{index}`). An unnumbered or `-N`-named `-R` request is not allocated a slot on the dispatching side, so the remote host picks its own chief, or checks the named one before it reserves the name. The dispatching machine needs `project` and `session_name` to plan the hand-off; it resolves and writes nothing else, so it needs neither a chief home nor the remote's host alias. Both machines must run an `ai` that accepts `--chief`.
 
 ### SSH tunnels
 
@@ -1273,7 +1295,7 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
 ai ps clean              # Kill orphaned processes after a prompt; -f/--force adds suspect ones
 ai memory watch          # Watch for Claude Code memory file changes
-ai quota watch           # Monitor API quota usage
+ai quota publish         # Publish the statusline's native quota reading to NATS
 ai telemetry writer      # Run telemetry writer daemon
 ai doctor [-n/--dry-run] # Check required native tools and direnv
 ai register -p <path> -x <prefix>  # Register a repository and task prefix

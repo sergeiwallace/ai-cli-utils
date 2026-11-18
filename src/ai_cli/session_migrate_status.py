@@ -187,6 +187,33 @@ def finish_command(old: str, new: str, repo: Path) -> str:
     return f"ai migrate-session {old} {new} --finish -r {repo}"
 
 
+def deferred_only(left: dict[str, str]) -> bool:
+    """Whether every part in ``left`` was deferred because NEW was running, and nothing else is left."""
+    return bool(left) and all("deferred:" in status for status in left.values())
+
+
+def deferral_report(old: str, new: str, repo: Path, parts: list[str], noted: list[str] | None) -> tuple[bool, str]:
+    """``(first time, line)`` reporting the parts a finish deferred while ``new`` runs.
+
+    ``noted`` is what the ledger recorded deferred before this finish ran
+    (:func:`ai_cli.session_migrate.noted_deferral`). The first report names each part left
+    and the manual step; once the ledger already holds those parts, the line only says they
+    are still waiting, so a caller can print it as progress rather than as a warning again.
+    """
+    pair, named = f"migration {old} -> {new}", ", ".join(parts)
+    command = finish_command(old, new, repo)
+    if noted is not None and set(parts) <= set(noted):
+        return (
+            False,
+            f"{pair}: {named} still deferred while {new} runs, as reported before; once it stops, run `{command}`",
+        )
+    return True, (
+        f"{pair}: every step is done except {named}, deferred while {new} runs because they write files "
+        f"it has open; stop it with `ai sessions stop {new}`, then run `{command}` "
+        f"(an `ai c {new}` launch or a restart once it has stopped also finishes it)"
+    )
+
+
 def verify(result: m.MigrationResult, repo_root: Path, state: Path, **kwargs: Any) -> None:
     """After a writing run: re-plan the pair, and record it finished only when nothing is left.
 

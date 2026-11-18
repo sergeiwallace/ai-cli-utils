@@ -37,8 +37,8 @@ START_RESUME_ATTACH = (
     ("ai cos -r", "Resume this machine's chief-of-staff session"),
     (
         "ai sessions",
-        "List the running sessions of this host and its paired host; `ai sessions list -a -S fleet` lists every "
-        "session of every host that publishes them",
+        "List running sessions within the machine profile's visibility limit. "
+        "Use `ai sessions list -a` to include other session states",
     ),
 )
 

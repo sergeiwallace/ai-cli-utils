@@ -1802,40 +1802,23 @@ def _no_real_session_reaper_spawn(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
+def _isolate_quota_state(tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
-
-    Four independent breaches this closes:
 
     1. **Real quota DB.** ``_get_quota_db_path()`` falls back to the real
        ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
-       test reads/writes real quota history (which carries live ``Fable`` model data).
-       Redirect it to a per-test tmp file.
-    2. **Real background scrape subprocess.** ``quota_statusline_part()`` fires
-       ``_launch_background_scrape`` / ``_maybe_trigger_background_scrape``, which
-       ``subprocess.Popen(["ai","quota","scrape"], start_new_session=True)`` — a real
-       detached process that scrapes live usage and writes the real DB + NATS KV.
-       Under xdist these race across workers and inject real ``Fable`` data into a
-       test expecting isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake).
-       No-op both spawners.
-    3. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
+       test reads/writes real quota history. Redirect it to a per-test tmp file.
+    2. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
        redirected, so any test reaching ``record_quota_snapshot(reset_at=...)`` wrote the
        real ``~/.local/state/ai-cli/quota-reset-anchor.txt``. That file *defines* the quota
        week boundary, and ``_get_current_week_start()`` re-reads it on every call — so one
        xdist worker's write moved another worker's boundary mid-test. The row a test just
-       recorded then carried a different ``week_start`` than the one the statusline queried,
-       no rows came back, and the render fell through to its ``📊 -`` placeholder. Redirect
-       it to a per-test tmp path so the anchor resolves to the deterministic built-in default.
-    4. **Real scrape lock file.** ``_launch_background_scrape()`` skips spawning when
-       its process-global lock exists. Redirect it to a per-test path so a live
-       statusline or another xdist worker cannot make a test's launch assertion
-       depend on shared user state.
+       recorded then carried a different ``week_start`` than the one the statusline queried
+       and no rows came back. Redirect it to a per-test tmp path so the anchor resolves to
+       the deterministic built-in default.
 
-    Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
-    locally and assert the real functions' behavior) opt out of the no-op via the
-    ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path, and the
-    anchor-persistence tests patch ``_get_reset_anchor_path`` with their own path — an inner
-    patch that still wins over this one.
+    ``set_db_path`` tests re-set the path, and the anchor-persistence tests patch
+    ``_get_reset_anchor_path`` with their own path — an inner patch that still wins over this one.
     """
     import ai_cli.quota_db as _qdb
 
@@ -1843,28 +1826,10 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     _qdb.set_db_path(tmp_db)
     tmp_anchor = tmp_path_factory.mktemp("quota_anchor") / "quota-reset-anchor.txt"
     monkeypatch.setattr(_qdb, "_get_reset_anchor_path", lambda: tmp_anchor)
-    # AIH-164 T-06: redirect the Fable backoff-state file to a per-test tmp path so tests never
-    # read/write the real ~/.local/state/ai-cli/fable-scrape-backoff.json (which would leak
-    # scrape-scheduling state across tests / into the real user state).
-    import ai_cli.quota as _q
-
-    _orig_scrape_lock_path = _q._SCRAPE_LOCK_PATH
-    _q._SCRAPE_LOCK_PATH = tmp_path_factory.mktemp("scrape_lock") / "quota-scrape.lock"
-    _orig_fable_state = _q._FABLE_BACKOFF_STATE
-    _q._FABLE_BACKOFF_STATE = tmp_path_factory.mktemp("fable_state") / "fable-scrape-backoff.json"
     try:
-        if request.node.get_closest_marker("real_quota_scrape"):
-            yield  # test drives the real scrape functions (with its own Popen mock)
-        else:
-            with (
-                patch("ai_cli.quota._launch_background_scrape"),
-                patch("ai_cli.quota._maybe_trigger_background_scrape"),
-            ):
-                yield
+        yield
     finally:
         _qdb.set_db_path(None)
-        _q._SCRAPE_LOCK_PATH = _orig_scrape_lock_path
-        _q._FABLE_BACKOFF_STATE = _orig_fable_state
 
 
 @pytest.fixture(autouse=True)
@@ -2148,3 +2113,43 @@ def hold_file_lock(path: Path):
         yield release
     finally:
         release()
+
+
+@pytest.fixture(params=["git", "sqlite", "dolt"])
+def registry_backend(request, monkeypatch):
+    """Run a session-name test once per registry backend; see ``tests/name_fleet.py``.
+
+    A run without the ``dolt`` program reports the Dolt case as skipped, never as passed;
+    in CI, where the workflow installs it, a missing binary fails the test instead.
+    """
+    import name_fleet
+
+    if request.param == "dolt" and shutil.which("dolt") is None:
+        if os.environ.get("CI"):
+            pytest.fail("the dolt program is not installed, and CI must run every Dolt registry test")
+        pytest.skip("the dolt program is not installed: the Dolt registry case was not run")
+    monkeypatch.setattr(name_fleet, "BACKEND", request.param)
+    return request.param
+
+
+# The per-test bound for a case that runs the real `dolt` program. The suite-wide 300 s
+# bound is sized for Linux, where these cases take seconds. On a hosted Windows runner
+# each Dolt call costs seconds: these cases took 100-250 s there, and three were killed
+# at 300 s with the worker (CI run 43786033751), so they get their own, wider bound.
+DOLT_TEST_TIMEOUT_S = 900
+
+
+def pytest_collection_modifyitems(config, items):
+    """Collect a test marked ``registry_backends(...)`` only for the backends it names,
+    and give every real-Dolt case the Dolt time bound unless it sets its own."""
+    kept, dropped = [], []
+    for item in items:
+        marker = item.get_closest_marker("registry_backends")
+        backend = getattr(getattr(item, "callspec", None), "params", {}).get("registry_backend")
+        (dropped if marker and backend and backend not in marker.args else kept).append(item)
+        runs_dolt = backend == "dolt" or item.path.name == "test_name_dolt.py"
+        if runs_dolt and item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(DOLT_TEST_TIMEOUT_S))
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept

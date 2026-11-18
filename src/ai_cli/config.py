@@ -548,6 +548,11 @@ REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
 # A registry push's own budget, for the same reason: a push of one small commit to the
 # registry ref from such a checkout has been measured at 30 seconds.
 REGISTRY_PUSH_TIMEOUT_DEFAULT_S = 60
+# A host's first clone of a Dolt registry has its own budget. On Windows CI, with Dolt
+# 2.3.4, clones of a small test registry overran 60 seconds in 22 of 73 tests of one
+# shard, while every fetch and push of the same registries stayed inside its own 60.
+REGISTRY_CLONE_TIMEOUT_DEFAULT_S = 60
+REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S = 300
 
 
 def _read_registry_timeout(config: dict, key: str, default: float) -> float:
@@ -568,6 +573,12 @@ def read_registry_fetch_timeout(config: dict) -> float:
 def read_registry_push_timeout(config: dict) -> float:
     """``[session_names] registry_push_timeout_seconds``; every registry push reads it fresh."""
     return _read_registry_timeout(config, "registry_push_timeout_seconds", REGISTRY_PUSH_TIMEOUT_DEFAULT_S)
+
+
+def read_registry_clone_timeout(config: dict) -> float:
+    """``[session_names] registry_clone_timeout_seconds``; every registry clone reads it fresh."""
+    default = REGISTRY_CLONE_TIMEOUT_WINDOWS_DEFAULT_S if sys.platform == "win32" else REGISTRY_CLONE_TIMEOUT_DEFAULT_S
+    return _read_registry_timeout(config, "registry_clone_timeout_seconds", default)
 
 
 RELAUNCH_DEFAULTS = {
@@ -763,14 +774,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Enable system notifications on task completion
 notify_on_exit = true
 
-[quota_watch]
-## Auto-register the quota-watch background daemon on every 'ai c'/'ai g' session
-## launch. quota-watch polls Claude weekly usage and fires ntfy/discord alerts at
-## 50/75/90% thresholds. Off by default -- the CC statusline already surfaces
-## weekly usage, so this is redundant unless you specifically want push alerts on
-## top of it. `ai quota watch start` (typed explicitly) always works regardless
-## of this flag; this only gates the automatic per-session registration.
-# auto_start = false
+[quota]
+## State file the statusline writes from Claude Code's rate_limits payload; `ai quota publish`
+## reads it on every call. A window counts as current while its newest reading is at most
+## max_age_seconds old and its reset time has not passed.
+# state_file = "~/.claude/state/quota.json"
+# max_age_seconds = 1800
+## Fallback weekly reset anchor, used until a reading carries its own reset time.
+# reset_anchor_utc = "2026-04-04T06:00:00Z"
 
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
@@ -781,6 +792,12 @@ enabled = true
 ## shared store (.venv links into it) carries to name its checkout. `ai migrate-session`
 ## rewrites them; unset, it leaves no such markers to rewrite.
 # marker_prefix = "myenv"
+## Each new session worktree of a uv-locked project gets its own .venv from `uv sync --frozen`
+## run inside it, so one session's sync never rewrites another's imports. "link" shares the
+## main checkout's .venv instead (every session then changes one environment).
+# venv = "private"
+## Seconds that first `uv sync` may take before the launch stops and says so.
+# venv_sync_timeout_seconds = 900
 
 [direnv]
 ## Preflight direnv on session launch: when a .envrc applies but direnv is not
@@ -851,6 +868,9 @@ stale_session_timeout = 15
 ## registry's publish timeout.
 # registry_fetch_timeout_seconds = 60
 # registry_push_timeout_seconds = 60
+## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
+## 300 on Windows.
+# registry_clone_timeout_seconds = 60
 
 [session_relaunch]
 on_boot = false
@@ -890,11 +910,13 @@ group_by = "host"
 sort_by = ["status", "name"]
 ## false lists running sessions only; true adds exited and unknown ones (-a/--all).
 show_all = false
-## Hosts listed: "host" (this one), "pair" (this one and pair_host) or "fleet" (every
-## host that publishes its sessions to [session_relaunch.publish] repo).
-scope = "pair"
-## The paired host's id; empty means the default [remote.machines] alias.
-pair_host = ""
+## Request "host", "group" or "fleet". The [machine] profile limits the effective scope.
+scope = "group"
+## Fallback member ID or SSH alias when [machine] session_group_members is unset.
+## Empty uses the default remote machine, when configured.
+group_host = ""
+## Deprecated alias of group_host, still read: pair_host. Use group_host.
+# pair_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
@@ -915,6 +937,8 @@ stale_after_seconds = 600
 #[remote.machines.server]
 ## Remote server for AI sessions
 # host = "1.2.3.4"
+## Publication host ID when the SSH alias and the snapshot ref use different names.
+# host_id = "host-b"
 # user = "ubuntu"
 # port = 22
 # identity_file = ""
@@ -1030,6 +1054,13 @@ nats_servers = ["nats://localhost:4222"]
 ## OS type for this machine. Auto-detected from sys.platform on first run.
 ## Values: "windows", "macos", "linux"
 # os_type = ""
+## "personal" permits group listing by default. "work", "client", and unset are host only.
+# profile_class = "personal"
+## Personal profiles can restrict listing to "host" or explicitly permit "fleet".
+# sessions_list_scope = "group"
+## Set the same publication host IDs on each machine in the host group, including
+## machines with no outbound SSH target. A configured SSH alias can use host_id above.
+# session_group_members = ["host-a", "host-b"]
 
 [sidecar]
 ## Start the optional wake sidecar during a local session launch.
@@ -1754,6 +1785,33 @@ def get_worktree_marker_prefix() -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+#: ``[worktree] venv`` values: a private ``uv sync`` environment per worktree, or a link to main's.
+WORKTREE_VENV_MODES = ("private", "link")
+#: Seconds a new worktree's ``uv sync`` may take before the launch stops and says so.
+DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT = 900.0
+
+
+def get_worktree_venv_mode() -> str:
+    """``[worktree] venv``, read at call time: "private" (the default) or "link"."""
+    try:
+        value = load_config().get("worktree", {}).get("venv")
+    except Exception:
+        return "private"
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if value in WORKTREE_VENV_MODES else "private"
+
+
+def get_worktree_venv_sync_timeout() -> float:
+    """``[worktree] venv_sync_timeout_seconds``, read at call time; positive, else the default."""
+    try:
+        value = load_config().get("worktree", {}).get("venv_sync_timeout_seconds")
+    except Exception:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+        return DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT
+    return float(value)
+
+
 def get_environment_repo() -> str:
     """``[project] environment_repo``, read at call time; "" when unset."""
     try:
@@ -2087,7 +2145,8 @@ def registered_project_names() -> dict[str, str]:
                         "load",
                         f"Ignoring stale task_prefix {prefix!r} for project {name!r}; "
                         f"the fleet registry declares {fleet_entry['prefix']!r}. "
-                        f"Edit the project's task_prefix in {source} to match the fleet registry.",
+                        f"If {source} is in a repository checkout, pull it first: the fix may already "
+                        "be upstream. Otherwise edit the project's task_prefix there to match the fleet registry.",
                     )
                     _warned_stale_project_aliases.add(warning_key)
                 continue

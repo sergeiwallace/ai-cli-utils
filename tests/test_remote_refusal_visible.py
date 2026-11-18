@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import os
 import shlex
 import shutil
@@ -20,11 +19,13 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from test_session_migrate import NEW, OLD
+from test_session_migrate import NEW
 from test_session_migrate_on_launch import (  # noqa: F401 - fixture
     FINISH,
     _launch,
     _ledger,
+    _legacy_finished_row,
+    hooks,
     migrated,
     slot,
 )
@@ -92,7 +93,7 @@ def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_th
     tmp_path, capsys
 ):
     # A subshell, as the real remote ``ai`` is its own process: a bare exit would end the wrapper too.
-    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >> "$AI_CLI_REMOTE_DIAGNOSTIC_FILE"; exit 78)'
+    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >&2; exit 78)'
 
     code = _remote_loop(tmp_path, remote_cmd, seconds=180.0)
 
@@ -101,6 +102,21 @@ def test_given_a_remote_refusal_after_minutes_over_mosh_when_the_session_ends_th
     assert "refusing to launch session-2" in err
     assert "ai migrate-session session-1 session-2 --finish -r /home/user/myproject" in err
     assert not (tmp_path / "home" / DIAGNOSTIC).exists(), "the read removes the remote record"
+
+
+@posix_shell
+@pytest.mark.parametrize("seconds", [1.0, 12.0])
+def test_given_remote_stderr_before_a_launch_log_exists_when_mosh_ends_then_the_refusal_and_status_survive(
+    tmp_path, capsys, seconds
+):
+    remote_cmd = f'(printf "%s\\n" {shlex.quote(REFUSAL)} >&2; exit 78)'
+
+    code = _remote_loop(tmp_path, remote_cmd, seconds=seconds)
+
+    err = capsys.readouterr().err
+    assert REFUSAL in err
+    assert code == 78
+    assert "transient session-name collision" not in err
 
 
 @posix_shell
@@ -170,11 +186,10 @@ def test_given_the_remote_side_refuses_over_mosh_when_dispatched_then_the_local_
 def test_given_a_partial_migration_when_the_remote_side_refuses_then_the_refusal_is_recorded_for_the_launcher(
     migrated,  # noqa: F811 - the imported fixture
     tmp_path,
+    hooks,  # noqa: F811 - the imported fixture
 ):
     """The real remote-side refusal lands in the file the mosh wrapper names, finish command included."""
-    ledger = migrated["state"] / "session-migrations.jsonl"
-    legacy = {"old": OLD, "new": NEW, "repo": str(migrated["repo"]), "finished": True}
-    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+    _refusing(migrated, hooks)
     record = tmp_path / "remote-diagnostic.stderr"
 
     with patch.dict(os.environ, {"AI_CLI_REMOTE_DIAGNOSTIC_FILE": str(record)}):
@@ -188,11 +203,10 @@ def test_given_a_partial_migration_when_the_remote_side_refuses_then_the_refusal
     assert _ledger(migrated)
 
 
-def _refusing(fixture: dict) -> None:
-    """A finished row without ``verified: true``, which the launch guard re-plans and refuses."""
-    ledger = fixture["state"] / "session-migrations.jsonl"
-    legacy = {"old": OLD, "new": NEW, "repo": str(fixture["repo"]), "finished": True}
-    ledger.write_text(ledger.read_text(encoding="utf-8") + json.dumps(legacy) + "\n", encoding="utf-8")
+def _refusing(fixture: dict, add_hook) -> None:
+    """An unverified finish that still has a blocking hook."""
+    _legacy_finished_row(fixture)
+    add_hook("10-notes", "notes", fail="plan")
 
 
 def _launcher_lines(err: str) -> list[str]:
@@ -201,8 +215,9 @@ def _launcher_lines(err: str) -> list[str]:
 
 def test_given_the_remote_side_of_a_launch_when_it_prints_then_every_launcher_line_names_its_host(
     migrated,  # noqa: F811 - the imported fixture
+    hooks,  # noqa: F811 - the imported fixture
 ):
-    _refusing(migrated)
+    _refusing(migrated, hooks)
 
     with patch("ai_cli.session_naming.host_id", return_value="remote-host"):
         code, out, err, _launched = _launch(migrated, None, "--is-remote", "-p", "myrepo")
@@ -216,8 +231,9 @@ def test_given_the_remote_side_of_a_launch_when_it_prints_then_every_launcher_li
 
 def test_given_a_local_launch_when_it_prints_then_no_line_is_marked_remote(
     migrated,  # noqa: F811 - the imported fixture
+    hooks,  # noqa: F811 - the imported fixture
 ):
-    _refusing(migrated)
+    _refusing(migrated, hooks)
 
     with patch("ai_cli.session_naming.host_id", return_value="remote-host"):
         code, out, err, _launched = _launch(migrated)

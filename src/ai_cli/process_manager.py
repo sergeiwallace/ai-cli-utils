@@ -3,7 +3,6 @@
 Depends on: config.py.
 """
 
-import contextlib
 import shutil
 import subprocess
 import sys
@@ -103,75 +102,6 @@ def _ensure_circusd() -> str:
             pass
 
     raise RuntimeError("circusd did not start in time")
-
-
-def _cmd_quota_watch_start(auto: bool = False) -> None:
-    """Register quota-watch as a Circus watcher and start it.
-
-    ``auto=True`` is the per-session-launch auto-start path (session_script.py);
-    it is gated on ``[quota_watch] auto_start`` in config.toml (default off — the
-    CC statusline already surfaces weekly usage, so unattended ntfy/discord alerts
-    are opt-in). A bare, explicitly-typed ``ai quota watch start`` (``auto=False``)
-    always registers regardless of the config flag — explicit intent is honored.
-    """
-    if auto:
-        from .config import load_config
-
-        if not load_config().get("quota_watch", {}).get("auto_start", False):
-            return
-
-    endpoint = _ensure_circusd()
-    from circus.client import CircusClient
-
-    state_dir = get_xdg_state_home()
-    ai_bin = shutil.which("ai") or "ai"
-    cmd = f"{ai_bin} quota watch run"
-    log_path = str(state_dir / "quota-watch.log")
-
-    client = CircusClient(endpoint=endpoint, timeout=5.0)
-    with contextlib.suppress(Exception):
-        client.send_message("rm", name="quota-watch")
-
-    client.send_message(
-        "add",
-        name="quota-watch",
-        cmd=cmd,
-        options={
-            "copy_env": True,
-            "respawn": True,
-            "singleton": True,
-            "stdout_stream": {"class": "FileStream", "filename": log_path},
-            "stderr_stream": {"class": "FileStream", "filename": log_path},
-        },
-        start=True,
-    )
-
-
-def _cmd_quota_watch_stop() -> None:
-    """Remove quota-watch watcher from Circus."""
-    state_dir = get_xdg_state_home()
-    endpoint = f"ipc://{state_dir}/circus.endpoint"
-    try:
-        from circus.client import CircusClient
-
-        CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name="quota-watch")
-    except Exception:
-        pass
-
-
-def _cmd_quota_watch_status() -> None:
-    """Print quota-watch process status from Circus."""
-    state_dir = get_xdg_state_home()
-    endpoint = f"ipc://{state_dir}/circus.endpoint"
-    try:
-        from circus.client import CircusClient
-
-        result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("status")
-        statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
-        qw_status = statuses.get("quota-watch", "not registered")
-        _out.emit(Tag.DAEMON, "status", f"quota-watch: {qw_status}")
-    except Exception:
-        _out.emit(Tag.DAEMON, "status", "circusd not running.")
 
 
 def _cmd_stale_session_reaper_start() -> bool:

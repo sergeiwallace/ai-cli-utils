@@ -27,7 +27,7 @@ from process_wait import scaled
 from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
-from ai_cli.config import get_xdg_config_home, get_xdg_state_home
+from ai_cli.config import get_xdg_config_home, get_xdg_data_home, get_xdg_state_home
 
 OLD, NEW = "myrepo-3", "myrepo-box-3"
 UUID = "3a3a3a3a-0000-4000-8000-000000000003"
@@ -161,9 +161,27 @@ def _migrate(repo: Path, *flags: str, tmux: list[str] | None = None):
         return run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(repo), *flags])
 
 
+def _without_registry_cache(tree: dict | None, root: Path) -> dict | None:
+    """``tree`` less the Dolt name registry's local clone, when it lives under ``root``.
+
+    The clone is a cache that every registry read, a preview's included, fetches into.
+    On Windows the data directory is the state directory, so the clone sits in the state
+    tree; elsewhere it has its own directory. Whether a preview wrote the registry is
+    checked against the remote tip instead.
+    """
+    if tree is None:
+        return None
+    try:
+        prefix = (get_xdg_data_home().relative_to(root) / "session-names.dolt").as_posix()
+    except ValueError:
+        return tree
+    return {path: entry for path, entry in tree.items() if not path.startswith(prefix)}
+
+
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
     trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
+    trees["state"] = _without_registry_cache(trees["state"], slot["state"])
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
     trees["registry"] = get_canonical_worktree_registry_path().read_text(encoding="utf-8")
     return trees
@@ -886,16 +904,17 @@ def test_given_the_old_slot_is_still_registered_when_finished_then_it_is_refused
     assert _everything(slot) == before
 
 
-def test_given_the_new_session_runs_in_tmux_when_finished_then_it_is_refused(slot):
+def test_given_the_new_session_runs_in_tmux_when_finished_then_its_leftovers_are_carried(slot):
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
     left = _leftovers(slot)
 
-    code, _out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
+    code, out, err = _finish(slot["repo"], "-y", tmux=[f"c-{NEW}"])
 
-    assert code == 2
-    assert f"hosts {NEW}" in err
-    assert left["slot_lock"].exists()
+    # None of these leftovers is a file the running NEW holds open, so nothing is deferred.
+    assert code == 0, out + err
+    assert f"hosts {NEW}" in out
+    assert not left["slot_lock"].exists()
 
 
 # A stand-in for ``bd``: it serves each store's issues from one JSON file and logs every call,
@@ -1297,8 +1316,6 @@ def test_given_new_is_running_when_re_keyed_beads_only_then_only_the_issues_move
             {"pid": os.getpid(), "name": NEW, "cwd": str(stores["repo"] / ".worktrees" / NEW), "sessionId": UUID}
         )
     )
-    code, out, err = _finish(stores["repo"], "-y")
-    assert code == 2 and "still running" in err, out + err
 
     with patch("ai_cli.config._get_projects_dir", return_value=stores["repo"].parent):
         code, out, err = run_cli(["ai", "migrate-session", OLD, NEW, "-r", str(stores["repo"]), "--beads-only", "-y"])

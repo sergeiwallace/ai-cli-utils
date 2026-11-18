@@ -32,7 +32,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
+| [`ai find-names`](#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
 | [`ai g`](#ai-g) | Launch a Gemini CLI session |
+| [`ai import-names`](#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
 | [`ai iterm2 sessions`](#ai-iterm2-sessions) | List the sessions recorded for iTerm2 restore; prune or refresh them |
@@ -40,8 +42,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout list`](#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-migrations`](#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
-| [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client and kind |
+| [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
 | [`ai locate-session`](#ai-locate-session) | Session names: which host holds a session, whether it is active, and which messaging rung reaches it |
 | [`ai ls`](#ai-ls) | List tmux sessions (fzf picker when available) |
 | [`ai memory`](#ai-memory) | Memory-file watchers and helpers |
@@ -58,16 +61,11 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai ps cron`](#ai-ps-cron) | Non-destructive maintenance: remove stale transport files and refresh the remote cache. |
 | [`ai quota`](#ai-quota) | Claude weekly-quota tracking and statusline helpers |
 | [`ai quota history`](#ai-quota-history) | Print quota history |
+| [`ai quota publish`](#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota scrape`](#ai-quota-scrape) | Scrape /usage from a fresh CC session |
 | [`ai quota status`](#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
 | [`ai quota sync`](#ai-quota-sync) | Sync quota snapshot from the remote server |
-| [`ai quota watch`](#ai-quota-watch) | Quota-watch Circus daemon management |
-| [`ai quota watch run`](#ai-quota-watch-run) | Run quota-watch daemon (Circus entry point) |
-| [`ai quota watch start`](#ai-quota-watch-start) | Register quota-watch with Circus and start it |
-| [`ai quota watch status`](#ai-quota-watch-status) | Show quota-watch Circus status |
-| [`ai quota watch stop`](#ai-quota-watch-stop) | Stop quota-watch |
 | [`ai reassign-name`](#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
 | [`ai reconnect`](#ai-reconnect) | Print reconnect commands for remote tmux sessions |
@@ -75,6 +73,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai release-name`](#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](#ai-remove-name) | Session names: remove a name that was added by hand |
 | [`ai retire-session`](#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai seed-name-verdicts`](#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
 | [`ai session-reaper status`](#ai-session-reaper-status) | Show stale-session reaper status |
@@ -85,7 +84,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions boot-unit status`](#ai-sessions-boot-unit-status) | Report whether the boot relaunch service is installed, current and enabled |
 | [`ai sessions boot-unit uninstall`](#ai-sessions-boot-unit-uninstall) | Disable and remove the boot relaunch service |
 | [`ai sessions enrol`](#ai-sessions-enrol) | Give an existing live session a validated restart recipe. |
-| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. |
+| [`ai sessions list`](#ai-sessions-list) | List sessions as a table grouped by host, active sessions first. |
 | [`ai sessions mark`](#ai-sessions-mark) | Record a session's run state in the registry: running, or exited with a cause (-c) and optional JSON evidence (-e) |
 | [`ai sessions policy`](#ai-sessions-policy) | Set a local session's boot relaunch policy as its owner's choice and queue publication. |
 | [`ai sessions publish`](#ai-sessions-publish) | Publish a snapshot of the session registry to the configured publication repo, when it has unpublished changes and the debounce window has passed |
@@ -97,6 +96,8 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions repair-policy`](#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
+| [`ai set-name-status`](#ai-set-name-status) | Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand |
+| [`ai set-name-verdict`](#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
 | [`ai spend`](#ai-spend) | Usage-cost reports |
@@ -240,7 +241,7 @@ Register Claude Code workspace trust for every repo under a root (fixes 'workspa
 ai c [OPTIONS] [NAME]
 ```
 
-Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is re-planned. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
+Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
@@ -560,6 +561,25 @@ Arguments:
 | `-d` | `--dry-run` |  | Show the verified exit without writing or signalling |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai find-names
+
+```text
+ai find-names [OPTIONS]
+```
+
+Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-s` | `--status` | `[unreviewed\|rejected\|approved]` | General status |
+| `-k` | `--scope` | `[repo\|host\|session]` | Verdict scope kind |
+| `-v` | `--value` | `TEXT` | Verdict scope value |
+| `-m` | `--machine` | `TEXT` | The host holding the name |
+| `-t` | `--state` | `[reserved\|active\|migration-incomplete\|cutover-quarantined]` | Hold state |
+| `-H` | `--history` | `NAME` | Every past value of NAME (Dolt only) |
+| `-j` | `--json` |  | Print JSON |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai g
 
 ```text
@@ -597,6 +617,20 @@ Arguments:
 | `-t` | `--probe` |  | Launch a throwaway probe or test session (PREFIX-probe[-NAME]-N): no first name, a worktree outside the repository that is not a canonical session worktree, no boot relaunch |
 | `-o` | `--once` |  | Run once without tmux auto-resume loop |
 | `-r` | `--resume` |  | Resume the existing session NAME names (its title, first name or index; running or stopped). Refuses, creating nothing, when no session holds NAME |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai import-names
+
+```text
+ai import-names [OPTIONS]
+```
+
+Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-f` | `--from-ref` | `TEXT` | The old registry ref (default: registry_ref) |
+| `-d` | `--dry-run` |  | Count what would be imported and write nothing |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai iterm2
@@ -704,6 +738,19 @@ Arguments:
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai list-migrations
+
+```text
+ai list-migrations [OPTIONS]
+```
+
+Session names: list every recorded rename with its state
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-j` | `--json` |  | Print the rows as JSON |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai list-name-candidates
 
 ```text
@@ -724,11 +771,12 @@ Session names: count the free names per length and the letter tiers the picker w
 ai list-names [OPTIONS]
 ```
 
-Session names: list every held name with its title, host, client and kind
+Session names: list every held name with its title, host, client, kind and general status
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print the rows as JSON |
+| `-p` | `--pool` |  | List every name in the database instead, with its general status and holder |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai locate-session
@@ -821,7 +869,7 @@ Arguments:
 | `-r` | `--repo` | `DIRECTORY` | Repo root that owns .worktrees/ (default: detected from the current directory) |
 | `-n` | `--dry-run` |  | Print every planned move without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt |
-| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it |
+| `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every step except those writing NEW's open transcript and task files, which it defers and names; a running OLD refuses it |
 | `-b` | `--beads-only` |  | Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running |
 | `-t` | `--to-name` | `TEXT` | Reserve a first name (this one, or the shortest free one) and migrate OLD to it |
 | `-s` | `--status` |  | List each recorded migration not verified finished as complete or partial, read-only |
@@ -1015,6 +1063,18 @@ Print quota history
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai quota publish
+
+```text
+ai quota publish [OPTIONS]
+```
+
+Publish the statusline's current native quota reading to NATS
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai quota record
 
 ```text
@@ -1030,18 +1090,6 @@ Arguments:
 - `MODEL`
 - `TOTAL_TOKENS`
 - `[COST_USD]`
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota scrape
-
-```text
-ai quota scrape [OPTIONS]
-```
-
-Scrape /usage from a fresh CC session
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1078,67 +1126,6 @@ ai quota sync [OPTIONS]
 ```
 
 Sync quota snapshot from the remote server
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch
-
-```text
-ai quota watch [OPTIONS] COMMAND [ARGS]...
-```
-
-Quota-watch Circus daemon management
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch run
-
-```text
-ai quota watch run [OPTIONS]
-```
-
-Run quota-watch daemon (Circus entry point)
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-i` | `--interval` | `INTEGER` | Poll interval in seconds  [default: 300] |
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch start
-
-```text
-ai quota watch start [OPTIONS]
-```
-
-Register quota-watch with Circus and start it
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch status
-
-```text
-ai quota watch status [OPTIONS]
-```
-
-Show quota-watch Circus status
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai quota watch stop
-
-```text
-ai quota watch stop [OPTIONS]
-```
-
-Stop quota-watch
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1261,6 +1248,19 @@ Arguments:
 | `-y` | `--yes` |  | Skip the confirmation prompt |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai seed-name-verdicts
+
+```text
+ai seed-name-verdicts [OPTIONS]
+```
+
+Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-f` | `--file` | `FILE` | The seed file (TOML)  [required] |
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai session-reaper
 
 ```text
@@ -1315,7 +1315,7 @@ Stop the stale-session reaper
 ai sessions [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults: the running sessions of this host and its pair, grouped by host, active first
+List sessions and manage their run state, relaunch and publication. Bare `ai sessions` runs `ai sessions list` with the [sessions_list] defaults and the machine profile's visibility limits
 
 | Short | Long | Value | Description |
 |---|---|---|---|
@@ -1398,13 +1398,13 @@ Arguments:
 ai sessions list [OPTIONS]
 ```
 
-List sessions as a table grouped by host, active sessions first: this host's running sessions and, with the default pair scope, its paired host's published ones. -a/--all adds exited, stale and unknown rows; -S/--scope host|pair|fleet chooses the hosts; -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
+List sessions as a table grouped by host, active sessions first. Personal profiles include their machine host group by default. Work, client and unclassified profiles show this host only. -a/--all adds exited, stale and unknown rows. -S/--scope requests host, group or fleet within the machine profile's limit. -g/--group-by and -s/--sort-by override the [sessions_list] defaults in config.toml. A running record from an earlier boot of this host that tmux and the process table prove gone shows as stale with cause host_reboot. -j/--json prints this host's records, each with earlier_boot_gone
 
 | Short | Long | Value | Description |
 |---|---|---|---|
 | `-j` | `--json` |  | Print this host's registry records as JSON |
 | `-a` | `--all` |  | Include exited, stale and unknown sessions |
-| `-S` | `--scope` | `[host\|pair\|fleet]` | Hosts to list: this host, this host and its pair, or every host that publishes its sessions |
+| `-S` | `--scope` | `[host\|group\|fleet]` | Request this host, its machine host group, or all publishing hosts within the profile's limit |
 | `-g` | `--group-by` | `[host\|status\|relaunch\|none]` | Column to group rows by |
 | `-s` | `--sort-by` | `KEYS` | Comma-separated sort keys, first key first: status, name, changed, host, relaunch |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -1580,6 +1580,47 @@ Arguments:
 |---|---|---|---|
 | `-t` | `--timeout` | `FLOAT RANGE` | Seconds to wait for the session to exit  [default: 30.0; x>=0] |
 | `-d` | `--dry-run` |  | Check the session and print the plan without writing or stopping |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai set-name-status
+
+```text
+ai set-name-status [OPTIONS] {unreviewed|rejected|approved} NAMES...
+```
+
+Session names: set the general status of one or more names in one commit; only approved names are picked, unreviewed is every name nobody has ruled on, rejected is never picked or taken by hand
+
+Arguments:
+
+- `{unreviewed|rejected|approved}`
+- `NAMES...`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-a` | `--actor` | `TEXT` | Who decided, for example the owner whose verdict this records  [required] |
+| `-r` | `--reason` | `TEXT` | Why, recorded with each name's status |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai set-name-verdict
+
+```text
+ai set-name-verdict [OPTIONS] {approved|rejected} NAMES...
+```
+
+Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand
+
+Arguments:
+
+- `{approved|rejected}`
+- `NAMES...`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-s` | `--scope` | `[repo\|host\|session]` | What the verdict applies to  [required] |
+| `-v` | `--value` | `TEXT` | The repository name, host id or session title  [required] |
+| `-a` | `--actor` | `TEXT` | Who decided  [required] |
+| `-r` | `--reason` | `TEXT` | Why, recorded with each verdict |
+| `-d` | `--delete` |  | Remove the verdict instead of setting it |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai setup

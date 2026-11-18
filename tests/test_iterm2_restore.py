@@ -780,6 +780,24 @@ def test_given_a_dead_record_with_no_exit_when_restoring_then_the_sweep_records_
     assert _typed_text(script) == f"cd /work/myproject && AIH_LAUNCH_REASON={cause} ai c 9"
 
 
+def test_given_a_dead_record_still_reading_running_when_swept_then_its_run_state_reads_exited(machine):
+    """AI-CLI-coiz: the sweep wrote ``exit`` but left ``run_state`` running, which every reader reads first."""
+    from ai_cli import session_run_state
+
+    machine.config("")
+    machine.system.gone = {"c-myproject-9"}
+    machine.seat(_record("c-myproject-9", boot_id="boot-before") | {"run_state": "running", "transition_seq": 5})
+
+    code, out, _ = _restore()
+
+    assert code == 0
+    assert "c-myproject-9: exit recorded (cause=host_reboot; tmux session no longer exists)" in out
+    record = _registry_records(machine)["c-myproject-9"]
+    assert session_run_state.run_state(record) == "exited"
+    assert session_run_state.cause(record) == "host_reboot"
+    assert record["transition_seq"] > 5
+
+
 def test_given_a_relaunch_command_when_typed_then_aih_launch_reason_is_in_the_environment_of_the_ai_command(machine):
     """An assignment before ``cd`` would scope it to ``cd`` alone; it must prefix ``ai`` itself."""
     machine.config("")

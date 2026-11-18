@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -341,12 +342,24 @@ def mark_ended(record_id: str) -> None:
 
 
 def record_exit(
-    name_or_id: str, *, cause: str, evidence: dict, at: str | None = None, _document: dict | None = None
+    name_or_id: str,
+    *,
+    cause: str,
+    evidence: dict,
+    at: str | None = None,
+    proved_dead: bool = False,
+    _document: dict | None = None,
 ) -> list[dict]:
     """Set the ``exit`` of every record whose id or name is ``name_or_id``; return those records.
 
     Also sets ``ended_at`` when it is unset. An empty list means nothing matched and
     nothing was written.
+
+    ``proved_dead`` (the restore sweep, which found the tmux session gone) also moves the run
+    state to ``exited``: ``session_run_state.run_state`` reads ``run_state`` before ``exit``, so
+    a record the sweep proved dead kept reading running for every reader (AI-CLI-coiz). Without
+    it the exit is evidence only, as a hook's ``-x`` report is: a hook never overrides the
+    supervisor's run state or its transition sequence.
     """
     if cause not in EXIT_CAUSES:
         raise ValueError(f"cause must be one of {', '.join(EXIT_CAUSES)}, got {cause!r}")
@@ -361,6 +374,15 @@ def record_exit(
                 record["exit"] = {"cause": cause, "at": stamp, "evidence": dict(evidence)}
                 if not record.get("ended_at"):
                     record["ended_at"] = stamp
+                if proved_dead and record.get("run_state") != "exited":
+                    # Ordered after the stored transition, as an unsequenced manual one is: the
+                    # supervisor that would have written it died with its tmux session.
+                    record.update(
+                        run_state="exited",
+                        changed_at=stamp,
+                        supervisor_exit=dict(record["exit"]),
+                        transition_seq=max(time.monotonic_ns(), record.get("transition_seq", 0) + 1),
+                    )
                 marked.append(record)
         return bool(marked)
 

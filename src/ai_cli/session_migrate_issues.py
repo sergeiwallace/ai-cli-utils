@@ -71,7 +71,10 @@ def note(old: str, new: str) -> str:
 
 
 def inspect_comments(store, old: str, new: str, intended: set[str]) -> None:
-    """Only a recorded issue still held by NEW may have its missing comment finished."""
+    """Only a recorded issue still held by NEW may have its missing comment finished.
+
+    A recorded issue held by neither OLD nor NEW was handed on to another session and is done.
+    """
     from .session_migrate import _bd
 
     missing = intended - set(store.issues)
@@ -86,7 +89,10 @@ def inspect_comments(store, old: str, new: str, intended: set[str]) -> None:
     held = {str(row["id"]) for row in rows if isinstance(row, dict) and row.get("assignee") == new and row.get("id")}
     for issue in sorted(missing):
         if issue not in held:
-            raise ValueError(f"recorded issue {issue} is no longer assigned to {old} or {new}; completion unverified")
+            # Neither OLD (``store.issues``) nor NEW holds it: it was handed on to another
+            # session, before or after this migration re-keyed it, so nothing is left to re-key.
+            store.completed.append(issue)
+            continue
         comments = _bd(store.path, "comments", issue, "--json")
         if comments.returncode:
             raise ValueError(comments.stderr or f"cannot verify comments for {issue}")
