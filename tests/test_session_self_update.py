@@ -16,8 +16,16 @@ import json
 import shlex
 from pathlib import Path
 
+import pytest
+from session_state_isolation import require_isolated_session_state
+
 from ai_cli.main import _write_launch_script_if_changed, _write_stable_session_script
 from ai_cli.session_script import get_engine_script
+
+
+@pytest.fixture(autouse=True)
+def _require_isolated_state(request, tmp_path_factory):
+    require_isolated_session_state(request, tmp_path_factory)
 
 
 def _script(engine="c", **kw):
