@@ -1220,7 +1220,7 @@ def test_given_uv_lock_and_hook_needing_python_dev_dependency_when_committing_up
     """The isolated tree has no synced .venv; a frozen uv sync fills it so the hook finds its dependency."""
     status, detail, project, syncs = _uv_consumer_update(tmp_path)
     assert (status, detail) == ("ok", "")
-    assert syncs == [(["/opt/fake-bin/uv", "sync", "--frozen"], str(project))]
+    assert syncs == [(["/opt/fake-bin/uv", "sync", "--frozen", "--all-extras", "--dev"], str(project))]
     assert _head_subject(project) != "add python project files"
     tracked = subprocess.run(
         ["git", "ls-files", ".venv"], cwd=project, check=True, capture_output=True, text=True

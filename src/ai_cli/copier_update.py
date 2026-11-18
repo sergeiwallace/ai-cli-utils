@@ -8,7 +8,7 @@ Two modes:
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Before committing, the worktree gets the repo's
   dependency environment so its own commit and push hooks run as they would in the
-  main tree: ``uv sync --frozen`` when it has ``pyproject.toml`` and ``uv.lock``, and
+  main tree: ``uv sync --frozen --all-extras --dev`` when it has ``pyproject.toml`` and ``uv.lock``, and
   the frozen install its JS lockfile names when it has ``package.json``. A missing
   installer, a failed install or an environment directory that is not git-ignored
   fails the project before any commit. Conflicts and semantic failures are saved under
@@ -1187,16 +1187,18 @@ def _sync_python_dependencies(wt_dir: Path) -> str | None:
     """Sync the consumer's locked uv environment in wt_dir; return an error message or None.
 
     A fresh worktree has no .venv, so a hook run through `uv run --no-sync` gets an empty environment.
-    `--frozen` installs exactly what uv.lock pins, with uv's default groups (`dev` included).
+    `--frozen` uses uv.lock; all extras and the dev group provide hook dependencies.
     """
     if not ((wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()):
         return None
-    display = "uv sync --frozen"
+    display = "uv sync --frozen --all-extras --dev"
     # shutil.which resolves uv.exe on Windows.
     uv_bin = shutil.which("uv")
     if uv_bin is None:
         return f"dependency install: uv not found in PATH (needed for uv.lock); `{display}` not run"
-    result = subprocess.run([uv_bin, "sync", "--frozen"], cwd=wt_dir, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [uv_bin, "sync", "--frozen", "--all-extras", "--dev"], cwd=wt_dir, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
         output = (result.stderr.strip() or result.stdout.strip())[-2000:]
         return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
