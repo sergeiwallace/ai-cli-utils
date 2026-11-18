@@ -40,6 +40,7 @@ import portalocker
 import psutil
 
 from . import config, session_run_state, tmux_binary
+from .background_attach import daemon_client_environment
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
@@ -161,7 +162,15 @@ def _pane(record: dict) -> tuple[str, str]:
 
 def _run(argv: list[str], timeout: float = 15) -> str:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout)
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout,
+            env=daemon_client_environment() if argv == ["claude", "agents", "--json"] else None,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal("probe-unavailable") from exc
     if result.returncode:
