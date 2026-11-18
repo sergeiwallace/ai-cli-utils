@@ -303,7 +303,7 @@ under `always()`. The 45-minute cap stays and applies to each shard.
 
 ## A note on dispatching manually
 
-`ghp workflow run ci.yml --ref main` returns `HTTP 403: Resource not accessible by personal access
-token`. That is a **PAT scope** limit (the token lacks `Actions: write`), not a repository or
+`gh workflow run ci.yml --ref main`, authenticated with a fine-grained personal access token, can
+return `HTTP 403: Resource not accessible by personal access token`. That is a **PAT scope** limit (the token lacks `Actions: write`), not a repository or
 billing condition. Grant that permission if manual dispatch is needed, or push to a branch and let
 the `pull_request` trigger do it.
