@@ -335,6 +335,7 @@ def resolve_background_target(
     held_seconds: float = 0.0,
     hold_attempt: int = 0,
     relaunch_started_at: float = 0.0,
+    session_id: str = "",
 ) -> Resolution:
     """Choose the background session to attach to; a hold that has lasted too long times out.
 
@@ -350,6 +351,7 @@ def resolve_background_target(
         resume_follows=resume_follows,
         prompted=prompted,
         relaunch_started_at=relaunch_started_at,
+        session_id=session_id,
     )
     limit = hold_timeout_seconds(config)
     attempt_limit = hold_max_attempts(config)
@@ -404,6 +406,7 @@ def _resolve(
     resume_follows: bool = False,
     prompted: bool = False,
     relaunch_started_at: float = 0.0,
+    session_id: str = "",
 ) -> Resolution:
     """Choose the background session to attach to, in order: resolver hint, matching copy.
 
@@ -429,6 +432,9 @@ def _resolve(
                 warning=f"{warning}; holding the relaunch rather than resume beside a possible live copy", hold=True
             )
         return Resolution(warning=f"{warning}; resuming by title instead")
+
+    if session_id:
+        rows = [row for row in rows if row.get("sessionId") == session_id]
 
     command = settings["background_session_resolver"].strip() if settings else ""
     if settings and command:

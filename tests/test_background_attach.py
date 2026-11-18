@@ -362,6 +362,24 @@ def test_given_one_name_and_directory_match_when_resolving_then_attaches_to_it(w
     assert err == ""
 
 
+def test_given_two_named_background_copies_when_restarting_then_attaches_only_to_selected_transcript(
+    workdir, fake_tools, capsys
+):
+    session_id = "11111111-1111-4111-8111-111111111111"
+    other_session_id = "22222222-2222-4222-8222-222222222222"
+    fake_tools(
+        [
+            {**_row("background", OTHER_ID, workdir), "sessionId": other_session_id},
+            {**_row("background", LIVE_ID, workdir), "sessionId": session_id},
+        ]
+    )
+
+    out, err, status = _resolve_with(workdir, {}, capsys, "--resume-follows", f"--session-id={session_id}")
+
+    assert (out, err, status) == (LIVE_ID, "", 0)
+    assert fake_tools.stopped == []
+
+
 def test_given_several_name_and_directory_matches_when_resolving_then_nothing_is_attached_and_candidates_are_named(
     workdir, fake_tools, capsys
 ):

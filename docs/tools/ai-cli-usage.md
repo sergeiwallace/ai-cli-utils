@@ -755,6 +755,10 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
+### Copier update environments
+
+In an isolated update, Git submodules are initialized recursively before dependencies are installed. Python projects at the root or one directory below with `pyproject.toml` and `uv.lock` are prepared with `uv sync --frozen --all-extras --dev`. When there is exactly one nested Python project and no root Python project, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. Projects with other layouts or additional tool requirements must provide those separately.
+
 ### Removed ai gemini command
 
 `ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.

@@ -8,8 +8,11 @@ Two modes:
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Before committing, the worktree gets the repo's
   dependency environment so its own commit and push hooks run as they would in the
-  main tree: ``uv sync --frozen`` when it has ``pyproject.toml`` and ``uv.lock``, and
-  the frozen install its JS lockfile names when it has ``package.json``. A missing
+  main tree: submodules are initialized recursively; Python projects at the root or
+  one level below with ``pyproject.toml`` and ``uv.lock`` receive
+  ``uv sync --frozen --all-extras --dev``, and JS projects receive the frozen install
+  their lockfile names. A single nested Python project uses the root environment when
+  no root Python project exists. A missing
   installer, a failed install or an environment directory that is not git-ignored
   fails the project before any commit. Conflicts and semantic failures are saved under
   verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
@@ -1183,25 +1186,35 @@ def _install_js_dependencies(wt_dir: Path) -> str | None:
     return None
 
 
-def _sync_python_dependencies(wt_dir: Path) -> str | None:
+def _sync_python_dependencies(wt_dir: Path, environment_root: Path | None = None) -> str | None:
     """Sync the consumer's locked uv environment in wt_dir; return an error message or None.
 
     A fresh worktree has no .venv, so a hook run through `uv run --no-sync` gets an empty environment.
-    `--frozen` installs exactly what uv.lock pins, with uv's default groups (`dev` included).
+    `--frozen` uses uv.lock; all extras and the dev group provide hook dependencies.
     """
     if not ((wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()):
         return None
-    display = "uv sync --frozen"
+    display = "uv sync --frozen --all-extras --dev"
     # shutil.which resolves uv.exe on Windows.
     uv_bin = shutil.which("uv")
     if uv_bin is None:
         return f"dependency install: uv not found in PATH (needed for uv.lock); `{display}` not run"
-    result = subprocess.run([uv_bin, "sync", "--frozen"], cwd=wt_dir, capture_output=True, text=True, check=False)
+    env = (
+        None if environment_root is None else {**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment_root / ".venv")}
+    )
+    result = subprocess.run(
+        [uv_bin, "sync", "--frozen", "--all-extras", "--dev"],
+        cwd=wt_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
     if result.returncode != 0:
         output = (result.stderr.strip() or result.stdout.strip())[-2000:]
         return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
     staged = subprocess.run(
-        ["git", "-C", str(wt_dir), "status", "--porcelain", "--untracked-files=all", "--", ".venv"],
+        ["git", "-C", str(environment_root or wt_dir), "status", "--porcelain", "--untracked-files=all", "--", ".venv"],
         env=_git_env(),
         capture_output=True,
         text=True,
@@ -1209,6 +1222,34 @@ def _sync_python_dependencies(wt_dir: Path) -> str | None:
     )
     if staged.returncode != 0 or staged.stdout.strip():
         return "dependency install: .venv is not git-ignored, so the commit would stage it"
+    return None
+
+
+def _prepare_dependencies(wt_dir: Path) -> str | None:
+    """Prepare locked environments and submodules before attempting a commit."""
+    if (wt_dir / ".gitmodules").is_file():
+        result = subprocess.run(
+            ["git", "-C", str(wt_dir), "submodule", "update", "--init", "--recursive"],
+            env=_git_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return f"dependency install: submodule initialization failed with exit status {result.returncode}: {output}"
+
+    children = sorted(p for p in wt_dir.iterdir() if not p.name.startswith(".") and p.is_dir() and not p.is_symlink())
+    python_dirs = [p for p in children if (p / "pyproject.toml").is_file() and (p / "uv.lock").is_file()]
+    root_python = (wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()
+    error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir)
+    if error:
+        return error
+    for child in children:
+        environment_root = wt_dir if not root_python and len(python_dirs) == 1 and child in python_dirs else None
+        error = _sync_python_dependencies(child, environment_root) or _install_js_dependencies(child)
+        if error:
+            return f"{child.name}: {error}"
     return None
 
 
@@ -1278,7 +1319,7 @@ def _do_update_in_worktree(
         return "parityfail", parity_error
 
     # Installed after Copier so the dependencies match the updated manifests and lockfiles.
-    install_error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir)
+    install_error = _prepare_dependencies(wt_dir)
     if install_error is not None:
         return "failed", install_error
 

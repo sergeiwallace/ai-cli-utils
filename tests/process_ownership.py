@@ -48,6 +48,7 @@ from time import monotonic, sleep
 from typing import Any
 
 import psutil
+from process_wait import scaled
 
 # Teardown must survive test-level subprocess mocks.
 _REAL_POPEN = subprocess.Popen
@@ -239,7 +240,7 @@ def reap_tree(proc: subprocess.Popen) -> None:
             os.killpg(group, signal.SIGKILL)
     with contextlib.suppress(OSError):
         proc.kill()
-    proc.wait(timeout=_REAP_TIMEOUT)
+    proc.wait(timeout=scaled(_REAP_TIMEOUT))
 
 
 @contextlib.contextmanager
@@ -397,7 +398,7 @@ def _end_owned(owned: set[psutil.Process], sessions: set[int], born_after: float
     for process in owned:
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
             process.kill()
-    deadline = monotonic() + _REAP_TIMEOUT
+    deadline = monotonic() + scaled(_REAP_TIMEOUT)
     while True:
         alive = []
         for process in owned:
@@ -437,7 +438,7 @@ def watch_session(leader: subprocess.Popen) -> Iterator[None]:
     finally:
         watcher.stdin.close()
         watcher.stdout.close()
-        assert watcher.wait(timeout=30) == 0, "session cleanup watcher failed"
+        assert watcher.wait(timeout=scaled(30)) == 0, "session cleanup watcher failed"
 
 
 def _watch_session(leader_pid: int) -> None:
