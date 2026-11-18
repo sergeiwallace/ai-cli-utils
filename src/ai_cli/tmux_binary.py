@@ -97,16 +97,18 @@ class Resolution:
 
 
 def _read_config() -> dict:
-    """config.toml, read fresh. Missing or unreadable reads as empty.
+    """config.toml, read fresh. Missing, unreadable or malformed reads as empty.
 
     Read directly rather than through ``load_config``: that also registers a machine
     profile and validates unrelated sections, which a tmux call must neither do nor
     be refused by. A malformed file is reported by the launch's own config load.
+    ``tomllib`` raises ``UnicodeDecodeError``, not ``TOMLDecodeError``, for a file
+    that is not UTF-8, so both count as malformed.
     """
     try:
         with Path(_config.config_file_text()).open("rb") as handle:
             return tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return {}
 
 
