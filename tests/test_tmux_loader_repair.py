@@ -39,7 +39,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ai_cli import tmux_setup
+from ai_cli import tmux_binary, tmux_setup
 from ai_cli.native_deps import InstallResult, LoaderRepair
 
 MISSING_LIB = "libevent_core-2.1.so.7"
@@ -279,7 +279,7 @@ def fake_tmux(monkeypatch):
     """
     state = {"which": "/home/user/.local/bin/tmux", "client": None, "server": None}
 
-    monkeypatch.setattr(tmux_setup.shutil, "which", lambda name: state["which"] if name == "tmux" else None)
+    monkeypatch.setattr(tmux_binary.shutil, "which", lambda name: state["which"] if name == "tmux" else None)
 
     def _probe(argv, timeout):
         if argv[:2] == ["tmux", "-V"]:

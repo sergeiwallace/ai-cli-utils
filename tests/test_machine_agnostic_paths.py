@@ -168,6 +168,42 @@ class TestMachineIdentity:
         assert "ip-192-0-2-17" not in err
         assert 'host_id = "build-host-1"' in config_file.read_text(encoding="utf-8")
 
+    def test_given_a_shell_without_ai_host_when_another_shell_registered_the_machine_then_both_resolve_one_host(
+        self, tmp_path, monkeypatch
+    ):
+        """Every shell on one machine must name the same host.
+
+        One shell exports ``AI_HOST`` from its login profile (Git Bash's .bashrc) and another
+        does not (PowerShell). The first launch records the host in config.toml, so the shell
+        without ``AI_HOST`` must take that recorded id, not its hostname: otherwise it names
+        sessions and registers itself as a second machine.
+        """
+        _foreign_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(socket, "gethostname", lambda: "cpc-host-1")
+        monkeypatch.setenv("AI_HOST", "build-host-1")
+        config.load_config()  # the first shell's launch registers the machine
+        monkeypatch.delenv("AI_HOST")
+
+        profile = config.detect_machine_profile()
+
+        assert profile["host_id"] == "build-host-1"
+        assert profile["host_id_source"] == "config.toml [machine] host_id"
+
+    def test_given_a_marker_and_a_recorded_host_id_when_detecting_the_profile_then_the_marker_answers(
+        self, tmp_path, monkeypatch
+    ):
+        """The marker corrects a host id that was once recorded from a hostname guess."""
+        marker = tmp_path / "machine"
+        marker.write_text("build-host-1\n", encoding="utf-8")
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda *_args, **_kwargs: {"machine": {"marker_file": str(marker), "host_id": "ip-192-0-2-17"}},
+        )
+        monkeypatch.delenv("AI_HOST", raising=False)
+
+        assert config.detect_machine_profile()["host_id"] == "build-host-1"
+
     def test_given_a_marker_when_telemetry_identifies_the_machine_then_it_uses_the_resolved_host_id(
         self, tmp_path, monkeypatch
     ):

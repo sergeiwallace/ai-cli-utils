@@ -36,14 +36,14 @@ pattern = '^[a-z][a-z0-9-]*$'
 # Every operation the package emits. A user's table may add operations but not remove
 # these. The launch phases come first, then the operations of the other commands.
 vocabulary = [
-    "start", "request", "host", "install", "update", "reexec", "remote", "probe", "transport",
+    "start", "request", "host", "install", "update", "reexec", "remote", "probe", "transport", "extension",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
     "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
     "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
     "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
     "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
-    "add", "remove", "spare", "reconcile", "release", "reassign", "locate", "publish",
+    "add", "remove", "spare", "reconcile", "release", "reassign", "locate", "publish", "display",
 ]
 
 [output.elements.operation.styles]

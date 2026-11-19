@@ -99,10 +99,10 @@ class TestCmdCopierUpdate:
 
 class TestInternalRefreshTemplate:
     @staticmethod
-    def _meta(session: str = "testses") -> dict:
+    def _meta(session: str = "c-myproject-tst-1") -> dict:
         return {
             "engine": "c",
-            "ai_name": "1",
+            "ai_name": "myproject-tst-1",
             "session": session,
             "prefix": "c-myproject-",
             "project_prefix": "myproject",
@@ -136,13 +136,13 @@ class TestInternalRefreshTemplate:
         assert "Failed to read session metadata" in stderr
 
     def test_given_valid_meta_when_refresh_template_then_writes_script_and_exits_0(self, tmp_path):
-        meta_path = tmp_path / "session-meta-testses.json"
-        meta_path.write_text(json.dumps(self._meta("testses")))
+        meta_path = tmp_path / "session-meta-c-myproject-tst-1.json"
+        meta_path.write_text(json.dumps(self._meta("c-myproject-tst-1")))
         with (
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.session_script.get_engine_script", return_value="echo hello\n") as mock_get,
         ):
-            exit_code, stdout, _ = run_cli(["ai", "internal", "refresh-template", "testses"])
+            exit_code, stdout, _ = run_cli(["ai", "internal", "refresh-template", "c-myproject-tst-1"])
         assert exit_code == 0
         assert mock_get.called
         # stdout is the temp path printed by the handler

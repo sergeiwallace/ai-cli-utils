@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import pytest
 import yaml
 from conftest import run_cli
 
+from ai_cli.config import get_canonical_source_repo
 from ai_cli.copier_update import (
     EX_CONFIG,
     EX_PARTIAL_MUTATION,
@@ -26,6 +28,8 @@ from ai_cli.copier_update import (
     _do_update_in_worktree,
     _excluded_on_update,
     _find_copier_projects,
+    _load_mirror_excludes,
+    _prepare_dependencies,
     _reachable_source,
     _repo_root,
     _resolve_copier_source,
@@ -671,6 +675,7 @@ def test_do_update_conflict(tmp_path):
 
 def test_do_update_ok_push(tmp_path):
     """Clean changes + push → ok; pushes HEAD:main and rebases the main tree."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -686,6 +691,7 @@ def test_do_update_ok_push(tmp_path):
 
 def test_do_update_ok_no_push(tmp_path):
     """push=False commits but never pushes or rebases."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -1151,6 +1157,97 @@ def test_given_no_package_json_when_committing_update_then_nothing_is_installed(
     assert "lint-tool: not found" in detail
 
 
+@pytest.fixture
+def js_workspace(tmp_path, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("the fake npm executable is a POSIX shell script")
+    project = tmp_path / "myproject"
+    web = project / "apps" / "web"
+    web.mkdir(parents=True)
+    (project / "package.json").write_text(json.dumps({"workspaces": ["apps/*"]}), encoding="utf-8")
+    (project / "package-lock.json").touch()
+    (web / "package.json").write_text('{"name": "web"}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    npm = bin_dir / "npm"
+    npm.write_text(
+        '#!/bin/sh\nprintf "%s\\t%s\\n" "$*" "$PWD" >> "$CALL_LOG"\n'
+        'if [ "$1" = run ] && [ -f fail-install ]; then\n'
+        '    printf "discard this prefix %02010d\\nbrowser install failed\\n" 0 >&2\n'
+        "    exit 23\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    npm.chmod(0o755)
+    log = tmp_path / "npm-calls"
+    monkeypatch.setenv("PATH", str(bin_dir), prepend=os.pathsep)
+    monkeypatch.setenv("CALL_LOG", str(log))
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "git" and command[3:] == ["check-ignore", "-q", "node_modules"]:
+            return subprocess.CompletedProcess(command, 0)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return project, web, log
+
+
+def test_given_workspace_e2e_install_when_preparing_dependencies_then_it_runs_once_after_ci(js_workspace):
+    project, web, log = js_workspace
+    (web / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [f"ci\t{project}", f"run e2e:install\t{web}"]
+
+
+def test_given_failing_e2e_install_when_preparing_dependencies_then_it_reports_package_and_exit_status(js_workspace):
+    project, web, _ = js_workspace
+    (web / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+    (web / "fail-install").touch()
+
+    error = _prepare_dependencies(project)
+
+    assert error is not None
+    assert str(web) in error
+    assert "`npm run e2e:install` failed with exit status 23: " in error
+    assert error.endswith("0" * (2000 - len("\nbrowser install failed")) + "\nbrowser install failed")
+    assert "discard this prefix" not in error
+
+
+def test_given_no_e2e_install_when_preparing_dependencies_then_only_ci_runs(js_workspace):
+    project, _, log = js_workspace
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [f"ci\t{project}"]
+
+
+def test_given_root_and_workspace_scripts_when_preparing_dependencies_then_exact_hooks_run_once(js_workspace):
+    project, web, log = js_workspace
+    (project / "package.json").write_text(
+        json.dumps(
+            {
+                "workspaces": ["apps/*", "apps/web", "tools"],
+                "scripts": {"e2e:install": "setup-browser", "e2e:install-extra": "extra-step"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (web / "package.json").write_text('{"scripts": {"e2e:install-extra": "extra-step"}}', encoding="utf-8")
+    tools = project / "tools"
+    tools.mkdir()
+    (tools / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+    (tools / "package-lock.json").touch()
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        f"ci\t{project}",
+        f"ci\t{tools}",
+        f"run e2e:install\t{project}",
+        f"run e2e:install\t{tools}",
+    ]
+
+
 _NEEDS_PYTHON_DEV_DEPENDENCY_HOOK = (
     "echo x >> .git/hook-count\n"
     "[ -x .venv/bin/dev-tool ] || "
@@ -1220,7 +1317,7 @@ def test_given_uv_lock_and_hook_needing_python_dev_dependency_when_committing_up
     """The isolated tree has no synced .venv; a frozen uv sync fills it so the hook finds its dependency."""
     status, detail, project, syncs = _uv_consumer_update(tmp_path)
     assert (status, detail) == ("ok", "")
-    assert syncs == [(["/opt/fake-bin/uv", "sync", "--frozen"], str(project))]
+    assert syncs == [(["/opt/fake-bin/uv", "sync", "--frozen", "--all-extras", "--dev"], str(project))]
     assert _head_subject(project) != "add python project files"
     tracked = subprocess.run(
         ["git", "ls-files", ".venv"], cwd=project, check=True, capture_output=True, text=True
@@ -1271,6 +1368,118 @@ def test_given_pyproject_without_uv_lock_when_committing_update_then_nothing_is_
     assert syncs == []
     assert status == "failed"
     assert "ModuleNotFoundError" in detail
+
+
+def test_given_submodule_when_preparing_dependencies_then_it_is_initialized_before_sync(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    (tmp_path / ".gitmodules").write_text('[submodule "lib"]\n')
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "uv.lock").touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", return_value="/fake/uv"),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    assert calls[0] == ["git", "-C", str(tmp_path), "submodule", "update", "--init", "--recursive"]
+    assert calls[1][0] == "/fake/uv"
+
+
+def test_given_submodule_failure_when_preparing_dependencies_then_it_reports_step(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    (tmp_path / ".gitmodules").write_text('[submodule "lib"]\n')
+    with patch("ai_cli.copier_update.subprocess.run", return_value=MagicMock(returncode=1, stderr="failed", stdout="")):
+        error = _prepare_dependencies(tmp_path)
+    assert error is not None and "dependency install" in error and "submodule" in error
+
+
+def test_given_root_and_nested_python_projects_when_preparing_dependencies_then_only_root_syncs(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "uv.lock").touch()
+    export = tmp_path / "export-docs"
+    export.mkdir()
+    (export / "pyproject.toml").write_text(
+        '[project]\nname = "export-docs"\nversion = "0.1.0"\ndependencies = ["test-support"]\n'
+        '[tool.uv.sources]\ntest-support = { path = "packages/test-support", editable = true }\n'
+    )
+    (export / "uv.lock").write_text(
+        'version = 1\n[[package]]\nname = "test-support"\nversion = "0.1.0"\n'
+        'source = { editable = "packages/test-support" }\n'
+    )
+    for project in (tmp_path, export):
+        (project / "package.json").touch()
+        (project / "package-lock.json").touch()
+    installs = []
+
+    def run(command, **kwargs):
+        if command[0] in ("/fake/uv", "/fake/npm"):
+            installs.append((command[0], kwargs["cwd"]))
+        if command[0] == "/fake/uv" and kwargs["cwd"] == export:
+            return MagicMock(returncode=2, stdout="", stderr="Distribution not found at: packages/test-support")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=lambda name: "/fake/" + name),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    assert installs == [("/fake/uv", tmp_path), ("/fake/npm", tmp_path), ("/fake/npm", export)]
+
+
+@pytest.mark.parametrize("python_projects", [("backend",), ("backend", "worker")])
+def test_given_nested_projects_when_preparing_dependencies_then_it_installs_in_gate_locations(
+    tmp_path, python_projects
+):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    python_dirs = [tmp_path / name for name in python_projects]
+    for directory in python_dirs:
+        directory.mkdir()
+        (directory / "pyproject.toml").touch()
+        (directory / "uv.lock").touch()
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").touch()
+    (web / "package-lock.json").touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=lambda name: "/fake/" + name),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    uv_calls = [kwargs for command, kwargs in calls if command[0] == "/fake/uv"]
+    assert [call["cwd"] for call in uv_calls] == python_dirs
+    if len(python_dirs) == 1:
+        assert uv_calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
+    else:
+        assert all(call["env"] is None for call in uv_calls)
+    assert any(command[0] == "/fake/npm" and kwargs["cwd"] == web for command, kwargs in calls)
+
+
+def test_given_nested_install_failure_when_preparing_dependencies_then_it_names_directory(tmp_path):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "package.json").touch()
+    (web / "package-lock.json").touch()
+    with patch("ai_cli.copier_update.shutil.which", return_value=None):
+        error = _prepare_dependencies(tmp_path)
+    assert error is not None and "web" in error and "npm" in error
 
 
 def _probe_runner(ssh_reachable: bool):
@@ -1538,6 +1747,125 @@ def _cli_update(projects: Path) -> tuple[int, str]:
     return exit_code, stdout + stderr
 
 
+@pytest.fixture
+def mirror_projects(tmp_path):
+    repos = _copier_project_from(tmp_path, _FEATURE_QUESTIONS, {})
+    source = repos["projects"] / get_canonical_source_repo()
+    # git's background maintenance can create and remove .git/objects/maintenance.lock while the
+    # copy runs, which makes copytree fail on a file that vanished: leave lock files out.
+    shutil.copytree(repos["project"], source, ignore=shutil.ignore_patterns("*.lock"))
+
+    template = repos["author"] / "template"
+    (template / "feature.txt").write_text("redacted update\n")
+    (template / "docs").mkdir()
+    (template / "docs" / "feature.txt").write_text("unrelated addition\n")
+    _git_output(repos["author"], "add", "template/docs/feature.txt")
+    _publish_template_change(repos["author"], _FEATURE_QUESTIONS)
+    return repos["projects"], source, repos["project"]
+
+
+def _add_mirror_row(source: Path, canonical: str, consumer_path: str) -> None:
+    config = source / "config" / "canonical-readme-sync.toml"
+    config.parent.mkdir(exist_ok=True)
+    with config.open("a", encoding="utf-8") as file:
+        file.write(
+            f'[[readme]]\ncanonical = "{canonical}"\nconsumer_repo = "project-template"\n'
+            f'consumer_path = "{consumer_path}"\n'
+        )
+    _git_output(source, "add", "--", config.relative_to(source).as_posix())
+    _git_output(source, "commit", "-m", "Register mirror")
+
+
+def test_given_a_changed_canonical_source_setting_when_loading_mirrors_then_reads_the_new_repo(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr("ai_cli.config.config_file_text", lambda: str(config_path))
+    projects = tmp_path / "projects"
+    for name, filename in (("old-source", "first.txt"), ("new-source", "second.txt")):
+        mirror_path = projects / name / "config" / "canonical-readme-sync.toml"
+        mirror_path.parent.mkdir(parents=True)
+        mirror_path.write_text(
+            f'[[readme]]\nconsumer_repo = "project-template"\nconsumer_path = "template/{filename}"\n',
+            encoding="utf-8",
+        )
+
+    config_path.write_text('[copier_update]\ncanonical_source_repo = "old-source"\n', encoding="utf-8")
+    assert _load_mirror_excludes(projects) == {"old-source": ("first.txt",)}
+
+    config_path.write_text('[copier_update]\ncanonical_source_repo = "new-source"\n', encoding="utf-8")
+    assert _load_mirror_excludes(projects) == {"new-source": ("second.txt",)}
+
+
+@pytest.mark.parametrize("isolate", [False, True], ids=["direct", "isolated"])
+def test_given_mirror_source_when_updating_then_keeps_canonical_copy_and_applies_other_changes(
+    mirror_projects, isolate, capsys
+):
+    projects, source, _ = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+    (source / "feature.txt").write_text("canonical copy\n")
+    _git_output(source, "commit", "-am", "Edit canonical copy")
+
+    with patch("ai_cli.copier_update._file_recovery_issue") as file_issue:
+        result = run_copier_update(
+            projects_dir=projects, project_filter=source.name, isolate=isolate, push=False, inspect=isolate
+        )
+
+    if isolate:
+        assert isinstance(result, CopierUpdateInspection)
+        assert result.exit_code == 0
+        (delivery,) = result.delivered_updates
+        assert "feature.txt" not in delivery.changed_files
+        content = delivery.changed_files["docs/feature.txt"]
+        assert content is not None
+        assert content.splitlines() == [b"unrelated addition"]
+    else:
+        assert result == 0
+        assert (source / "docs" / "feature.txt").read_text() == "unrelated addition\n"
+    assert (source / "feature.txt").read_text() == "canonical copy\n"
+    file_issue.assert_not_called()
+    (line,) = [line for line in capsys.readouterr().out.splitlines() if f"{source.name}..." in line]
+    assert "skipped" in line and "feature.txt" in line and "canonical-readme-sync" in line
+
+
+def test_given_other_consumer_when_updating_then_receives_redacted_mirror(mirror_projects, capsys):
+    projects, source, consumer = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+
+    assert run_copier_update(projects_dir=projects, project_filter=consumer.name, isolate=False) == 0
+
+    assert (consumer / "feature.txt").read_text() == "redacted update\n"
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_given_new_mirror_row_when_updating_again_then_skips_its_rendered_path(mirror_projects, capsys):
+    projects, source, consumer = mirror_projects
+    _add_mirror_row(source, "feature.txt", "template/feature.txt")
+    assert run_copier_update(projects_dir=projects, project_filter=consumer.name, isolate=False) == 0
+    _add_mirror_row(source, "docs/canonical.txt", "template/message.txt.jinja")
+    capsys.readouterr()
+
+    assert run_copier_update(projects_dir=projects, project_filter=source.name, isolate=False) == 0
+
+    assert (source / "message.txt").read_text() == "myproject original\n"
+    (line,) = [line for line in capsys.readouterr().out.splitlines() if f"{source.name}..." in line]
+    assert "message.txt" in line and "message.txt.jinja" not in line
+
+
+@pytest.mark.parametrize("unreadable", [False, True], ids=["missing", "unreadable"])
+def test_given_unavailable_mirror_config_when_updating_then_warns_once_and_skips_nothing(
+    mirror_projects, unreadable, capsys
+):
+    projects, source, consumer = mirror_projects
+    if unreadable:
+        (source / "config" / "canonical-readme-sync.toml").mkdir(parents=True)
+
+    assert run_copier_update(projects_dir=projects, isolate=False) == 0
+
+    assert (source / "feature.txt").read_text() == "redacted update\n"
+    assert (consumer / "feature.txt").read_text() == "redacted update\n"
+    (warning,) = capsys.readouterr().err.splitlines()
+    assert "Warning" in warning and "canonical-readme-sync.toml" in warning
+
+
 def test_given_non_default_stored_answers_when_updating_through_cli_then_they_survive_and_files_render_the_same(
     tmp_path,
 ):
@@ -1682,6 +2010,7 @@ def test_given_file_project_still_has_when_copier_leaves_it_unchanged_then_parit
 
 def test_do_update_pushfail(tmp_path):
     """Push rejected → pushfail with git stderr, worktree/commit preserved by caller."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n", push_rc=1)
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -1697,6 +2026,7 @@ def test_do_update_pushfail(tmp_path):
 
 def test_given_a_failing_pre_push_hook_when_push_fails_then_its_stdout_reaches_the_detail(tmp_path):
     """The repo's test gate prints on stdout; stderr alone hides why the push was refused."""
+    (tmp_path / "wt").mkdir()
     runner = _wt_runner(porcelain=" M file\n", push_rc=1, push_stdout="test gate (mise-aware)....Failed")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
         with patch(
@@ -1812,7 +2142,7 @@ def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writ
                     )
 
     assert exit_code == 0
-    assert stderr == ""
+    assert "canonical-readme-sync.toml" in stderr
     payload = json.loads(inspection_output.read_text())
     assert payload["exit_code"] == 0
     assert len(payload["delivered_updates"]) == 1
@@ -1895,11 +2225,192 @@ def test_given_verified_conflict_anchor_when_isolated_update_ends_then_cleanup_r
     issue.assert_called_once_with(tmp_path, ref, ["a.py"], "previous..abcdef0")
 
 
+_PR_BRANCH = "copier-update/abcdef0"
+_PR_REF = f"refs/heads/{_PR_BRANCH}"
+_PR_URL = "https://github.com/example/myproject/pull/12"
+_PR_REFUSAL = "worktree push refused: copier-update-tmp tracks refs/remotes/origin/main"
+_PR_LIST = ("pr", "list", "--head", _PR_BRANCH, "--state", "open", "--json", "number,url")
+
+
+@pytest.fixture
+def run_with_pr_remote(tmp_path, monkeypatch):
+    """Run the isolated flow with fake Git and GitHub state shared across invocations."""
+    project = tmp_path / "myproject"
+    direct = tmp_path / "other-project"
+    source = "https://example.com/project-template.git"
+    for repo in (project, direct):
+        repo.mkdir()
+        _make_answers(repo, source)
+    calls = []
+    anchor_ref = "refs/backup/2026-01-01/copier-update/myproject-abcdef0"
+
+    def run(cmd, *, cwd=None, **kwargs):
+        if cmd[:2] == ["git", "ls-remote"]:
+            assert cmd[2:] == [source, "HEAD"]
+            return subprocess.CompletedProcess(cmd, 0, f"abcdef0{'a' * 33}\tHEAD\n", "")
+        if cmd[0] == "gh":
+            repo = cwd.parent.parent.name
+            assert kwargs["env"]["GH_REPO"] == f"github.com/example/{repo}"
+            args = tuple(cmd[1:])
+            calls.append((repo, args))
+            if args == _PR_LIST:
+                rows = [{"number": 12, "url": _PR_URL}] if run.pr_open else []
+                return subprocess.CompletedProcess(cmd, int(run.error == "list"), json.dumps(rows), "")
+            assert args[:2] == ("pr", "create")
+            assert args[args.index("--head") + 1] == _PR_BRANCH
+            assert args[args.index("--base") + 1] == "main"
+            assert "abcdef0" in args[args.index("--body") + 1]
+            assert "myproject" in args[args.index("--body") + 1]
+            assert run.branch_exists and not run.pr_open
+            if run.error == "create":
+                return subprocess.CompletedProcess(cmd, 1, "", "creation failed")
+            run.pr_open = True
+            return subprocess.CompletedProcess(cmd, 0, _PR_URL + "\n", "")
+
+        assert cmd[:2] == ["git", "-C"]
+        path = Path(cmd[2])
+        repo = path.parent.parent.name if path.name == "copier-update" else path.name
+        args = tuple(cmd[3:])
+        calls.append((repo, args))
+        if args[:2] == ("rev-parse", "--show-toplevel"):
+            return subprocess.CompletedProcess(cmd, 0, str(path), "")
+        if args == ("status", "--porcelain", "--untracked-files=all"):
+            return subprocess.CompletedProcess(cmd, 0, " M file\n", "")
+        if args == ("remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(cmd, 0, f"git@github.com:example/{repo}.git\n", "")
+        if args == ("push", "origin", "HEAD:main") and (report := run.main_refusals.get(repo)):
+            return subprocess.CompletedProcess(cmd, 1, report, "failed to push some refs")
+        if args[0] == "ls-remote":
+            assert args[-1] == _PR_REF
+            return subprocess.CompletedProcess(cmd, 0 if run.branch_exists else 2, "", "")
+        if args[0] == "push" and args[-1] == f"HEAD:{_PR_REF}":
+            assert not run.branch_exists
+            if run.error == "branch":
+                return subprocess.CompletedProcess(cmd, 1, "", "branch push rejected")
+            run.branch_exists = True
+        if args == ("rev-parse", "origin/main"):
+            return subprocess.CompletedProcess(cmd, 0, "base\n", "")
+        if args == ("rev-list", "--count", "base..HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, "1\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    run.branch_exists = False
+    run.pr_open = False
+    run.error = None
+    run.main_refusals = {project.name: _PR_REFUSAL}
+    monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: tmp_path)
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.repair_bare_worktree_config"),
+        patch("ai_cli.copier_update._prepare_dependencies", return_value=None),
+        patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ),
+        patch("ai_cli.copier_update._anchor_failed_update", return_value=(anchor_ref, "abcdef0")) as anchor,
+        patch("ai_cli.copier_update._push_backup_anchor", return_value="Backup anchor location: local only"),
+        patch("ai_cli.copier_update._clean_anchored_pushfail"),
+        patch("ai_cli.copier_update._file_recovery_issue") as issue,
+    ):
+        yield project, direct, run, calls, anchor, issue
+
+
+def test_given_main_push_refused_when_running_twice_then_opens_and_reuses_one_pr(run_with_pr_remote, capsys):
+    project, direct, remote, calls, anchor, issue = run_with_pr_remote
+
+    assert _run_isolated([project, direct], "/usr/bin/copier", True) == 0
+    output = capsys.readouterr().out
+    assert f"updated, PR pending #12 {_PR_URL}" in output
+    assert "updated + pushed" in output
+    assert "1 updated, 1 PR pending" in output
+    assert [args[0] for repo, args in calls if repo == direct.name and args[0] in ("push", "pull", "pr")] == [
+        "push",
+        "pull",
+    ]
+    project_calls = [args for repo, args in calls if repo == project.name]
+    assert [args[-1] for args in project_calls if args[0] == "push"] == ["HEAD:main", f"HEAD:{_PR_REF}"]
+    assert [args[:2] for args in project_calls if args[0] == "pr"] == [("pr", "list"), ("pr", "create")]
+    assert project_calls[-4][:2] == ("worktree", "remove")
+    assert project_calls[-3] == ("branch", "-D", "copier-update-tmp")
+
+    calls.clear()
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args for _, args in calls if args[0] in ("push", "ls-remote", "pr")] == [
+        ("push", "origin", "HEAD:main"),
+        _PR_LIST,
+    ]
+    assert remote.pr_open
+    anchor.assert_not_called()
+    issue.assert_not_called()
+
+
+def test_given_update_branch_without_pr_when_main_push_is_refused_then_reuses_branch(run_with_pr_remote, capsys):
+    project, _, remote, calls, anchor, _ = run_with_pr_remote
+    remote.branch_exists = True
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args[-1] for _, args in calls if args[0] == "push"] == ["HEAD:main"]
+    assert remote.pr_open
+    anchor.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["list", "branch", "create", "recovery"])
+def test_given_pr_route_failure_when_update_is_run_then_uses_backup_recovery(run_with_pr_remote, capsys, failure):
+    project, _, remote, calls, anchor, issue = run_with_pr_remote
+    remote.error = "branch" if failure == "recovery" else failure
+    if failure == "recovery":
+        issue.side_effect = RuntimeError("issue filing rejected")
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == EX_PARTIAL_MUTATION
+    output = capsys.readouterr().out
+    assert ("RECOVERY FAILED" if failure == "recovery" else "PUSH FAILED") in output
+    assert "PR pending" not in output
+    assert [args[:2] for _, args in calls if args[0] == "pr"] == (
+        [("pr", "list"), ("pr", "create")] if failure == "create" else [("pr", "list")]
+    )
+    assert (f"HEAD:{_PR_REF}" in [args[-1] for _, args in calls if args[0] == "push"]) == (failure != "list")
+    anchor.assert_called_once()
+    issue.assert_called_once()
+    assert _PR_REFUSAL in issue.call_args.args[-1]
+
+
+def test_given_unrelated_push_failure_when_another_project_has_pr_then_job_still_fails(run_with_pr_remote, capsys):
+    project, direct, remote, calls, anchor, issue = run_with_pr_remote
+    remote.main_refusals[direct.name] = "test gate failed"
+
+    assert _run_isolated([project, direct], "/usr/bin/copier", True) == EX_PARTIAL_MUTATION
+    output = capsys.readouterr().out
+    assert "PUSH FAILED" in output
+    assert "test gate failed" in output
+    assert f"updated, PR pending #12 {_PR_URL}" in output
+    assert [args for repo, args in calls if repo == direct.name and args[0] in ("push", "pr")] == [
+        ("push", "origin", "HEAD:main")
+    ]
+    anchor.assert_called_once()
+    issue.assert_called_once()
+
+
+def test_given_main_gated_in_fleet_config_when_updating_then_skips_main_push(run_with_pr_remote, capsys):
+    project, _, remote, calls, anchor, _ = run_with_pr_remote
+    config_dir = project / "config"
+    config_dir.mkdir()
+    (config_dir / "fleet-projects.toml").write_text('[[projects]]\nname = "myproject"\ngated_branches = ["main"]\n')
+    remote.main_refusals.clear()
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args[-1] for _, args in calls if args[0] == "push"] == [f"HEAD:{_PR_REF}"]
+    assert not any(args[0] == "pull" for _, args in calls)
+    anchor.assert_not_called()
+
+
 def test_run_isolated_mixed_results(tmp_path, capsys):
     """_run_isolated aggregates: any conflict → EX_PARTIAL_MUTATION."""
     projects = [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
 
-    def fake(pd, cb, push=True):
+    def fake(pd, cb, **kwargs):
         return {"a": ("ok", ""), "b": ("nochange", ""), "c": ("conflict", ["x.py"])}[pd.name]
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
@@ -1915,7 +2426,7 @@ def test_run_isolated_all_clean(tmp_path, capsys):
     """All ok/nochange → exit 0."""
     projects = [tmp_path / "a", tmp_path / "b"]
 
-    def fake(pd, cb, push=True):
+    def fake(pd, cb, **kwargs):
         return ("ok", "") if pd.name == "a" else ("nochange", "")
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
@@ -1941,7 +2452,7 @@ def test_given_transient_failure_when_isolated_updates_run_then_returns_ex_tempf
 def test_given_partial_and_clean_failures_when_isolated_updates_run_then_partial_takes_precedence(tmp_path):
     projects = [tmp_path / "partial", tmp_path / "config"]
 
-    def fake(project_dir, copier_bin, push=True):
+    def fake(project_dir, copier_bin, **kwargs):
         if project_dir.name == "partial":
             return "pushfail", RecoveredPushFailure("refs/backup/example", "push rejected")
         return "failed", "worktree add failed: branch already exists"
@@ -2232,3 +2743,14 @@ def test_given_template_envops_delimiters_when_updating_then_exclude_entries_ren
     assert "parity failed" not in capsys.readouterr().out
     assert result == 0
     assert not (projects / "myproject" / "guard.py").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fixture hook is a POSIX shell script")
+def test_given_an_update_commit_when_it_is_made_then_it_ends_with_the_delegation_declaration(tmp_path):
+    """A repository that enforces delegation provenance requires this terminal block."""
+    status, detail, project, _ = _uv_consumer_update(tmp_path)
+    assert (status, detail) == ("ok", "")
+    message = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=project, check=True, capture_output=True, text=True
+    ).stdout.rstrip("\n")
+    assert message.endswith("\n\nDelegated-to: none")

@@ -60,17 +60,13 @@ def parse_sort(value: str | Sequence[str], source: str) -> list[str]:
     return keys
 
 
-def normalize_scope(value):
-    return "group" if value == "pair" else value
-
-
 def effective_scope(machine: dict, requested: str) -> str:
     """Apply the machine profile's visibility limit to the requested table scope."""
-    if machine.get("profile_class") != "personal":
-        return "host"
-    limit = normalize_scope(machine.get("sessions_list_scope", "group"))
+    limit = machine.get("sessions_list_scope", "group")
     if limit not in SCOPES:
         raise ViewError(f"[machine] sessions_list_scope must be one of {', '.join(SCOPES)}")
+    if machine.get("profile_class") != "personal":
+        return "host"
     return min(requested, limit, key=SCOPES.index)
 
 
@@ -80,12 +76,10 @@ def settings(cfg: dict) -> dict:
     where = f"[sessions_list] in {config.config_file_text()}"
     if not isinstance(table, dict):
         raise ViewError(f"{where} must be a table")
-    unknown = sorted(set(table) - set(DEFAULTS) - {"pair_host"})
+    unknown = sorted(set(table) - set(DEFAULTS))
     if unknown:
         raise ViewError(f"{where}: unknown key {', '.join(unknown)}; known keys: {', '.join(DEFAULTS)}")
     result = DEFAULTS | table
-    result["scope"] = normalize_scope(result["scope"])
-    result["group_host"] = table.get("group_host", table.get("pair_host", ""))
     choices = {"group_by": GROUP_KEYS, "scope": SCOPES}
     for key, allowed in choices.items():
         if result[key] not in allowed:

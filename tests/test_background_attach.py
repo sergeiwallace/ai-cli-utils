@@ -21,9 +21,11 @@ from unittest.mock import patch
 
 import psutil
 import pytest
-from process_ownership import exited_pid, owned_process
+from process_ownership import exited_pid, owned_process, spawn_owned
 
+from ai_cli import background_attach, session_restart
 from ai_cli.main import _handle_internal
+from ai_cli.session_script import get_engine_script
 
 # The fake executables are POSIX shell scripts, and the supervisor that calls the
 # command only runs under tmux, which Windows does not provide.
@@ -35,6 +37,90 @@ LIVE_ID = "aaaa1111"
 OTHER_ID = "bbbb2222"
 THIRD_ID = "cccc3333"
 SESSION = "myproject-1"
+_TEST_IDENTITY_KEYS = (
+    "CLAUDE_CODE_TASK_LIST_ID",
+    "BEADS_ACTOR",
+    "BD_ACTOR",
+    "AI_HARNESS_SESSION_ID",
+    "AI_TMUX_SESSION",
+    "CC_TMUX_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "AI_HOST",
+)
+
+
+@pytest.fixture
+def claude_environment_recorder(tmp_path, monkeypatch):
+    claude = tmp_path / "claude"
+    calls = tmp_path / "calls.jsonl"
+    config_dir = tmp_path / "claude-config"
+    for key in _TEST_IDENTITY_KEYS:
+        monkeypatch.setenv(key, "test-identity-leak")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+    claude.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a', encoding='utf-8') as log:\n"
+        f"    keys = [key for key in {_TEST_IDENTITY_KEYS!r} if key in os.environ]\n"
+        "    log.write(json.dumps([sys.argv[1:], keys, os.environ.get('CLAUDE_CONFIG_DIR')]) + '\\n')\n"
+        "print('[]')\n",
+        encoding="utf-8",
+    )
+    claude.chmod(0o755)
+    return claude, calls, config_dir
+
+
+@pytest.mark.parametrize("operation", ["list", "stop", "restart-probe"])
+def test_given_session_identity_when_calling_daemon_client_then_child_has_no_identity(
+    operation, monkeypatch, claude_environment_recorder
+):
+    claude, calls, config_dir = claude_environment_recorder
+
+    def run(argv, **kwargs):
+        assert argv[0] == "claude"
+        child = spawn_owned(
+            [sys.executable, str(claude), *argv[1:]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=kwargs.get("env"),
+        )
+        stdout, stderr = child.communicate(timeout=10)
+        return subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if operation == "list":
+        assert background_attach.list_live_background_sessions() == []
+    elif operation == "stop":
+        assert background_attach.stop_background_session(LIVE_ID)
+    else:
+        assert json.loads(session_restart._run(["claude", "agents", "--json"])) == []
+
+    expected = ["stop", LIVE_ID] if operation == "stop" else ["agents", "--json"]
+    assert json.loads(calls.read_text(encoding="utf-8")) == [expected, [], str(config_dir)]
+    assert all(os.environ.get(key) == "test-identity-leak" for key in _TEST_IDENTITY_KEYS)
+
+
+def test_given_session_identity_when_attaching_then_client_has_no_identity(tmp_path, claude_environment_recorder):
+    _claude, calls, config_dir = claude_environment_recorder
+    script = get_engine_script("c", SESSION, f"c-{SESSION}", "c-myproject-", "myproject")
+    start = script.index("    run_agent() {")
+    end = script.index("    first_run=true", start)
+    harness = tmp_path / "attach.sh"
+    harness.write_text(
+        script[start:end]
+        + "\nagent_direnv_initialized=true\n"
+        + "_reset_agent_terminal() { :; }\n"
+        + f"bg_target={LIVE_ID}\n"
+        + next(line for line in script.splitlines() if line.strip() == 'run_agent claude attach "$bg_target"')
+        + '\nexit "$agent_exit_code"\n',
+        encoding="utf-8",
+    )
+    child = spawn_owned(["bash", str(harness)], cwd=tmp_path, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    assert child.wait(timeout=10) == 0
+    assert json.loads(calls.read_text(encoding="utf-8")) == [["attach", LIVE_ID], [], str(config_dir)]
 
 
 def _script(path: Path, body: str) -> Path:
@@ -274,6 +360,24 @@ def test_given_one_name_and_directory_match_when_resolving_then_attaches_to_it(w
 
     assert out == LIVE_ID
     assert err == ""
+
+
+def test_given_two_named_background_copies_when_restarting_then_attaches_only_to_selected_transcript(
+    workdir, fake_tools, capsys
+):
+    session_id = "11111111-1111-4111-8111-111111111111"
+    other_session_id = "22222222-2222-4222-8222-222222222222"
+    fake_tools(
+        [
+            {**_row("background", OTHER_ID, workdir), "sessionId": other_session_id},
+            {**_row("background", LIVE_ID, workdir), "sessionId": session_id},
+        ]
+    )
+
+    out, err, status = _resolve_with(workdir, {}, capsys, "--resume-follows", f"--session-id={session_id}")
+
+    assert (out, err, status) == (LIVE_ID, "", 0)
+    assert fake_tools.stopped == []
 
 
 def test_given_several_name_and_directory_matches_when_resolving_then_nothing_is_attached_and_candidates_are_named(

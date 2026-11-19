@@ -60,8 +60,28 @@ _CI_ONLY: tuple[tuple[str, str], ...] = (
 )
 
 
+# Lint-job steps that prepare a self-hosted runner rather than check anything, keyed by
+# step name. They are decided about as whole steps because their shell lines (a mkdir,
+# an installer download, a GITHUB_ENV write) are not checks and would each need a
+# pattern of their own. A name listed here must still exist in the lint job.
+_RUNNER_PROVISIONING_STEPS: dict[str, str] = {
+    "Use a job-scoped home on a self-hosted runner": (
+        "environment provisioning for a self-hosted attempt, not a check -- a local run already has a writable home"
+    ),
+    "Install uv on a self-hosted runner": (
+        "environment provisioning for a self-hosted attempt, not a check -- a local run "
+        "already has uv, and the GitHub-hosted path installs it with setup-uv"
+    ),
+}
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _lint_job_steps(root: Path) -> list[dict]:
+    workflow = yaml.safe_load((root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    return workflow["jobs"]["lint"]["steps"]
 
 
 def lint_job_commands(root: Path) -> list[str]:
@@ -71,12 +91,13 @@ def lint_job_commands(root: Path) -> list[str]:
     without that, a multi-command block would be classified by whichever check
     happened to match first and the rest would go unexamined.
     """
-    workflow = yaml.safe_load((root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
     commands: list[str] = []
-    for step in workflow["jobs"]["lint"]["steps"]:
+    for step in _lint_job_steps(root):
         script = step.get("run")
         if not script:
             continue  # a `uses:` step runs no command of its own
+        if step.get("name") in _RUNNER_PROVISIONING_STEPS:
+            continue
         commands.extend(line.strip() for line in script.splitlines() if line.strip())
     return commands
 
@@ -135,6 +156,25 @@ def test_given_the_local_mapping_when_checked_then_every_named_hook_exists() -> 
     missing = sorted({hook_id for _, hook_id in _LOCALLY_ENFORCED} - configured)
 
     assert not missing, f"_LOCALLY_ENFORCED names pre-commit hooks that are not configured: {missing}"
+
+
+def test_given_the_provisioning_exemptions_when_checked_then_each_names_a_self_hosted_only_lint_step() -> None:
+    """An exemption for a step that is gone, or that runs everywhere, hides a real check.
+
+    A renamed provisioning step would leave a stale name here that exempts nothing, and
+    a step that also ran on GitHub-hosted runners could carry a check past the
+    classifier under a provisioning label.
+    """
+    steps = {step.get("name"): step for step in _lint_job_steps(_repo_root())}
+    missing = sorted(set(_RUNNER_PROVISIONING_STEPS) - set(steps))
+    unguarded = sorted(
+        name
+        for name in _RUNNER_PROVISIONING_STEPS
+        if name in steps and steps[name].get("if") != "runner.environment == 'self-hosted'"
+    )
+
+    assert not missing, f"_RUNNER_PROVISIONING_STEPS names lint steps that do not exist: {missing}"
+    assert not unguarded, f"provisioning exemptions must only run on a self-hosted runner: {unguarded}"
 
 
 def test_given_the_pyright_hook_when_read_then_it_runs_before_code_leaves_the_machine() -> None:

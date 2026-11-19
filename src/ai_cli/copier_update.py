@@ -3,23 +3,34 @@
 Two modes:
 
 * **isolated** (default, AI-CLI-91) — for each target repo, create a temporary git
-  worktree off fresh ``origin/main``, run ``copier update`` there, commit, push
-  ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
+  worktree off fresh ``origin/main``, run ``copier update`` there, and commit.
+  After a successful push to ``main``, sync the main tree and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Before committing, the worktree gets the repo's
   dependency environment so its own commit and push hooks run as they would in the
-  main tree: ``uv sync --frozen`` when it has ``pyproject.toml`` and ``uv.lock``, and
-  the frozen install its JS lockfile names when it has ``package.json``. A missing
-  installer, a failed install or an environment directory that is not git-ignored
-  fails the project before any commit. Conflicts and semantic failures are saved under
-  verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
-  A rejected push is anchored (and copied to origin when its gate allows), filed as a
-  recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
+  main tree: submodules are initialized recursively. If the root contains both
+  ``pyproject.toml`` and ``uv.lock``, only the root Python project is synced with
+  ``uv sync --frozen --all-extras --dev``. Otherwise, first-level Python projects
+  with both files are synced, and a single nested project uses the root environment.
+  JS projects receive the frozen install their lockfile names. After dependency
+  installs, the same package manager runs each declared ``e2e:install`` script
+  in the root package or a workspace named by a literal path or ``dir/*``.
+  A missing installer, a failed install or script, or an environment directory
+  that is not git-ignored fails the project before any commit. Conflicts and
+  semantic failures are saved under verified ``refs/backup/`` anchors and filed
+  as repository issues before cleanup.
+  A fleet gate on main or a worktree push refusal routes the update through a pull request.
+  Other rejected pushes and failed PR attempts are anchored, filed as recovery issues,
+  and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
   commit+push. Fast, but races any active session in that repo. Use only when you
   know no session is working in the target(s).
+
+Both modes read the canonical-readme-sync mapping at call time. Copier excludes
+the mapped mirrors only when updating their source repository. If the mapping
+cannot be read, the update warns once and continues without mirror exclusions.
 
 For an isolated, no-push update, Python callers can pass ``inspect=True`` to
 ``run_copier_update()``. It returns a ``CopierUpdateInspection`` containing each
@@ -39,9 +50,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 import jinja2
@@ -49,6 +61,8 @@ import yaml
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
+from .config import get_canonical_source_repo, get_fleet_registry_path
+from .copier_pr import PendingUpdatePR, _open_update_pr
 from .copier_recovery import (
     _anchor_failed_update,
     _check_recovery_target,
@@ -523,6 +537,53 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
     return path.removesuffix(".jinja")
 
 
+def _load_mirror_excludes(projects_dir: Path) -> dict[str, tuple[str, ...]]:
+    """Map the canonical source repository to the paths Copier would render back to it."""
+    source_repo = get_canonical_source_repo()
+    config_path = projects_dir / source_repo / "config" / "canonical-readme-sync.toml"
+    try:
+        with config_path.open("rb") as file:
+            rows = tomllib.load(file).get("readme", [])
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        _out.warning(Tag.COPIER, "update", f"Could not read {config_path}. Continuing without mirror exclusions.")
+        return {}
+
+    paths = set()
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict) or row.get("consumer_repo") != "project-template":
+                continue
+            consumer_path = row.get("consumer_path")
+            if isinstance(consumer_path, str) and (path := _rendered_template_path(consumer_path, "template")):
+                paths.add(path)
+    return {source_repo: tuple(sorted(paths))}
+
+
+def _mirror_skip_note(paths: tuple[str, ...]) -> str:
+    if not paths:
+        return ""
+    return f" (skipped canonical-readme-sync mirrors from this repository: {', '.join(paths)})"
+
+
+def _load_gated_main_projects() -> set[str]:
+    """Read the existing direct-push gate from the fleet project registry."""
+    path = get_fleet_registry_path()
+    if path is None:
+        return set()
+    with path.open("rb") as file:
+        projects = tomllib.load(file).get("projects", [])
+    if not isinstance(projects, list):
+        raise ValueError("expected a list of fleet projects")
+    return {
+        project["name"].casefold()
+        for project in projects
+        if isinstance(project, dict)
+        and isinstance(project.get("name"), str)
+        and isinstance(project.get("gated_branches"), list)
+        and "main" in project["gated_branches"]
+    }
+
+
 def _question_defaults(config: dict[str, object]) -> dict[str, object]:
     """Literal defaults of the template's questions, so an answer the project never stored still renders."""
     defaults: dict[str, object] = {}
@@ -811,7 +872,11 @@ def _hide_answers_change(project_dir: Path, answers_file: Path, hide: bool = Tru
 
 
 def _run_copier_update(
-    project_dir: Path, copier_bin: str, resolved_source: str | None = None
+    project_dir: Path,
+    copier_bin: str,
+    resolved_source: str | None = None,
+    *,
+    mirror_excludes: tuple[str, ...] = (),
 ) -> tuple[str | None, dict[str, object] | None, TemplateChanges | None]:
     """Run Copier with stored answers and return any safety failure."""
     answers_file = project_dir / ".copier-answers.yml"
@@ -827,6 +892,16 @@ def _run_copier_update(
     template_changes = _template_diff(source, previous_commit, answers_before)
     if template_changes is None:
         return "could not inspect template diff for parity verification", None, None
+    if mirror_excludes:
+        template_changes = replace(
+            template_changes, excluded_on_update=template_changes.excluded_on_update.union(mirror_excludes)
+        )
+
+    exclude_args = []
+    for path in mirror_excludes:
+        # Copier uses gitignore patterns. Anchor them to the destination root and match literal paths.
+        pattern = re.sub(r"([\\*?\[\] ])", r"\\\1", path)
+        exclude_args.extend(("--exclude", f"/{pattern}"))
 
     original_source = original_answers["_src_path"]
     update_answers = original_answers.copy()
@@ -851,6 +926,7 @@ def _run_copier_update(
                 "--trust",
                 "--vcs-ref",
                 "HEAD",
+                *exclude_args,
             ],
             cwd=project_dir,
             capture_output=True,
@@ -884,6 +960,8 @@ def _run_copier_update(
 _WT_NAME = "copier-update"
 _WT_BRANCH = "copier-update-tmp"
 _COMMIT_MSG = "chore: copier update from project-template"
+# A repository that enforces delegation provenance requires this terminal block.
+_COMMIT_TRAILER = "Delegated-to: none"
 
 
 def _repo_root(path: Path) -> Path | None:
@@ -938,6 +1016,22 @@ def _git_read(args: list[str]) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout if r.returncode == 0 else None
+
+
+def _worktree_removed(root: Path, wt_dir: Path, branch: str) -> bool:
+    remaining = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
+    listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+    return (
+        not os.path.lexists(wt_dir)
+        and remaining is not None
+        and not remaining.strip()
+        and listing is not None
+        and not any(
+            Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        )
+    )
 
 
 def _leftover_hold_reason(root: Path, wt_dir: Path, branch: str) -> str | None:
@@ -1155,7 +1249,67 @@ _JS_INSTALLERS = (
 )
 
 
-def _install_js_dependencies(wt_dir: Path) -> str | None:
+def _read_package_manifest(package_dir: Path) -> dict[str, object]:
+    try:
+        manifest = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def _js_e2e_packages(wt_dir: Path) -> Iterator[Path]:
+    root = wt_dir.resolve()
+    manifest = _read_package_manifest(root)
+    scripts = manifest.get("scripts")
+    if isinstance(scripts, dict) and "e2e:install" in scripts:
+        yield root
+
+    workspaces = manifest.get("workspaces")
+    if isinstance(workspaces, dict):
+        workspaces = workspaces.get("packages")
+    if not isinstance(workspaces, list):
+        return
+    for workspace in workspaces:
+        if not isinstance(workspace, str):
+            continue
+        pattern = Path(workspace)
+        if pattern.anchor:
+            continue
+        try:
+            if workspace.endswith("/*"):
+                parent = (root / pattern.parent).resolve()
+                candidates = sorted(parent.glob("*")) if parent.is_relative_to(root) else []
+            else:
+                candidates = [root / pattern]
+        except (OSError, RuntimeError, ValueError):
+            continue
+        for candidate in candidates:
+            try:
+                package_dir = candidate.resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if package_dir == root or not package_dir.is_relative_to(root):
+                continue
+            scripts = _read_package_manifest(package_dir).get("scripts")
+            if isinstance(scripts, dict) and "e2e:install" in scripts:
+                yield package_dir
+
+
+def _run_js_e2e_installs(installs: dict[Path, tuple[str, str]]) -> str | None:
+    for package_dir, (tool, tool_bin) in installs.items():
+        result = subprocess.run(
+            [tool_bin, "run", "e2e:install"], cwd=package_dir, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return (
+                f"dependency install in {package_dir}: `{tool} run e2e:install` "
+                f"failed with exit status {result.returncode}: {output}"
+            )
+    return None
+
+
+def _install_js_dependencies(wt_dir: Path, e2e_installs: dict[Path, tuple[str, str]] | None = None) -> str | None:
     """Install the consumer's JS dependencies in wt_dir; return an error message or None."""
     if not (wt_dir / "package.json").is_file():
         return None
@@ -1179,29 +1333,43 @@ def _install_js_dependencies(wt_dir: Path) -> str | None:
         )
         if ignored.returncode != 0:
             return "dependency install: node_modules is not git-ignored, so the commit would stage it"
+        if e2e_installs is None:
+            return _run_js_e2e_installs(dict.fromkeys(_js_e2e_packages(wt_dir), (tool, tool_bin)))
+        for package_dir in _js_e2e_packages(wt_dir):
+            e2e_installs.setdefault(package_dir, (tool, tool_bin))
         return None
     return None
 
 
-def _sync_python_dependencies(wt_dir: Path) -> str | None:
+def _sync_python_dependencies(wt_dir: Path, environment_root: Path | None = None) -> str | None:
     """Sync the consumer's locked uv environment in wt_dir; return an error message or None.
 
     A fresh worktree has no .venv, so a hook run through `uv run --no-sync` gets an empty environment.
-    `--frozen` installs exactly what uv.lock pins, with uv's default groups (`dev` included).
+    `--frozen` uses uv.lock; all extras and the dev group provide hook dependencies.
     """
     if not ((wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()):
         return None
-    display = "uv sync --frozen"
+    display = "uv sync --frozen --all-extras --dev"
     # shutil.which resolves uv.exe on Windows.
     uv_bin = shutil.which("uv")
     if uv_bin is None:
         return f"dependency install: uv not found in PATH (needed for uv.lock); `{display}` not run"
-    result = subprocess.run([uv_bin, "sync", "--frozen"], cwd=wt_dir, capture_output=True, text=True, check=False)
+    env = (
+        None if environment_root is None else {**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment_root / ".venv")}
+    )
+    result = subprocess.run(
+        [uv_bin, "sync", "--frozen", "--all-extras", "--dev"],
+        cwd=wt_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
     if result.returncode != 0:
         output = (result.stderr.strip() or result.stdout.strip())[-2000:]
         return f"dependency install `{display}` failed with exit status {result.returncode}: {output}"
     staged = subprocess.run(
-        ["git", "-C", str(wt_dir), "status", "--porcelain", "--untracked-files=all", "--", ".venv"],
+        ["git", "-C", str(environment_root or wt_dir), "status", "--porcelain", "--untracked-files=all", "--", ".venv"],
         env=_git_env(),
         capture_output=True,
         text=True,
@@ -1212,6 +1380,39 @@ def _sync_python_dependencies(wt_dir: Path) -> str | None:
     return None
 
 
+def _prepare_dependencies(wt_dir: Path) -> str | None:
+    """Prepare locked environments and submodules before attempting a commit."""
+    if (wt_dir / ".gitmodules").is_file():
+        result = subprocess.run(
+            ["git", "-C", str(wt_dir), "submodule", "update", "--init", "--recursive"],
+            env=_git_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return f"dependency install: submodule initialization failed with exit status {result.returncode}: {output}"
+
+    children = sorted(p for p in wt_dir.iterdir() if not p.name.startswith(".") and p.is_dir() and not p.is_symlink())
+    python_dirs = [p for p in children if (p / "pyproject.toml").is_file() and (p / "uv.lock").is_file()]
+    root_python = (wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()
+    # Finish frozen installs before scripts put browser binaries into node_modules.
+    e2e_installs: dict[Path, tuple[str, str]] = {}
+    error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir, e2e_installs)
+    if error:
+        return error
+    for child in children:
+        python_error = None
+        if not root_python:
+            environment_root = wt_dir if len(python_dirs) == 1 and child in python_dirs else None
+            python_error = _sync_python_dependencies(child, environment_root)
+        error = python_error or _install_js_dependencies(child, e2e_installs)
+        if error:
+            return f"{child.name}: {error}"
+    return _run_js_e2e_installs(e2e_installs)
+
+
 def _do_update_in_worktree(
     wt_dir: Path,
     root: Path,
@@ -1219,7 +1420,10 @@ def _do_update_in_worktree(
     push: bool,
     resolved_source: str | None = None,
     inspect: bool = False,
-) -> tuple[str, str | list[str] | DeliveredUpdate]:
+    *,
+    mirror_excludes: tuple[str, ...] = (),
+    pr_only: bool = False,
+) -> tuple[str, str | list[str] | DeliveredUpdate | PendingUpdatePR]:
     """Run copier + commit/push inside an already-created worktree.
 
     Returns (status, detail) where status is one of:
@@ -1228,10 +1432,13 @@ def _do_update_in_worktree(
       nochange  — copier produced no changes — detail unused
       conflict  — merge conflicts — detail = list[str] of relative paths
       parityfail — a template file or hunk did not land — detail = str (message)
-      pushfail  — committed but push rejected — detail = str (git stderr)
+      prpending: update has an open pull request, detail = PendingUpdatePR
+      pushfail  — committed but push or PR failed — detail = str (diagnostics)
       failed    — copier or commit failed — detail = str (message)
     """
-    update_error, original_answers, template_changes = _run_copier_update(wt_dir, copier_bin, resolved_source)
+    update_error, original_answers, template_changes = _run_copier_update(
+        wt_dir, copier_bin, resolved_source, mirror_excludes=mirror_excludes
+    )
     if update_error is not None:
         if _is_semantic_update_failure(update_error):
             return "parityfail", update_error
@@ -1278,7 +1485,7 @@ def _do_update_in_worktree(
         return "parityfail", parity_error
 
     # Installed after Copier so the dependencies match the updated manifests and lockfiles.
-    install_error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir)
+    install_error = _prepare_dependencies(wt_dir)
     if install_error is not None:
         return "failed", install_error
 
@@ -1290,7 +1497,7 @@ def _do_update_in_worktree(
         if inspect and changed_files is None:
             return "failed", "could not capture delivered content"
         commit = subprocess.run(
-            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+            ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG, "-m", _COMMIT_TRAILER],
             capture_output=True,
             text=True,
             env=_git_env(),
@@ -1315,24 +1522,36 @@ def _do_update_in_worktree(
         assert changed_files is not None  # guaranteed by check at line 650
         delivered_update = DeliveredUpdate(wt_dir, commit_hash.stdout.strip(), changed_files)
 
-    if push:
-        pr = subprocess.run(
+    if not push:
+        return "ok", delivered_update if inspect else ""
+
+    report = "Direct push to main is gated by the fleet project registry."
+    if not pr_only:
+        pushed = subprocess.run(
             ["git", "-C", str(wt_dir), "push", "origin", "HEAD:main"],
             capture_output=True,
             text=True,
             env=_git_env(),
             check=False,
         )
-        if pr.returncode != 0:
-            # A pre-push hook (the repo's test gate) reports on stdout, so stderr alone
-            # shows only git's closing "failed to push some refs" line.
-            report = "\n".join(part for part in (pr.stdout.strip(), pr.stderr.strip()) if part)
+        if pushed.returncode == 0:
+            # Keep the repo's main working tree in sync with what we just shipped.
+            subprocess.run(
+                ["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False
+            )
+            repair_bare_worktree_config(root)
+            return "ok", delivered_update if inspect else ""
+        # Hooks may report on stdout while Git's closing failure line is on stderr.
+        report = "\n".join(part for part in (pushed.stdout.strip(), pushed.stderr.strip()) if part)
+        if "worktree push refused" not in report:
             return "pushfail", (report or "push failed")
-        # Keep the repo's main working tree in sync with what we just shipped.
-        subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
-        repair_bare_worktree_config(root)
 
-    return "ok", delivered_update if inspect else ""
+    if resolved_source is None:
+        return "pushfail", f"{report}\nCould not resolve the template version for the PR."
+    try:
+        return "prpending", _open_update_pr(wt_dir, root.name, resolved_source)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return "pushfail", f"{report}\n{exc}"
 
 
 def _update_one_isolated(
@@ -1341,10 +1560,13 @@ def _update_one_isolated(
     push: bool = True,
     inspect: bool = False,
     resolved_source: str | None = None,
-) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure]:
+    *,
+    mirror_excludes: tuple[str, ...] = (),
+    pr_only: bool = False,
+) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure | PendingUpdatePR]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
-    On ok/nochange/failed the temp worktree is removed. Conflicts and semantic
+    On ok/nochange/failed/prpending the temp worktree is removed. Conflicts and semantic
     failures and rejected pushes are anchored and removed. Recovery failures keep
     the checkout and return ``recoveryfail``. A
     leftover from a prior run that is not provably disposable returns ``kept`` with
@@ -1408,10 +1630,16 @@ def _update_one_isolated(
         # The required isolated worktree cannot be created, so retrying without repair will not help.
         return "failed", f"worktree add failed: {add.stderr.strip()}"
 
-    if inspect:
-        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source, inspect=True)
-    else:
-        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source)
+    status, detail = _do_update_in_worktree(
+        wt_dir,
+        root,
+        copier_bin,
+        push,
+        resolved_source,
+        inspect=inspect,
+        mirror_excludes=mirror_excludes,
+        pr_only=pr_only,
+    )
 
     if inspect and status == "ok":
         assert isinstance(detail, DeliveredUpdate)
@@ -1461,19 +1689,7 @@ def _update_one_isolated(
             else:
                 _check_recovery_target(root, wt_dir, branch, ref)
             _cleanup_worktree(root, wt_dir, branch)
-            remaining = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
-            listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
-            if (
-                os.path.lexists(wt_dir)
-                or remaining is None
-                or remaining.strip()
-                or listing is None
-                or any(
-                    Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
-                    for line in listing.splitlines()
-                    if line.startswith("worktree ")
-                )
-            ):
+            if not _worktree_removed(root, wt_dir, branch):
                 raise RuntimeError(f"backup anchor {ref}: worktree or branch cleanup failed")
             if filing_error:
                 return "recoveryfail", f"backup anchor {ref}: issue filing failed: {filing_error}"
@@ -1486,8 +1702,11 @@ def _update_one_isolated(
             return "recoveryfail", f"{wt_dir}: recovery failed: {exc}"
 
     # Clean updates and transient failures retain their existing cleanup policy.
-    if status in ("ok", "nochange", "failed"):
+    if status in ("ok", "nochange", "failed", "prpending"):
         _cleanup_worktree(root, wt_dir, branch)
+        if status == "prpending" and not _worktree_removed(root, wt_dir, branch):
+            assert isinstance(detail, PendingUpdatePR)
+            return "recoveryfail", f"{detail.url}: worktree or branch cleanup failed"
 
     return status, detail
 
@@ -1507,7 +1726,7 @@ def run_copier_update(
 ) -> int | CopierUpdateInspection:
     """Run copier update across all matching projects.
 
-    isolate=True (default) runs each repo in a throwaway worktree and ships to main;
+    isolate=True (default) runs each repo in a throwaway worktree and delivers the update;
     isolate=False runs copier directly in each repo's main tree (legacy, unsafe while
     sessions are active).
 
@@ -1545,27 +1764,40 @@ def run_copier_update(
             _out.error(Tag.COPIER, "update", f"project '{project_filter}' not found or not copier-managed.")
             return EX_CONFIG
 
+    mirror_excludes = _load_mirror_excludes(projects_dir)
     if dry_run:
         mode = "isolated worktree → main" if isolate else "direct (main tree)"
         _out.emit(Tag.COPIER, "update", f"Would update {len(projects)} project(s) [{mode}]:")
         for p in projects:
-            _out.emit(Tag.COPIER, "update", f"  {p.name}")
+            _out.emit(Tag.COPIER, "update", f"  {p.name}{_mirror_skip_note(mirror_excludes.get(p.name, ()))}")
         _out.emit(Tag.COPIER, "update", "\n(dry-run: no changes made)")
         return 0
 
     if isolate:
-        if inspect:
-            return _run_isolated(projects, copier_bin, push, inspect=True)
-        return _run_isolated(projects, copier_bin, push)
-    return _run_direct(projects, copier_bin)
+        return _run_isolated(projects, copier_bin, push, inspect, mirror_excludes=mirror_excludes)
+    return _run_direct(projects, copier_bin, mirror_excludes)
 
 
 def _run_isolated(
-    projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
+    projects: list[Path],
+    copier_bin: str,
+    push: bool,
+    inspect: bool = False,
+    *,
+    mirror_excludes: dict[str, tuple[str, ...]] | None = None,
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
+    gated_projects = set()
+    if push:
+        try:
+            gated_projects = _load_gated_main_projects()
+        except (OSError, ValueError):
+            _out.error(Tag.COPIER, "update", "Could not read the fleet project registry for main push gates.")
+            return EX_CONFIG
     with _prepared_copier_sources(projects) as prepared_sources:
-        return _run_isolated_prepared(projects, copier_bin, push, inspect, prepared_sources)
+        return _run_isolated_prepared(
+            projects, copier_bin, push, inspect, prepared_sources, mirror_excludes or {}, gated_projects
+        )
 
 
 def _run_isolated_prepared(
@@ -1574,35 +1806,35 @@ def _run_isolated_prepared(
     push: bool,
     inspect: bool,
     prepared_sources: dict[Path, PreparedCopierSource],
+    mirror_excludes: dict[str, tuple[str, ...]],
+    gated_projects: set[str],
 ) -> int | CopierUpdateInspection:
     """Run isolated updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
+    pending = 0
     has_partial_mutation = False
     has_config_failure = False
     has_transient_failure = False
     delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
-        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
+        excludes = mirror_excludes.get(project_dir.name, ())
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}...{_mirror_skip_note(excludes)} ", nl=False)
         prepared = prepared_sources.get(project_dir)
         note = _template_commit_note(prepared)
         if prepared is not None and prepared.failure is not None:
             status, detail = "failed", prepared.failure
-        elif inspect:
-            if prepared is None:
-                status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
-            else:
-                status, detail = _update_one_isolated(
-                    project_dir, copier_bin, push=push, inspect=True, resolved_source=prepared.source
-                )
         else:
-            if prepared is None:
-                status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
-            else:
-                status, detail = _update_one_isolated(
-                    project_dir, copier_bin, push=push, resolved_source=prepared.source
-                )
+            status, detail = _update_one_isolated(
+                project_dir,
+                copier_bin,
+                push=push,
+                inspect=inspect,
+                resolved_source=prepared.source if prepared is not None else None,
+                mirror_excludes=excludes,
+                pr_only=project_dir.name.casefold() in gated_projects,
+            )
         if status == "ok":
             result = "✓ updated + pushed" if push else "✓ updated (committed, not pushed)"
             _out.cont(Tag.COPIER, "update", result + note)
@@ -1610,6 +1842,10 @@ def _run_isolated_prepared(
             if inspect:
                 assert isinstance(detail, DeliveredUpdate)
                 delivered_updates.append(detail)
+        elif status == "prpending":
+            assert isinstance(detail, PendingUpdatePR)
+            _out.cont(Tag.COPIER, "update", f"✓ updated, PR pending #{detail.number} {detail.url}" + note)
+            pending += 1
         elif status == "nochange":
             _out.cont(Tag.COPIER, "update", "· no changes" + note)
         elif status == "conflict":
@@ -1672,6 +1908,8 @@ def _run_isolated_prepared(
 
     if failed:
         _out.emit(Tag.COPIER, "update", f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+    elif pending:
+        _out.emit(Tag.COPIER, "update", f"All updates succeeded ({changed} updated, {pending} PR pending).")
     else:
         _out.emit(Tag.COPIER, "update", f"All projects up to date ({changed} updated).")
     if has_partial_mutation:
@@ -1687,14 +1925,17 @@ def _run_isolated_prepared(
     return exit_code
 
 
-def _run_direct(projects: list[Path], copier_bin: str) -> int:
+def _run_direct(projects: list[Path], copier_bin: str, mirror_excludes: dict[str, tuple[str, ...]]) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
     with _prepared_copier_sources(projects) as prepared_sources:
-        return _run_direct_prepared(projects, copier_bin, prepared_sources)
+        return _run_direct_prepared(projects, copier_bin, prepared_sources, mirror_excludes)
 
 
 def _run_direct_prepared(
-    projects: list[Path], copier_bin: str, prepared_sources: dict[Path, PreparedCopierSource]
+    projects: list[Path],
+    copier_bin: str,
+    prepared_sources: dict[Path, PreparedCopierSource],
+    mirror_excludes: dict[str, tuple[str, ...]],
 ) -> int:
     """Run direct updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [direct — main tree]:\n")
@@ -1702,14 +1943,15 @@ def _run_direct_prepared(
     has_partial_mutation = False
     has_transient_failure = False
     for project_dir in projects:
-        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}... ", nl=False)
+        excludes = mirror_excludes.get(project_dir.name, ())
+        _out.emit(Tag.COPIER, "update", f"  {project_dir.name}...{_mirror_skip_note(excludes)} ", nl=False)
         prepared = prepared_sources.get(project_dir)
         note = _template_commit_note(prepared)
         if prepared is not None and prepared.failure is not None:
             update_error, template_changes = prepared.failure, None
         else:
             update_error, _, template_changes = _run_copier_update(
-                project_dir, copier_bin, prepared.source if prepared is not None else None
+                project_dir, copier_bin, prepared.source if prepared is not None else None, mirror_excludes=excludes
             )
         if update_error is not None:
             semantic_failure = _is_semantic_update_failure(update_error)

@@ -27,6 +27,7 @@ from ai_cli.session_script import get_engine_script
 @pytest.fixture
 def programs(tmp_path, monkeypatch):
     legacy = (Path(__file__).parent / "fixtures/session_restart_legacy.txt").read_text(encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
     legacy = legacy.replace("__PROJECT_DIR__", tmp_path.as_posix())
     metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     metadata = json.loads(shlex.split(metadata_line)[2])
@@ -63,6 +64,39 @@ def test_given_program_launched_before_plugin_refresh_when_compared_then_it_is_c
     bracket = r"(?ms)^    # BEGIN PLUGIN REFRESH[^\n]*\n.*?^    # END PLUGIN REFRESH\n"
     before_feature = re.sub(bracket, "", current)
     assert before_feature != current
+    assert session_restart._compatible(before_feature, current)
+    assert session_restart._compatible(current, before_feature)
+
+
+_STOP_ON_EVERY_CLEAN_EXIT = """    # BEGIN SHELL RETURN interrupt-exit
+      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
+      # a clean exit or status 130 is a deliberate stop, even immediately after
+      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell
+      # whose interactive prompt consumes all further interrupts.
+      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then
+        _ai_final_manual_exit
+        exit 77
+      fi
+    # END SHELL RETURN
+"""
+
+
+def test_given_program_that_stops_on_every_clean_exit_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN SHELL RETURN interrupt-exit\n.*?^    # END SHELL RETURN\n"
+    running = re.sub(bracket, lambda _: _STOP_ON_EVERY_CLEAN_EXIT, current)
+    assert running != current
+    assert session_restart._compatible(running, current)
+    tampered = running.replace("agent_exit_code == 130 || agent_exit_code == 0", "agent_exit_code == 130")
+    assert not session_restart._compatible(tampered, current)
+
+
+def test_given_program_launched_before_codex_display_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN CODEX DISPLAY[^\n]*\n.*?^    # END CODEX DISPLAY\n"
+    before_feature = re.sub(bracket, "", current)
+    assert before_feature != current
+    assert "resolve-codex-display" in current and "resolve-codex-display" not in before_feature
     assert session_restart._compatible(before_feature, current)
     assert session_restart._compatible(current, before_feature)
 
@@ -165,6 +199,7 @@ def test_given_old_supervisor_when_ac_i_4_child_refreshes_then_real_final_exit_i
     _wait_for(lambda: time.monotonic() - observed >= 4, supervisor)
     state.register(SESSION, recipe={"argv": ["ai", "c", "1"], "cwd": str(root / "myproject")}, host="host-a")
     _install_real_lifecycle(root / "bin/ai", root, monkeypatch)
+    (root / "myproject" / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n', encoding="utf-8")
     metadata = session_restart._object(config.get_xdg_state_home() / f"session-meta-{SESSION}.json")
     old_inode = script.stat().st_ino
     main._write_launch_script_if_changed(script, main._engine_script_from_meta(metadata))

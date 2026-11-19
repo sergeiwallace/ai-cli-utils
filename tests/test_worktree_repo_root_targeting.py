@@ -42,6 +42,7 @@ def _clone_with_remote(tmp_path: Path, name: str) -> Path:
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
     (seed / f"{name}.md").write_text(f"{name} content\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -73,12 +74,12 @@ def test_given_cwd_in_another_repository_when_created_with_repo_root_then_the_wo
     monkeypatch.chdir(bystander)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        worktree = create_worktree("session-1", repo_root=target)
+        worktree = create_worktree("myrepo-tst-1", repo_root=target)
 
     assert worktree is not None
-    assert worktree == target / ".worktrees" / "session-1"
+    assert worktree == target / ".worktrees" / "myrepo-tst-1"
     assert worktree in registered_worktrees(target), "the target repository must own the new worktree"
-    assert _git("rev-parse", "--verify", "wt-session-1", cwd=target, check=False).returncode == 0
+    assert _git("rev-parse", "--verify", "wt-myrepo-tst-1", cwd=target, check=False).returncode == 0
     assert (worktree / "myproject.md").is_file(), "the target repository's content must be checked out"
 
 
@@ -96,9 +97,9 @@ def test_given_cwd_in_another_repository_when_created_with_repo_root_then_that_r
     before = registered_worktrees(bystander)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
-        create_worktree("session-1", repo_root=target)
+        create_worktree("myrepo-tst-1", repo_root=target)
 
     assert registered_worktrees(bystander) == before, "the repository the caller stood in gained a worktree"
-    assert _git("rev-parse", "--verify", "wt-session-1", cwd=bystander, check=False).returncode != 0, (
+    assert _git("rev-parse", "--verify", "wt-myrepo-tst-1", cwd=bystander, check=False).returncode != 0, (
         "the session branch was created in the wrong repository"
     )
