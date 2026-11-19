@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -5500,7 +5501,11 @@ def _do_session_launch(
                     auth_fault_patterns=remote_cfg.get(
                         "reconnect_auth_patterns", _transport.DEFAULT_AUTH_FAULT_PATTERNS
                     ),
-                    on_clean_exit=(lambda: _mark_session_ended(reporter, _record_id)) if _record_id else None,
+                    # A partial, not a lambda: pyright narrows `_record_id` here in the
+                    # conditional, but not inside a closure in a function this large.
+                    on_clean_exit=(
+                        functools.partial(_mark_session_ended, reporter, _record_id) if _record_id else None
+                    ),
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                 )
             )
