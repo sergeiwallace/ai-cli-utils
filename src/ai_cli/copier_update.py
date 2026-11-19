@@ -8,11 +8,11 @@ Two modes:
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Before committing, the worktree gets the repo's
   dependency environment so its own commit and push hooks run as they would in the
-  main tree: submodules are initialized recursively; Python projects at the root or
-  one level below with ``pyproject.toml`` and ``uv.lock`` receive
-  ``uv sync --frozen --all-extras --dev``, and JS projects receive the frozen install
-  their lockfile names. A single nested Python project uses the root environment when
-  no root Python project exists. A missing
+  main tree: submodules are initialized recursively. If the root contains both
+  ``pyproject.toml`` and ``uv.lock``, only the root Python project is synced with
+  ``uv sync --frozen --all-extras --dev``. Otherwise, first-level Python projects
+  with both files are synced, and a single nested project uses the root environment.
+  JS projects receive the frozen install their lockfile names. A missing
   installer, a failed install or an environment directory that is not git-ignored
   fails the project before any commit. Conflicts and semantic failures are saved under
   verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
@@ -1297,8 +1297,11 @@ def _prepare_dependencies(wt_dir: Path) -> str | None:
     if error:
         return error
     for child in children:
-        environment_root = wt_dir if not root_python and len(python_dirs) == 1 and child in python_dirs else None
-        error = _sync_python_dependencies(child, environment_root) or _install_js_dependencies(child)
+        python_error = None
+        if not root_python:
+            environment_root = wt_dir if len(python_dirs) == 1 and child in python_dirs else None
+            python_error = _sync_python_dependencies(child, environment_root)
+        error = python_error or _install_js_dependencies(child)
         if error:
             return f"{child.name}: {error}"
     return None
