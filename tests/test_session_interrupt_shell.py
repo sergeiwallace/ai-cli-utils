@@ -397,6 +397,26 @@ def test_given_auto_policy_when_engine_crashes_then_wrapper_restarts(pane_sessio
 
 
 @pytest.mark.parametrize("remote", [False, True])
+def test_given_healthy_run_when_agent_exits_cleanly_then_wrapper_restarts_it(pane_session, remote):
+    # `/exit`, Ctrl+D and Claude Code's own double Ctrl+C all return 0.
+    pane_session.start(remote=remote)
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_returns(pane_session, remote):
+    pane_session.start(remote=remote, caller=True)
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
+    pane_session.interrupt()
+    pane_session.assert_caller()
+    assert pane_session.count() == 1, "an interrupt in the restart window relaunched the engine"
+
+
+@pytest.mark.parametrize("remote", [False, True])
 def test_given_policy_changed_to_never_when_engine_exits_then_same_pane_returns_to_shell(pane_session, remote):
     pane_session.start(remote=remote)
     pane_session.set_policy("never")
