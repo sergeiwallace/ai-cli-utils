@@ -1767,6 +1767,10 @@ with open(path, 'w') as f:
         [[ "$_restart_window" =~ ^[0-9]+$ ]] || _restart_window=3
       fi
       if (( _restart_window > 0 )); then
+        # Armed twice on purpose. The first write makes a Ctrl+C during the notice's
+        # Python start count as a stop, not as a first press that would only arm the
+        # double-press prompt. The second starts the full window once the notice is
+        # on screen, since rendering it can take seconds on a loaded host.
         printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
         _ai_emit info exit "Agent exited; restarting in ${{_restart_window}}s. Press Ctrl+C to stop."
         printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
