@@ -111,6 +111,25 @@ class SqliteRegistry(reg.Registry):
             )
 
     # -- the registry interface
+    def inspect(self) -> reg.Snapshot:
+        """Read the local registry without creating, seeding or taking its writer lock."""
+        try:
+            self.path.stat()
+        except FileNotFoundError:
+            return reg.Snapshot(tip=None)
+
+        uri = self.path.absolute().as_uri() + "?mode=ro"
+        try:
+            with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=self.timeout_s)) as connection:
+                connection.row_factory = sqlite3.Row
+                # Keep all table reads on one committed snapshot, including during first use.
+                connection.execute("begin")
+                if connection.execute("select 1 from sqlite_master where type = 'table' and name = 'meta'").fetchone():
+                    return self._tables(connection).snapshot(None, fetched=True, policy_schemas=self.policy_schemas)
+        except sqlite3.Error as exc:
+            raise reg.RegistryError(f"cannot read the local registry {self.path}: {exc}") from exc
+        return reg.Snapshot(tip=None)
+
     def snapshot(self, *, fetch: bool = True) -> reg.Snapshot:
         del fetch
         with self._locked(), contextlib.closing(self.connect()) as connection:

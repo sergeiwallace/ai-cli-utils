@@ -10,6 +10,8 @@ import shutil
 import sys
 
 from . import config as _config
+from .background_attach import DAEMON_IDENTITY_ENV
+from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
@@ -1124,6 +1126,13 @@ def get_engine_script(
         fi
       fi
     # END PLUGIN REFRESH
+    # BEGIN BACKGROUND ATTACH client-environment
+      # Scrub after direnv has loaded. The viewer can start the shared daemon,
+      # and the target worker already has its own environment.
+      if [[ "$1" == claude && "${{2:-}}" == attach ]]; then
+        set -- env {" ".join(f"-u {key}" for key in DAEMON_IDENTITY_ENV)} "$@"
+      fi
+    # END BACKGROUND ATTACH
     # BEGIN PINNED RESTART exec
       if ${{_restart_event_completion:-false}}; then
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
@@ -1576,8 +1585,19 @@ with open(path, 'w') as f:
       # Resolve before every Claude Code launch so its exact transcript UUID can
       # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
-        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-        resolve_status=$?
+    # BEGIN RESTART TRANSCRIPT
+        _cc_restart=""
+        if ! $first_run || [[ -n "${{{LAUNCH_REASON_VAR}:-}}" ]]; then _cc_restart="--restart"; fi
+        _resolve_cc_transcript() {{
+          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name" ${{_cc_restart:+"$_cc_restart"}})
+          resolve_status=$?
+          if [[ -n "$_cc_restart" && $resolve_status -ne 0 && $resolve_status -ne 2 ]]; then
+            _ai_persist_exit unknown '{{"reason":"restart transcript resolution refused"}}'
+            exit 77
+          fi
+        }}
+        _resolve_cc_transcript
+    # END RESTART TRANSCRIPT
       fi
     # BEGIN BACKGROUND ATTACH resolution
       # A conversation moved to the background ("Move to background and exit")
@@ -1593,7 +1613,12 @@ with open(path, 'w') as f:
       if [[ "$engine" == "c" ]]; then
         _bg_resume=""
         _bg_prompted=""
-        if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then _bg_resume="--resume-follows"; fi
+        _bg_conversation=""
+        if [[ -n "$_cc_restart" && -n "$matched_file" ]]; then
+          _bg_conversation="--session-id=${{matched_file##*/}}"
+          _bg_conversation="${{_bg_conversation%.jsonl}}"
+        fi
+        if [[ -n "$matched_file" && ( $resolve_status -eq 0 || -n "$_cc_restart" ) ]]; then _bg_resume="--resume-follows"; fi
         if [[ -f "$prompt_file" ]]; then _bg_prompted="--prompted"; fi
         _bg_warned=false
         _bg_hold_start=$(date +%s)
@@ -1603,7 +1628,7 @@ with open(path, 'w') as f:
           _bg_status=0
           _bg_attempt=$((_bg_attempt + 1))
           _bg_held=$(( $(date +%s) - _bg_hold_start ))
-          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} "--held-seconds=$_bg_held" "--hold-attempt=$_bg_attempt" "--relaunch-started-at=$_bg_relaunch_started_at" --defer-hold-warning) || _bg_status=$?
+          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} ${{_bg_conversation:+"$_bg_conversation"}} "--held-seconds=$_bg_held" "--hold-attempt=$_bg_attempt" "--relaunch-started-at=$_bg_relaunch_started_at" --defer-hold-warning) || _bg_status=$?
           if [[ $_bg_status -eq 76 ]]; then _bg_gave_up=true; fi
           # A lookup that crashed cannot say there is no live copy: when a resume
           # would follow, hold on any failure, not only 75. Ask a separate config
@@ -1625,8 +1650,11 @@ with open(path, 'w') as f:
         # 73: the lookup stopped a copy hosted in another session's environment. Its
         # conversation is now the newest transcript, so resolve the resume target again.
         if [[ $_bg_status -eq 73 ]]; then
-          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-          resolve_status=$?
+          _resolve_cc_transcript
+        fi
+        if [[ -n "$_cc_restart" && $resolve_status -eq 2 && -z "$bg_target" && $_bg_gave_up == false ]]; then
+          _ai_persist_exit unknown '{{"reason":"restart transcript is still running"}}'
+          exit 77
         fi
       fi
     # END BACKGROUND ATTACH

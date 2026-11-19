@@ -1,0 +1,30 @@
+name: Epic
+description: A body of work delivered by its stories and tasks, which are its sub-issues.
+labels: [epic]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: One or two sentences on what this epic delivers and why it matters to whoever asked.
+    validations:
+      required: true
+  - type: textarea
+    id: success-criteria
+    attributes:
+      label: Success criteria
+      placeholder: |
+        1. A criterion a reader can check.
+        2. A criterion a reader can check.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      value: |
+        - In scope: ...
+        - Out of scope: ...
+  - type: textarea
+    id: release
+    attributes:
+      label: Release
+      description: The release or milestone this epic targets, and which sub-issues must land for it.

@@ -13,6 +13,14 @@ name: Wiki
 # interface. Until then `publish` fails and says so. If the default token cannot push to
 # the wiki, `publish` fails and stops for maintainer direction; it never tries another
 # credential.
+#
+# Every job's `runs-on` follows the hosted-first fallback contract with the OS key
+# `release`: attempt 1 always asks for the GitHub-hosted label, and a later attempt
+# asks for a self-hosted label set only when the repository variable
+# CI_FALLBACK_RUNS_ON authorizes that exact run, attempt and OS key. Steps guarded by
+# `runner.environment` are the self-hosted variants. A self-hosted runner must provide
+# git and rsync. docs/procedures/github-actions-status.md describes the contract, and
+# tests/test_ci_runner_fallback_contract.py pins it.
 on:
   push:
     branches: [main]
@@ -28,7 +36,7 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-release', github.run_id, github.run_attempt)] || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -36,9 +44,33 @@ jobs:
         with:
           ref: refs/heads/main
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # A self-hosted runner's account may have no writable home, and the uv cache
+      # and interpreter downloads write under it.
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
+      - if: runner.environment == 'github-hosted'
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
+      # setup-uv can hang behind a self-hosted runner's egress proxy, so a self-hosted
+      # attempt uses uv's installer script, fetching uv from GitHub releases. uv then
+      # takes the interpreter version from `.python-version`.
+      - name: Install uv on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        env:
+          UV_INSTALLER_GITHUB_BASE_URL: https://github.com
+          UV_INSTALL_DIR: ${{ runner.temp }}/uv-bin
+          UV_NO_MODIFY_PATH: "1"
+          UV_DISABLE_UPDATE: "1"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh -o "$RUNNER_TEMP/uv-installer.sh"
+          sh "$RUNNER_TEMP/uv-installer.sh"
+          "$UV_INSTALL_DIR/uv" --version
+          echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - run: uv sync --locked --dev
       # --check first: a stale reference on main fails here rather than being published.
       - name: Build the wiki tree
@@ -55,10 +87,16 @@ jobs:
   publish:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-release', github.run_id, github.run_attempt)] || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wiki

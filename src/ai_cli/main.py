@@ -85,6 +85,7 @@ from .config import (  # noqa: F401
     save_session_map,
     validate_registry_completeness,
 )
+from .extensions import run_launch_extensions
 from .git_repair import (
     GitProbeError,
     _git_env,
@@ -952,7 +953,7 @@ def _find_moved_cc_session(title: str, candidates: list[Path]) -> "Path | None":
     return next((path for path in candidates if path.stem in moved), None)
 
 
-def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None":
+def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag | None) -> "Path | None":
     """The transcript a resume of ``title`` in ``cwd`` should take, noting on stderr when several qualify.
 
     In order: the transcript a recorded migration moved (:func:`_find_moved_cc_session`), the one
@@ -962,9 +963,71 @@ def _pick_cc_resume_transcript(cwd: Path, title: str, tag: Tag) -> "Path | None"
     candidates = _find_cc_session_candidates_by_title(cwd, title)
     moved = _find_moved_cc_session(title, candidates)
     reverted = None if moved else _find_migrated_cc_session(cwd, title, candidates)
-    if len(candidates) > 1:
+    if tag is not None and len(candidates) > 1:
         _out.emit(tag, "resume", _cc_multi_candidate_warning(title, candidates, moved, reverted), err=True)
     return moved or reverted or (candidates[0] if candidates else None)
+
+
+class _ClaudeRestartTranscriptError(RuntimeError):
+    """The evidence is insufficient to restart a Claude Code conversation safely."""
+
+
+def _cc_restart_records(project: Path, cwd: Path, title: str) -> tuple[Path, Path, float] | None:
+    """Read the optional SessionEnd identity and the path shown by the launch-resume hook.
+
+    The periodic stamp must belong to the same run as the end record. Its path
+    was picked by project mtime, while SessionEnd received the UUID from Claude Code.
+    """
+    from .session_migrate import utc_instant
+
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", title) or ".." in title:
+        return None
+    root = Path.home() / ".claude" / "resume"
+    end = _background_attach._read_json(root / "launch" / f"{title}.end.json")
+    stamp = _background_attach._read_json(root / "boot-stamps" / f"{title}.json")
+    if not isinstance(end, dict) or not isinstance(stamp, dict) or stamp.get("cwd") != str(cwd):
+        return None
+    if end.get("key") != title or any(
+        not end.get(key) or end[key] != stamp.get(key) for key in ("key", "pid", "pane_id", "boot_id", "ended_at")
+    ):
+        return None
+    ended = utc_instant(end["ended_at"])
+    session_id, stamped = end.get("session_id"), stamp.get("transcript_path")
+    if ended is None or not isinstance(session_id, str) or not isinstance(stamped, str):
+        return None
+    try:
+        own = project / f"{uuid_module.UUID(session_id)}.jsonl"
+        expected = Path(stamped)
+        if expected.parent != project or expected.suffix != ".jsonl":
+            return None
+        _cc_session_id(expected)
+    except (ValueError, RuntimeError):
+        return None
+    return own, expected, ended.timestamp()
+
+
+def _pick_cc_restart_transcript(cwd: Path, title: str) -> Path | None:
+    """Require the restart's identity evidence to agree before handing off a transcript."""
+    project = _cc_project_dir(cwd)
+    try:
+        newest = max(((path.stat().st_mtime, path) for path in project.glob("*.jsonl")), default=None)
+    except OSError as exc:
+        raise _ClaudeRestartTranscriptError(f"Cannot restart '{title}': could not read transcript timestamps.") from exc
+    recorded = _cc_restart_records(project, cwd, title)
+    if recorded is not None:
+        own, expected, ended = recorded
+        if own == expected and newest is not None and newest[0] > ended:
+            expected = newest[1]
+        if own == expected and not own.is_file():
+            raise _ClaudeRestartTranscriptError(f"Cannot restart '{title}': recorded transcript {own.stem} is missing.")
+    else:
+        own = _pick_cc_resume_transcript(cwd, title, None)
+        expected = newest[1] if newest is not None else None
+    if own is not None and expected is not None and own != expected:
+        raise _ClaudeRestartTranscriptError(
+            f"Cannot restart '{title}': transcript {own.stem} disagrees with {expected.stem}."
+        )
+    return own
 
 
 def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
@@ -1115,6 +1178,22 @@ def _is_root() -> bool:
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
     return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+
+
+def _launch_mode_label(*, remote: bool, bare: bool) -> str:
+    """The ``(local, tmux)`` part of the first launch line, before tmux is resolved.
+
+    The line is printed before the tmux preflight runs, so it can only predict. It
+    predicts from what is already settled without starting tmux: an explicit bare
+    request, and Windows with no tmux on PATH, which ``_do_session_launch`` turns into
+    a bare launch without a further notice. Saying ``tmux`` there was the only mode
+    statement such a launch made, and it was wrong. Where the preflight degrades to
+    bare later on another platform, it says so in its own warning.
+    """
+    where = "remote" if remote else "local"
+    if not bare and not remote and sys.platform == "win32" and not _tmux_setup.tmux_present():
+        bare = True
+    return f"{where}, {'bare' if bare else 'tmux'}"
 
 
 def _find_aicli_project_path(config: dict) -> "Path | None":
@@ -1587,13 +1666,14 @@ def _pkg_version_string() -> str:
         return "unknown"
 
 
-def _engine_script_from_meta(meta: dict) -> str:
+def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None) -> str:
     """Regenerate a session's launch script from its persisted metadata.
 
     ``session-meta-<tmux_session>.json`` (written by the wrapper at start) carries
     every parameter ``get_engine_script`` needs, so regeneration is faithful — no
     fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
     """
+    _session_naming.validate_script_metadata(meta, expected_session=expected_session)
     # Resolve through the session_script module (not the name imported into main) so
     # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
     return _session_script.get_engine_script(
@@ -1737,7 +1817,7 @@ def _sync_stable_session_script(tmux_session: str) -> "bool | None":
         return None
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        script = _engine_script_from_meta(meta)
+        script = _engine_script_from_meta(meta, expected_session=tmux_session)
     except Exception as exc:
         _out.emit(Tag.UPDATE, "refresh", f"  (warning: could not regenerate {tmux_session}: {exc})", err=True)
         return None
@@ -2136,7 +2216,8 @@ def _handle_internal(argv: list[str]) -> None:
             _out.emit(
                 Tag.INTERNAL,
                 "usage",
-                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] [--prompted] [--held-seconds=N] [--hold-attempt=N] [--relaunch-started-at=SECONDS]",
+                "Usage: ai internal resolve-background-target <cwd> <ai_name> [<tmux_session>] [--resume-follows] "
+                "[--prompted] [--session-id=UUID] [--held-seconds=N] [--hold-attempt=N] [--relaunch-started-at=SECONDS]",
                 err=True,
             )
             sys.exit(1)
@@ -2165,6 +2246,7 @@ def _handle_internal(argv: list[str]) -> None:
             held_seconds=held_seconds,
             hold_attempt=hold_attempt,
             relaunch_started_at=relaunch_started_at,
+            session_id=next((arg.partition("=")[2] for arg in argv[3:] if arg.startswith("--session-id=")), ""),
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
@@ -2196,18 +2278,37 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(1 if failure else 0)
     elif action == "resolve-continue-target":
         if len(argv) < 3:
-            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal resolve-continue-target <cwd> <ai_name>", err=True)
+            _out.emit(
+                Tag.INTERNAL,
+                "usage",
+                "Usage: ai internal resolve-continue-target <cwd> <ai_name> [--restart]",
+                err=True,
+            )
             sys.exit(1)
-        matched = _pick_cc_resume_transcript(Path(argv[1]), argv[2], Tag.INTERNAL)
+        cwd, title = Path(argv[1]), argv[2]
+        restarting = "--restart" in argv[3:]
+        try:
+            matched = (
+                _pick_cc_restart_transcript(cwd, title)
+                if restarting
+                else _pick_cc_resume_transcript(cwd, title, Tag.INTERNAL)
+            )
+        except _ClaudeRestartTranscriptError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(1)
         if matched is None:
-            lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
-            if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
+            lone = _find_lone_mismatched_cc_session(cwd, title)
+            if lone is not None and _confirm_mismatched_title_resume(title, lone):
                 matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
-                _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(argv[2], pid), err=True)
+                if restarting:
+                    _out.raw(Untagged.INTERNAL_REPLY, str(matched))
+                    _out.emit(Tag.INTERNAL, "resume", f"Transcript {matched.stem} is still running.", err=True)
+                else:
+                    _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(title, pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
         sys.exit(0)
@@ -2255,7 +2356,28 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         use_tmux = not _tmux_setup.config_opts_out(config)
         try:
+            _session_naming.validate_session_text(name, partial=True)
+            owner = (
+                _config._find_project_dir(_config.get_project_aliases().get(project, project))
+                if project
+                else _session.detect_repo_root()
+            )
+            if owner is None:
+                raise _session_naming.naming_refusal(
+                    "repo registration", project, "select a registered owning repository"
+                )
+            registered_alias = _session_naming.registered_repo_alias(Path(owner))
+            if project_prefix.lower() != registered_alias:
+                raise _session_naming.naming_refusal("repo alias", project_prefix, f"use {registered_alias!r}")
             launch_naming = _session_naming.resolve_launch_naming(project_prefix, config, prompt=True)
+            _session_naming.validate_launch_input(
+                name,
+                repo_alias=registered_alias,
+                host_alias=launch_naming.host_alias,
+                legacy_repo=Path(owner) if launch_naming.legacy_prefix else None,
+            )
+            if naming.custom:
+                _session_naming.validate_session_text(naming.custom)
         except _session_naming.HostAliasError as exc:
             _out.emit(Tag.INTERNAL, "allocate", str(exc), err=True)
             sys.exit(1)
@@ -2343,7 +2465,7 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            script = _engine_script_from_meta(meta)
+            script = _engine_script_from_meta(meta, expected_session=tmux_session)
         except Exception as exc:
             _out.emit(Tag.INTERNAL, "refresh", f"Failed to read session metadata: {exc}", err=True)
             sys.exit(1)
@@ -4804,10 +4926,16 @@ def _do_session_launch(
     ):
         sys.exit(1)
 
+    try:
+        _session_naming.validate_session_text(name, partial=True)
+    except _session_naming.NamingConventionError as exc:
+        reporter.error("request", str(exc))
+        sys.exit(1)
+
     if project_prefix_override:
         try:
             project_prefix = _config.validate_task_prefix(project_prefix_override)
-        except _config.ProjectPrefixError as exc:
+        except (_config.ProjectPrefixError, _session_naming.NamingConventionError) as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
     elif project:
@@ -5041,8 +5169,11 @@ def _do_session_launch(
         if compact_transport.must_refuse:
             reporter.error("compact", _compact_transport.refusal_message(compact_transport))
             sys.exit(1)
+        # A platform-limited launch is a detail, not a warning: nothing the operator
+        # can do at launch clears it, so repeating it on every launch is noise. It
+        # stays discoverable in `ai doctor`, in `-v` launches and in the launch log.
         if compact_transport.platform_limited:
-            reporter.warning("compact", _compact_transport.advisory_message(compact_transport))
+            reporter.detail("compact", _compact_transport.advisory_message(compact_transport))
         else:
             reporter.detail("compact", compact_transport.detail)
 
@@ -5478,6 +5609,40 @@ def _do_session_launch(
     except _session_naming.HostAliasError as exc:
         reporter.error("session", str(exc))
         sys.exit(1)
+    try:
+        if project_prefix_override:
+            owner = _session.detect_repo_root()
+            if owner and Path(owner).is_dir():
+                registered_alias = _session_naming.registered_repo_alias(Path(owner))
+                if project_prefix.lower() != registered_alias:
+                    raise _session_naming.naming_refusal(
+                        "repo alias", project_prefix, f"use {registered_alias!r} for the owning repository"
+                    )
+        legacy_titles = []
+        legacy_repo = None
+        requested_title = _session_naming.launch_title(name)
+        if requested_title.startswith(f"{project_prefix.lower()}-") and launch_naming.legacy_prefix:
+            legacy_titles = (
+                [_session._session_slot_name(engine, item) for item in _session._tmux_session_names()]
+                if not bare
+                else []
+            )
+            legacy_repo = Path(_session.detect_repo_root() or _config._project_root(Path.cwd()))
+            if (legacy_repo / ".worktrees" / requested_title).is_dir():
+                legacy_titles.append(requested_title)
+        # Probe dispatch prepends its own marker to the user's slot or label.
+        _session_naming.validate_launch_input(
+            name.partition("-")[2] if probe else name,
+            repo_alias=project_prefix.lower(),
+            host_alias=_session_naming.resolve_host_alias() if replay_recipe is not None else launch_naming.host_alias,
+            legacy_titles=legacy_titles,
+            legacy_repo=legacy_repo,
+        )
+        if naming and naming.custom:
+            _session_naming.validate_session_text(naming.custom)
+    except _session_naming.HostAliasError as exc:
+        reporter.error("session", str(exc))
+        sys.exit(1)
     naming_prefix = launch_naming.prefix
 
     worktree_wanted = bool(config.get("worktree", {}).get("enabled", True)) and not no_worktree
@@ -5665,6 +5830,7 @@ def _do_session_launch(
 
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
+    probe_repo = None
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -5718,6 +5884,7 @@ def _do_session_launch(
         if probe:
             # A probe's worktree is scratch: recording it would tell every deletion guard
             # it is a session home that must never be reaped.
+            probe_repo = _repair_root
             reporter.detail("worktree", "probe worktree: not recorded as a canonical session worktree")
         else:
             try:
@@ -6079,6 +6246,16 @@ def _do_session_launch(
     script_prefix = (
         naming_prefix if session_id.casefold().startswith(f"{script_family}{naming_prefix}-") else project_prefix
     )
+    _session_naming.validate_script_metadata(
+        {
+            "engine": engine,
+            "ai_name": ai_name,
+            "session": session_id,
+            "worktree_dir": str(worktree_path) if worktree_path else None,
+            "is_remote": script_is_remote,
+        },
+        probe_repo=probe_repo,
+    )
     script = _session_script.get_engine_script(
         engine,
         ai_name,
@@ -6361,7 +6538,7 @@ def _session_command(engine: str):
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
         try:
-            mode = f"{'remote' if remote or is_remote else 'local'}, {'bare' if bare else 'tmux'}"
+            mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
                 engine=_engine_display_name(engine),
                 mode=mode,
@@ -6403,6 +6580,8 @@ def _session_command(engine: str):
                 _tunnel._ensure_nats_tunnel(config)
                 if not remote:
                     _process_manager._start_stale_session_reaper_for_launch()
+                    # After any re-exec, so each runs once per launch, on the host the session runs on.
+                    run_launch_extensions(config, reporter, launch_log.path)
             _do_session_launch(
                 engine=engine,
                 name=name,
@@ -7480,10 +7659,29 @@ def cmd_doctor(dry_run):
     else:
         zsh_note = f"could not be provisioned: {_zsh.detail or 'no reason reported'}"
 
+    # Harness-driven compaction is the one capability a Windows launch loses without
+    # saying so at launch (the launch reports it only under -v), so this is where an
+    # operator finds out. Resolved exactly as a bare launch would resolve it.
+    tmux_hosts = tmux_ok and not _tmux_setup.config_opts_out(config)
+    if tmux_hosts:
+        tmux_detail = "tmux runs here"
+    elif sys.platform == "win32":
+        tmux_detail = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+    else:
+        tmux_detail = "tmux does not host sessions here"
+    compact = _compact_transport.resolve(tmux_usable=tmux_hosts, tmux_detail=tmux_detail, config=config)
+    if compact.platform_limited:
+        compact_note = _compact_transport.advisory_message(compact)
+    elif compact.must_refuse:
+        compact_note = f"launches without tmux are refused: {compact.pty_detail}"
+    else:
+        compact_note = f"harness-driven via {compact.detail}"
+
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
         ("tmux", tmux_ok, tmux_note),
         ("zsh", _zsh.installed, zsh_note),
+        ("compact", compact.usable, compact_note),
     ):
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 
@@ -8617,7 +8815,7 @@ def _migrate_one_to_name(
             )
             _print_migration(result)
             return 1 if result.references_left else 0
-        words = _names.common_words(snapshot.policy) if name else frozenset()
+        words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
             if verdict not in ("ok", "spare"):
@@ -8626,7 +8824,9 @@ def _migrate_one_to_name(
                 raise AdoptionError(reason)
             planned = name
         else:
-            request, _warnings = _names.pick_request(registry, snapshot, slot, max_length=max_length, session=old)
+            request, _warnings = _names.pick_request(
+                registry, snapshot, slot, max_length=max_length, words=words, session=old
+            )
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
             repo_root, old, slot.title_for(planned), dry_run=True, new_is_reserved=True
@@ -9436,7 +9636,14 @@ def _print_audit(report, ready, skipped, out=None) -> None:
 @click.option("-a", "--adopt", "run_adopt", is_flag=True, help="Adopt every session that is safe to adopt")
 @click.option("-n", "--dry-run", is_flag=True, help="With -a: show what would be adopted without writing anything")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
-def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes):
+@click.option(
+    "-N",
+    "--naming",
+    "naming_audit",
+    is_flag=True,
+    help="Read-only naming census across slots, registry and launch artifacts",
+)
+def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes, naming_audit=False):
     """Survey every titled CC session, then optionally drive their adoption.
 
     The survey scans outward from ``~/.claude/projects/`` rather than inward from
@@ -9445,6 +9652,19 @@ def cmd_audit_sessions(repo, title, run_adopt, dry_run, yes):
     supplying its path. Adoption itself is delegated to ``ai adopt-session``'s
     module, so the duplicate-title and live-session gates apply unchanged.
     """
+    if naming_audit:
+        if run_adopt:
+            raise click.UsageError("--naming is read-only and cannot be combined with --adopt")
+        from .session_audit import audit_naming
+
+        findings = audit_naming(repos=[repo.resolve()] if repo else None)
+        if title:
+            findings = [finding for finding in findings if finding.name == title]
+        for finding in findings:
+            _out.emit(Tag.AUDIT, "audit", f"{finding.rule}: {finding.name}: {finding.artifact}: {finding.detail}")
+        _out.emit(Tag.AUDIT, "audit", f"Naming audit: {len(findings)} violation(s); read-only local snapshot.")
+        sys.exit(1 if findings else 0)
+
     from .session_adopt import AdoptionError, TitleCollision
     from .session_audit import adopt_ready, survey, triage
 

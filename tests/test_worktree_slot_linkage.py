@@ -27,7 +27,7 @@ def _git(*args, cwd, check=True):
 
 
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, register_repo):
     """A clone of a bare remote, so ``origin/main`` exists for the session branch."""
     remote = tmp_path / "origin.git"
     _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
@@ -36,6 +36,7 @@ def repo(tmp_path):
     _git("init", "-q", "-b", "main", cwd=seed)
     _git("config", "user.email", "t@example.com", cwd=seed)
     _git("config", "user.name", "T", cwd=seed)
+    register_repo(seed, "myproject")
     (seed / "README.md").write_text("base\n")
     _git("add", "-A", cwd=seed)
     _git("commit", "-q", "-m", "init", cwd=seed)
@@ -73,10 +74,10 @@ def _other_spelling(tmp_path: Path, slot: Path) -> Path:
 def test_given_the_registration_names_another_spelling_of_the_slot_when_relaunched_then_the_slot_is_reused(
     repo, tmp_path
 ):
-    slot = _session_with_uncommitted_work(repo, "session-1")
+    slot = _session_with_uncommitted_work(repo, "myproject-tst-1")
     (_admin_dir(slot) / "gitdir").write_text(f"{_other_spelling(tmp_path, slot) / '.git'}\n")
 
-    result = create_worktree("session-1", repo_root=repo, with_status=True)
+    result = create_worktree("myproject-tst-1", repo_root=repo, with_status=True)
 
     assert result == (slot.resolve(), False)
     assert slot.resolve() in registered_worktrees(repo)
@@ -84,33 +85,34 @@ def test_given_the_registration_names_another_spelling_of_the_slot_when_relaunch
 
 
 def test_given_both_linkage_records_name_another_spelling_when_relaunched_then_the_slot_is_reused(repo, tmp_path):
-    slot = _session_with_uncommitted_work(repo, "session-2")
+    slot = _session_with_uncommitted_work(repo, "myproject-tst-2")
     admin = _admin_dir(slot)
     other = _other_spelling(tmp_path, slot)
     (admin / "gitdir").write_text(f"{other / '.git'}\n")
     _rewrite(slot / ".git", f"gitdir: {tmp_path / 'other-spelling' / admin.relative_to(tmp_path)}\n")
 
-    result = create_worktree("session-2", repo_root=repo, with_status=True)
+    result = create_worktree("myproject-tst-2", repo_root=repo, with_status=True)
 
     assert result == (slot.resolve(), False)
     assert (slot / "in-progress.md").read_text() == "uncommitted session work\n"
 
 
-def test_given_the_slot_lost_its_registration_when_relaunched_then_the_refusal_names_the_slot_not_a_nested_move(
-    repo, tmp_path
-):
-    slot = _session_with_uncommitted_work(repo, "session-3")
+def test_given_the_slot_lost_its_registration_when_relaunched_then_it_is_moved_aside_never_into_agents(repo, tmp_path):
+    """No git record refers to the slot, so the launcher moves it aside itself and relaunches.
+
+    It used to refuse and print the ``mv`` for the user to run; that stopped every launch on a
+    host where this state recurs, for a move the launcher can make with nothing to lose.
+    """
+    name = "myproject-tst-3"
+    slot = _session_with_uncommitted_work(repo, name)
     admin = _admin_dir(slot)
     aside = tmp_path / "admin-aside"
     admin.rename(aside)
 
-    with pytest.raises(RuntimeError) as caught:
-        create_worktree("session-3", repo_root=repo)
+    created = create_worktree(name, repo_root=repo)
 
-    message = str(caught.value)
-    assert f"{slot}-agents" not in message, "no command may send the session's own checkout into -agents/"
-    assert "git worktree move" not in message
-    assert "own checkout" in message
-    assert str(slot) in message
-    assert "wt-session-3" in message
-    assert (slot / "in-progress.md").read_text() == "uncommitted session work\n"
+    assert created is not None and created.resolve() == slot.resolve()
+    assert not (slot.parent / f"{name}-agents").exists(), "the session's own checkout never goes into -agents/"
+    recovered = next(slot.parent.glob(f"{name}-orphaned-*"))
+    assert (recovered / "in-progress.md").read_text() == "uncommitted session work\n"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == f"wt-{name}"

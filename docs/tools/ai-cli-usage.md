@@ -41,6 +41,7 @@ there, not here.
   - [ai iterm2 restore](#ai-iterm2-restore)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
+  - [ai copier-update](#ai-copier-update)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
   - [ai ps](#ai-ps)
@@ -755,6 +756,10 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
+### Copier update environments
+
+In an isolated update, Git submodules are initialized recursively before dependencies are installed. A Python project at the root with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev`, and when the root has one, directories below it are not synced (a nested directory such as a template tree may name a path dependency that only exists after an export). Without a root Python project, each directory one level below that has both files is prepared the same way; when there is exactly one, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. After dependency installs, the same package manager runs any declared `e2e:install` script once in its package directory. This covers the project package and workspaces declared by literal paths or `dir/*` patterns. A failed script stops the update before commit or push. Projects with other layouts or additional tool requirements must provide those separately.
+
 ### Removed ai gemini command
 
 `ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
@@ -1020,6 +1025,27 @@ Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on net
 - `status` — lists alive/dead tunnels, cleans stale PID files.
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
+
+### ai copier-update
+
+Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
+under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
+`config.toml` to override the packaged default. When updating the source repository, both isolated
+and direct updates skip the files that the template mirrors from that repository. The per-project
+line lists the skipped paths and the reason. Other projects still receive the template copies. If
+the command cannot read the mapping, `ai copier-update` prints one warning and continues without
+mirror exclusions.
+
+Isolated updates normally push to `main`. If the fleet project registry lists `main` in
+`gated_branches`, the command goes straight to the pull request route. It also takes that
+route when Git reports `worktree push refused` during a push to `main`.
+
+The pull request route uses `copier-update/<short-template-sha>` as the head branch and
+targets `main`. It reports an existing open pull request for that head, or uses `gh` to
+open one. If the remote branch already exists, the command reuses it. The run summary shows
+the pull request number and URL. A pending pull request counts as success. If the branch push
+or a `gh` command fails, the command saves a verified backup anchor, files a recovery issue,
+and returns a nonzero exit code.
 
 ### ai update
 
