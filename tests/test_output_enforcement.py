@@ -49,6 +49,11 @@ INHERITED_TERMINAL_ALLOWLIST = {
         "the --once agent owns the tmux pane's terminal; captured, Claude Code reads a pipe as "
         "--print and exits at once, so its output must not be relayed"
     ),
+    ("extensions.py", "_run"): (
+        "not the terminal: a launch extension writes to a temporary file (a pipe would hold the "
+        "launch on a child the extension detaches), and each line is then reported under its "
+        "operation to the launch log"
+    ),
     ("session_restart.py", "exec_replacement"): (
         "the pinned interactive engine owns the existing pane terminal; Windows needs a foreground "
         "child because exec cannot preserve its PID"
