@@ -627,7 +627,7 @@ TMUX_UNUSABLE_SKIP = "tmux unusable"
 #: installs it explicitly.
 TMUX_REQUIRED_REMEDY = (
     "tmux is a hard requirement of this test suite, not an optional one: install tmux and "
-    "re-run. Every CI platform provisions it explicitly -- see .github/workflows/ci.yml."
+    "re-run. Every CI platform provisions it explicitly -- see the CI workflows in .github/workflows/."
 )
 
 

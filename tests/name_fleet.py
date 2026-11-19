@@ -45,12 +45,32 @@ STEM = f"{REPO}-{HOST_ALIAS}"
 NAMES = ["ada", "bob", "cyd", "bert", "cleo", "dora", "hugo", "iris", "jude", "kurt", "lola", "milo", "nora"]
 BACKEND = "git"
 
+# Every subprocess budget the fixtures give a registry, for its local calls and for the
+# fetch, push and clone the shipped config defaults otherwise bound. Each call runs the
+# real program, so its time is the host's: on a managed macOS host where every process
+# spawn costs 0.5 to 6 s, one `dolt push` to a bare remote under tmp_path took 44 s, 60 s
+# and 87 s (2026-11-18), past the shipped 60 s. The host lock waits this budget times the
+# policy's 5 attempts, and that product stays under conftest's 900 s per-test Dolt bound,
+# so a hung call or a held lock still fails inside its test, naming the cause. A test of a
+# budget sets its own value; one asserting the shipped defaults calls
+# ``shipped_budget_defaults``. A child process a test starts with ``sys.executable`` gets
+# the policy's budget but the shipped fetch, push and clone defaults.
+REGISTRY_TEST_TIMEOUT_S = 170
+SHIPPED_BUDGET_DEFAULTS = {
+    name: getattr(_config, name)
+    for name in (
+        "REGISTRY_FETCH_TIMEOUT_DEFAULT_S",
+        "REGISTRY_PUSH_TIMEOUT_DEFAULT_S",
+        "REGISTRY_CLONE_TIMEOUT_DEFAULT_S",
+    )
+}
+
 POLICY_TOML = textwrap.dedent(
     f"""\
     schema = 1
     registry_ref = "{REF}"
     registry_remote = "origin"
-    publish_timeout_s = 15
+    publish_timeout_s = {REGISTRY_TEST_TIMEOUT_S}
     publish_attempts = 5
     pick_floor = 10
     low_water = 2
@@ -110,7 +130,7 @@ def registry_for(repo: Path, *, backend: str | None = None, path: Path | None = 
             dolt_ref=DOLT_REF,
             remote="origin",
             policy_file=repo / reg.POLICY_MARKER,
-            timeout_s=15,
+            timeout_s=REGISTRY_TEST_TIMEOUT_S,
             attempts=5,
             path=path,
         )
@@ -119,8 +139,19 @@ def registry_for(repo: Path, *, backend: str | None = None, path: Path | None = 
 
         return SqliteRegistry(path or reg.local_registry_path(), seed=False)
     return reg.GitRegistry(
-        repo, ref=REF, remote="origin", policy_file=repo / reg.POLICY_MARKER, timeout_s=15, attempts=5
+        repo,
+        ref=REF,
+        remote="origin",
+        policy_file=repo / reg.POLICY_MARKER,
+        timeout_s=REGISTRY_TEST_TIMEOUT_S,
+        attempts=5,
     )
+
+
+def shipped_budget_defaults(monkeypatch) -> None:
+    """Put back the fetch, push and clone defaults ``build_fleet`` widened, for a test of them."""
+    for name, shipped in SHIPPED_BUDGET_DEFAULTS.items():
+        monkeypatch.setattr(_config, name, shipped)
 
 
 def policy_of(repo: Path, policy_toml: str | None = None) -> dict:
@@ -392,6 +423,8 @@ def build_fleet(
     monkeypatch.setattr(session_naming, "host_id", lambda: HOST)
     monkeypatch.setattr(reg, "alias_words", lambda: frozenset())
     monkeypatch.setattr(reg, "common_words", lambda policy, **_: frozenset({"may", "art", "sun"}))
+    for name, shipped in SHIPPED_BUDGET_DEFAULTS.items():
+        monkeypatch.setattr(_config, name, max(shipped, REGISTRY_TEST_TIMEOUT_S))
     registry = registry_for(repo, backend=backend)
     fleet = Fleet(tmp=tmp_path, projects=projects, remote=remote, repo=repo, registry=registry, backend=backend)
     if backend == "dolt":

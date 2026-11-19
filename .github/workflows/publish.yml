@@ -1,5 +1,12 @@
 name: Publish to PyPI
 
+# Every job's `runs-on` follows the hosted-first fallback contract with the OS key
+# `release`: attempt 1 always asks for the GitHub-hosted label, and a later attempt
+# asks for a self-hosted label set only when the repository variable
+# CI_FALLBACK_RUNS_ON authorizes that exact run, attempt and OS key. Steps guarded by
+# `runner.environment` are the self-hosted variants; on a GitHub-hosted runner every
+# job runs the steps it always ran. docs/procedures/github-actions-status.md describes
+# the contract, and tests/test_ci_runner_fallback_contract.py pins it.
 on:
   push:
     tags:
@@ -10,14 +17,23 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-release', github.run_id, github.run_attempt)] || 'ubuntu-latest' }}
     environment: pypi
     permissions:
       id-token: write
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # A self-hosted runner's account may have no writable home, and the uv cache
+      # and interpreter downloads write under it.
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
+      - if: runner.environment == 'github-hosted'
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           # The single supported version, declared canonically in
           # `.python-version`. ci.yml's lint job runs
@@ -25,16 +41,44 @@ jobs:
           # under .github/workflows/ -- including this one -- and fails on any
           # version that disagrees.
           python-version: "3.14"
+      # setup-uv can hang behind a self-hosted runner's egress proxy, so a self-hosted
+      # attempt uses uv's installer script, fetching uv from GitHub releases. uv then
+      # takes the interpreter version from `.python-version`.
+      - name: Install uv on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        env:
+          UV_INSTALLER_GITHUB_BASE_URL: https://github.com
+          UV_INSTALL_DIR: ${{ runner.temp }}/uv-bin
+          UV_NO_MODIFY_PATH: "1"
+          UV_DISABLE_UPDATE: "1"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh -o "$RUNNER_TEMP/uv-installer.sh"
+          sh "$RUNNER_TEMP/uv-installer.sh"
+          "$UV_INSTALL_DIR/uv" --version
+          echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
       - run: uv build
-      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+      - if: runner.environment == 'github-hosted'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+      # The publish action above runs in Docker, which a self-hosted runner does not
+      # have. uv publishes the same files with the same OIDC trusted publishing,
+      # through this job's `id-token: write`.
+      - name: Publish with uv on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: uv publish --trusted-publishing always
 
   release:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-release', github.run_id, github.run_attempt)] || 'ubuntu-latest' }}
     needs: [publish]
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
       - name: Extract changelog for current version
         id: changelog
         run: |
