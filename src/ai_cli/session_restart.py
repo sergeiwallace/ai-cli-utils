@@ -948,6 +948,21 @@ _RETIRED_QUOTA_WATCH_START = (
 )
 
 
+# The clean-exit branch every program launched before clean exits restarted again runs.
+_PREVIOUS_INTERRUPT_EXIT = (
+    "    # BEGIN SHELL RETURN interrupt-exit\n"
+    "      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;\n"
+    "      # a clean exit or status 130 is a deliberate stop, even immediately after\n"
+    "      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell\n"
+    "      # whose interactive prompt consumes all further interrupts.\n"
+    "      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then\n"
+    "        _ai_final_manual_exit\n"
+    "        exit 77\n"
+    "      fi\n"
+    "    # END SHELL RETURN\n"
+)
+
+
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
@@ -993,6 +1008,14 @@ def _compatible(source: str, expected: str) -> bool:
         expected,
     )
     if previous_resolver != expected and _compatible(source, previous_resolver):
+        return True
+    # The same for the clean-exit branch: rebuild its previous form in our template.
+    previous_interrupt_exit = re.sub(
+        r"(?ms)^    # BEGIN SHELL RETURN interrupt-exit\n.*?^    # END SHELL RETURN\n",
+        lambda _: _PREVIOUS_INTERRUPT_EXIT,
+        expected,
+    )
+    if previous_interrupt_exit != expected and _compatible(source, previous_interrupt_exit):
         return True
     # Like the earlier wrapper below, the retired block is added to our trusted
     # template, never ignored in the running source.

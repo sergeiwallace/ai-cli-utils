@@ -482,6 +482,16 @@ exits the session is over. Auto-index assignment also switches source — with t
 probes live sessions, in bare mode it scans `.worktrees/` and treats a directory with
 no live engine process as a reusable slot.
 
+**Auto-restart and stopping a session:** inside tmux, the wrapper restarts the agent
+whenever it exits, resuming the same conversation. That includes `/exit`, Ctrl+D and Claude
+Code's own double Ctrl+C, which all exit with status 0. After a clean exit the wrapper prints
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`; one Ctrl+C in that window ends the
+session and returns to the shell you launched from. `ai exit-session` ends it from inside or
+from another terminal. A clean exit in the first three seconds of a run ends the session
+without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
+0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
+read at each exit, so an edit applies at the next one.
+
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 
 - `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.

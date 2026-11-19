@@ -23,6 +23,7 @@ from ai_cli.config import (
     load_config,
     register_project,
     resolve_project_prefix,
+    restart_stop_window_seconds,
 )
 
 
@@ -568,3 +569,29 @@ def test_given_relaunch_cause_that_must_never_relaunch_when_loading_then_refused
     _relaunch_causes_config(tmp_path, monkeypatch, f'["host_reboot", "{cause}"]')
     with pytest.raises(ValueError, match=r"session_relaunch\.causes"):
         load_config(read_only=True)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[session]\nrestart_stop_window_seconds = 0\n", 0),
+        ("[session]\nrestart_stop_window_seconds = 7\n", 7),
+        ("[session]\nrestart_stop_window_seconds = 1.2\n", 2),
+        ("[session]\n", 3),
+        ("[session]\nrestart_stop_window_seconds = -1\n", 3),
+        ("[session]\nrestart_stop_window_seconds = true\n", 3),
+        ('[session]\nrestart_stop_window_seconds = "5"\n', 3),
+        ("[session]\nrestart_stop_window_seconds = inf\n", 3),
+        ("[session\n", 3),
+    ],
+)
+def test_given_a_stop_window_value_when_read_then_a_valid_value_is_used_and_anything_else_is_the_default(
+    tmp_path, text, expected
+):
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    assert restart_stop_window_seconds(path) == expected
+
+
+def test_given_no_config_file_when_stop_window_read_then_it_is_the_default(tmp_path):
+    assert restart_stop_window_seconds(tmp_path / "missing.toml") == 3

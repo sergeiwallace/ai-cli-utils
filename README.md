@@ -390,6 +390,18 @@ commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe
 The launcher never removes them itself. Design:
 [docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
 
+#### Auto-restart and stopping a session
+
+Inside tmux, the wrapper restarts the agent
+whenever it exits, resuming the same conversation. That includes `/exit`, Ctrl+D and Claude
+Code's own double Ctrl+C, which all exit with status 0. After a clean exit the wrapper prints
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`; one Ctrl+C in that window ends the
+session and returns to the shell you launched from. `ai exit-session` ends it from inside or
+from another terminal. A clean exit in the first three seconds of a run ends the session
+without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
+0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
+read at each exit, so an edit applies at the next one.
+
 #### Restarting an idle Claude Code session
 
 ```bash

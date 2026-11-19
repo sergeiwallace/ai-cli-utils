@@ -68,6 +68,29 @@ def test_given_program_launched_before_plugin_refresh_when_compared_then_it_is_c
     assert session_restart._compatible(current, before_feature)
 
 
+_STOP_ON_EVERY_CLEAN_EXIT = """    # BEGIN SHELL RETURN interrupt-exit
+      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
+      # a clean exit or status 130 is a deliberate stop, even immediately after
+      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell
+      # whose interactive prompt consumes all further interrupts.
+      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then
+        _ai_final_manual_exit
+        exit 77
+      fi
+    # END SHELL RETURN
+"""
+
+
+def test_given_program_that_stops_on_every_clean_exit_when_compared_then_it_is_compatible(programs):
+    _, current = programs
+    bracket = r"(?ms)^    # BEGIN SHELL RETURN interrupt-exit\n.*?^    # END SHELL RETURN\n"
+    running = re.sub(bracket, lambda _: _STOP_ON_EVERY_CLEAN_EXIT, current)
+    assert running != current
+    assert session_restart._compatible(running, current)
+    tampered = running.replace("agent_exit_code == 130 || agent_exit_code == 0", "agent_exit_code == 130")
+    assert not session_restart._compatible(tampered, current)
+
+
 def test_given_program_launched_before_codex_display_when_compared_then_it_is_compatible(programs):
     _, current = programs
     bracket = r"(?ms)^    # BEGIN CODEX DISPLAY[^\n]*\n.*?^    # END CODEX DISPLAY\n"

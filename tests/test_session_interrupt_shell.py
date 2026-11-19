@@ -15,7 +15,7 @@ from conftest import TEST_BOOT_ID, tmux_runnable
 from process_ownership import watch_tmux_directory
 from process_wait import scaled
 
-from ai_cli import session, session_commands, session_lifecycle_script, session_migrate
+from ai_cli import config, session, session_commands, session_lifecycle_script, session_migrate
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_script import get_engine_script
@@ -361,11 +361,14 @@ def test_given_running_engine_when_terminal_interrupt_exits_then_original_shell_
     pane_session, engine, remote, mode
 ):
     pane_session.start(engine=engine, remote=remote, mode=mode, caller=True)
-    # A clean TUI exit after a healthy run must stop too; in raw mode the
-    # wrapper receives no SIGINT and cannot rely on its own interrupt marker.
+    # A raw TUI that exits 0 on Ctrl+C after a healthy run looks like /exit, so it
+    # restarts unless the next Ctrl+C lands in the wrapper's restart window.
     if mode == "raw-clean":
         time.sleep(3.2)
     pane_session.interrupt()
+    if mode == "raw-clean":
+        assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
+        pane_session.interrupt()
     pane_session.assert_caller()
     assert pane_session.count() == 1, "an intentional interrupt relaunched the engine"
 
@@ -394,6 +397,41 @@ def test_given_auto_policy_when_engine_crashes_then_wrapper_restarts(pane_sessio
     time.sleep(3.2)
     pane_session.exit_agent(command)
     assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_given_healthy_run_when_agent_exits_cleanly_then_wrapper_restarts_it(pane_session, remote):
+    # `/exit`, Ctrl+D and Claude Code's own double Ctrl+C all return 0.
+    pane_session.start(remote=remote)
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_returns(pane_session, remote):
+    pane_session.start(remote=remote, caller=True)
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
+    pane_session.interrupt()
+    pane_session.assert_caller()
+    assert pane_session.count() == 1, "an interrupt in the restart window relaunched the engine"
+
+
+@pytest.mark.parametrize(("window", "notice"), [("0", False), ("1", True)])
+def test_given_stop_window_set_while_running_when_agent_exits_cleanly_then_the_window_it_names_applies(
+    pane_session, window, notice
+):
+    pane_session.start()
+    # Written after launch: the wrapper reads the window at the exit, not at launch.
+    path = Path(config.config_file_text())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"[session]\nrestart_stop_window_seconds = {window}\n", encoding="utf-8")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+    assert ("restarting in 1s. Press Ctrl+C to stop" in pane_session.capture()) is notice, pane_session.capture()
 
 
 @pytest.mark.parametrize("remote", [False, True])
