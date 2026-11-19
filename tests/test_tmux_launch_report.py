@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from ai_cli import tmux_setup
+from ai_cli import tmux_binary, tmux_setup
 
 # Any two distinct version strings exercise this file. They are named rather than
 # inlined so that a future fleet-wide version change is one edit here, and so no
@@ -69,7 +69,7 @@ def fake_tmux(monkeypatch):
             return state["server"]
         raise AssertionError(f"unexpected probe: {argv}")
 
-    monkeypatch.setattr(tmux_setup.shutil, "which", _which)
+    monkeypatch.setattr(tmux_binary.shutil, "which", _which)
     monkeypatch.setattr(tmux_setup, "_probe_output", _probe)
     return state
 
@@ -282,7 +282,7 @@ def test_a_presence_only_probe_spawns_nothing(monkeypatch) -> None:
     """bare mode has decided tmux is not involved; asking its version anyway is
     both a wasted spawn and a contract violation (tests/test_bare_worktree.py)."""
     monkeypatch.setattr(tmux_setup, "tmux_present", lambda: True)
-    monkeypatch.setattr(tmux_setup.shutil, "which", lambda name: "/usr/bin/tmux")
+    monkeypatch.setattr(tmux_binary.shutil, "which", lambda name: "/usr/bin/tmux")
 
     def _must_not_run(argv, timeout):
         raise AssertionError(f"a presence-only probe spawned {argv}")
@@ -299,7 +299,7 @@ def test_a_presence_only_probe_spawns_nothing(monkeypatch) -> None:
 
 def test_an_unprobed_report_does_not_claim_a_broken_binary(monkeypatch) -> None:
     monkeypatch.setattr(tmux_setup, "tmux_present", lambda: True)
-    monkeypatch.setattr(tmux_setup.shutil, "which", lambda name: "/usr/bin/tmux")
+    monkeypatch.setattr(tmux_binary.shutil, "which", lambda name: "/usr/bin/tmux")
 
     text = _lines(
         report=tmux_setup.probe(query_versions=False),

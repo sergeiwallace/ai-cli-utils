@@ -174,6 +174,23 @@ def test_given_a_grandchild_in_a_group_of_its_own_when_the_tree_is_reaped_then_i
     assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its tree"
 
 
+def test_given_an_owned_root_when_tree_inspection_is_interrupted_then_the_root_is_killed(monkeypatch):
+    proc = spawn_owned_sleeper()
+
+    def interrupt(_process, *, recursive):
+        assert recursive
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(psutil.Process, "children", interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            reap_tree(proc)
+        assert proc.poll() is not None, "the root survived interrupted tree cleanup"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
 def _raise_inside_an_owned_process(captured: list[int]) -> None:
     with owned_sleeper() as proc:
         captured.append(proc.pid)

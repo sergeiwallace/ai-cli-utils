@@ -27,7 +27,7 @@ from pathlib import Path
 
 import psutil
 
-from . import config
+from . import config, tmux_binary
 from . import output as _out
 from .output import Tag
 
@@ -221,7 +221,7 @@ def _list_tmux_sessions(
         stdout, rc = tmux_fn()
     else:
         result = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}:#{session_attached}"],
+            tmux_binary.argv("list-sessions", "-F", "#{session_name}:#{session_attached}"),
             capture_output=True,
             text=True,
             check=False,

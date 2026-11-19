@@ -10,6 +10,8 @@ import shutil
 import sys
 
 from . import config as _config
+from .background_attach import DAEMON_IDENTITY_ENV
+from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
@@ -263,6 +265,7 @@ def get_engine_script(
     from .config import config_file_text
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
+    from .tmux_binary import shell_prelude
     from .transport import _TERMINAL_RESTORE
 
     _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
@@ -279,6 +282,14 @@ def get_engine_script(
             f"if r.get('kind') == 'local' and r.get('name') == {session!r}), 'auto'); "
             f"print('auto_restart_off' if policy != 'never' and not auto_restart_enabled({config_file_text()!r}) "
             "else policy)"
+        )
+    )
+
+    # `[session] restart_stop_window_seconds`, read at each clean exit like auto_restart above.
+    _restart_window_command = shlex.join(
+        pinned_python(
+            "from ai_cli.config import restart_stop_window_seconds; "
+            f"print(restart_stop_window_seconds({config_file_text()!r}))"
         )
     )
 
@@ -326,7 +337,9 @@ def get_engine_script(
         }
     )
 
-    return f"""
+    # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
+    # so PATH decides as before); baked in at generation like the session shell above.
+    return f"""{shell_prelude()}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.
@@ -1124,6 +1137,32 @@ def get_engine_script(
         fi
       fi
     # END PLUGIN REFRESH
+    # BEGIN BACKGROUND ATTACH client-environment
+      # Scrub after direnv has loaded. The viewer can start the shared daemon,
+      # and the target worker already has its own environment.
+      if [[ "$1" == claude && "${{2:-}}" == attach ]]; then
+        set -- env {" ".join(f"-u {key}" for key in DAEMON_IDENTITY_ENV)} "$@"
+      fi
+    # END BACKGROUND ATTACH
+    # BEGIN CODEX DISPLAY
+      # Codex's native clipboard needs a display. Without one in this shell, give this
+      # Codex process (never the shell or tmux) the pair of the user's own verified
+      # local graphical session; the helper writes why it found none to the launch log.
+      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+        _cx_display="" _cx_authority=""
+        _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
+        while IFS= read -r _cx_display_line; do
+          if [[ "$_cx_display_line" == DISPLAY=* ]]; then
+            _cx_display="${{_cx_display_line#DISPLAY=}}"
+          elif [[ "$_cx_display_line" == XAUTHORITY=* ]]; then
+            _cx_authority="${{_cx_display_line#XAUTHORITY=}}"
+          fi
+        done <<< "$_cx_display_reply"
+        if [[ -n "$_cx_display" && -n "$_cx_authority" ]]; then
+          set -- env "DISPLAY=$_cx_display" "XAUTHORITY=$_cx_authority" "$@"
+        fi
+      fi
+    # END CODEX DISPLAY
     # BEGIN PINNED RESTART exec
       if ${{_restart_event_completion:-false}}; then
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
@@ -1576,8 +1615,19 @@ with open(path, 'w') as f:
       # Resolve before every Claude Code launch so its exact transcript UUID can
       # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
-        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-        resolve_status=$?
+    # BEGIN RESTART TRANSCRIPT
+        _cc_restart=""
+        if ! $first_run || [[ -n "${{{LAUNCH_REASON_VAR}:-}}" ]]; then _cc_restart="--restart"; fi
+        _resolve_cc_transcript() {{
+          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name" ${{_cc_restart:+"$_cc_restart"}})
+          resolve_status=$?
+          if [[ -n "$_cc_restart" && $resolve_status -ne 0 && $resolve_status -ne 2 ]]; then
+            _ai_persist_exit unknown '{{"reason":"restart transcript resolution refused"}}'
+            exit 77
+          fi
+        }}
+        _resolve_cc_transcript
+    # END RESTART TRANSCRIPT
       fi
     # BEGIN BACKGROUND ATTACH resolution
       # A conversation moved to the background ("Move to background and exit")
@@ -1593,7 +1643,12 @@ with open(path, 'w') as f:
       if [[ "$engine" == "c" ]]; then
         _bg_resume=""
         _bg_prompted=""
-        if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then _bg_resume="--resume-follows"; fi
+        _bg_conversation=""
+        if [[ -n "$_cc_restart" && -n "$matched_file" ]]; then
+          _bg_conversation="--session-id=${{matched_file##*/}}"
+          _bg_conversation="${{_bg_conversation%.jsonl}}"
+        fi
+        if [[ -n "$matched_file" && ( $resolve_status -eq 0 || -n "$_cc_restart" ) ]]; then _bg_resume="--resume-follows"; fi
         if [[ -f "$prompt_file" ]]; then _bg_prompted="--prompted"; fi
         _bg_warned=false
         _bg_hold_start=$(date +%s)
@@ -1603,7 +1658,7 @@ with open(path, 'w') as f:
           _bg_status=0
           _bg_attempt=$((_bg_attempt + 1))
           _bg_held=$(( $(date +%s) - _bg_hold_start ))
-          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} "--held-seconds=$_bg_held" "--hold-attempt=$_bg_attempt" "--relaunch-started-at=$_bg_relaunch_started_at" --defer-hold-warning) || _bg_status=$?
+          bg_target=$(ai internal resolve-background-target "$PWD" "$ai_name" "$tmux_session" ${{_bg_resume:+"$_bg_resume"}} ${{_bg_prompted:+"$_bg_prompted"}} ${{_bg_conversation:+"$_bg_conversation"}} "--held-seconds=$_bg_held" "--hold-attempt=$_bg_attempt" "--relaunch-started-at=$_bg_relaunch_started_at" --defer-hold-warning) || _bg_status=$?
           if [[ $_bg_status -eq 76 ]]; then _bg_gave_up=true; fi
           # A lookup that crashed cannot say there is no live copy: when a resume
           # would follow, hold on any failure, not only 75. Ask a separate config
@@ -1625,8 +1680,11 @@ with open(path, 'w') as f:
         # 73: the lookup stopped a copy hosted in another session's environment. Its
         # conversation is now the newest transcript, so resolve the resume target again.
         if [[ $_bg_status -eq 73 ]]; then
-          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-          resolve_status=$?
+          _resolve_cc_transcript
+        fi
+        if [[ -n "$_cc_restart" && $resolve_status -eq 2 && -z "$bg_target" && $_bg_gave_up == false ]]; then
+          _ai_persist_exit unknown '{{"reason":"restart transcript is still running"}}'
+          exit 77
         fi
       fi
     # END BACKGROUND ATTACH
@@ -1711,13 +1769,39 @@ with open(path, 'w') as f:
     # END BACKGROUND ATTACH
 
     # BEGIN SHELL RETURN interrupt-exit
-      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
-      # a clean exit or status 130 is a deliberate stop, even immediately after
-      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell
-      # whose interactive prompt consumes all further interrupts.
-      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then
+      # Status 130 is a deliberate stop. So is a clean exit inside the startup
+      # guard: a raw-mode TUI consumes an early Ctrl+C and exits 0, and treating
+      # that as a failure opens a remote recovery shell whose prompt consumes all
+      # further interrupts.
+      if $agent_attempted && (( agent_exit_code == 130 || \\
+        (agent_exit_code == 0 && $(date +%s) - start_ts < 3) )); then
         _ai_final_manual_exit
         exit 77
+      fi
+      # After a healthy run a clean exit restarts the agent. Claude Code returns 0
+      # for /exit, Ctrl+D and its own double Ctrl+C alike, so the exit status cannot
+      # say which was meant: one Ctrl+C in this window ([session]
+      # restart_stop_window_seconds, 0 for none), which reaches this wrapper now
+      # that the agent has released the terminal, stops the session instead.
+      _restart_window=0
+      if $agent_attempted && (( agent_exit_code == 0 )); then
+        _restart_window=$({_restart_window_command} 2>/dev/null)
+        [[ "$_restart_window" =~ ^[0-9]+$ ]] || _restart_window=3
+      fi
+      if (( _restart_window > 0 )); then
+        # Armed twice on purpose. The first write makes a Ctrl+C during the notice's
+        # Python start count as a stop, not as a first press that would only arm the
+        # double-press prompt. The second starts the full window once the notice is
+        # on screen, since rendering it can take seconds on a loaded host.
+        printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
+        _ai_emit info exit "Agent exited; restarting in ${{_restart_window}}s. Press Ctrl+C to stop."
+        printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
+        sleep "$_restart_window" 2>/dev/null || true
+        if [[ -f "$_child_int_exit_file" ]]; then
+          _ai_final_manual_exit
+          exit 77
+        fi
+        rm -f "$_child_int_escape_file"
       fi
     # END SHELL RETURN
 

@@ -1186,9 +1186,10 @@ def check_hand_chosen(
     A held name that is an unactivated spare of the slot's own machine, and not in that
     machine's offline ``spool`` (read from disk when None), is ``spare``: the reservation
     takes it by activating the row. Any other held name is ``held``. Then ``rejected``
-    (:func:`hand_choice_refusal`; ``session`` is the session a migration renames), then come
-    ``confusable`` (one edit from a held name, or a strict-prefix title pair), then
-    ``word``. A name in the database is then ``ok`` inside the limits and ``limits``
+    (:func:`hand_choice_refusal`; ``session`` is the session a migration renames), then
+    reserved aliases and ``agents`` are refused as ``word``. Other names are checked for
+    ``confusable`` (one edit from a held name, or a strict-prefix title pair) and common
+    words. A name in the database is then ``ok`` inside the limits and ``limits``
     outside them; a name not in the database is ``unknown`` whatever its length,
     because the flow asks whether to add it before it checks the limits.
     """
@@ -1203,6 +1204,8 @@ def check_hand_chosen(
     refusal = hand_choice_refusal(snapshot, name, slot, session)
     if refusal:
         return refusal
+    if name in alias_words() | {slot.repo_alias, slot.host_alias, "agents"}:
+        return "word", f"reserved name rule refused {name!r}: it is a repo or host alias; choose another name"
     if _TOKEN_RE.fullmatch(name):
         held = held_tokens(snapshot)
         if int(policy.get("confusable", {}).get("max_edit_distance", 1)):

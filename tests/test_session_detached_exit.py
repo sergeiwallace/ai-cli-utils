@@ -13,6 +13,8 @@ import pytest
 from conftest import tmux_runnable
 from process_ownership import reap, spawn_owned
 
+from ai_cli import config, session_naming
+
 pytestmark = [
     pytest.mark.real_tmux,
     pytest.mark.skipif(sys.platform == "win32", reason="detached POSIX launch contract"),
@@ -40,7 +42,6 @@ with ExitStack() as stack:
         "ai_cli.config.get_current_project_name": "myproject",
         "ai_cli.config.get_session_map": {},
         "ai_cli.config.detect_machine_profile": {"host_id": "host-a"},
-        "ai_cli.session_naming.resolve_or_prompt_host_alias": "tst",
         "ai_cli.session._resolve_is_remote": False,
         "ai_cli.session_script.get_engine_script": "exec sleep 60\n",
         "ai_cli.session_registry.current_boot_id": "test-boot",
@@ -85,7 +86,7 @@ with ExitStack() as stack:
 
 
 @pytest.fixture
-def detached_cli(tmp_path, monkeypatch):
+def detached_cli(tmp_path, monkeypatch, register_repo):
     runnable, reason = tmux_runnable()
     if not runnable:
         pytest.skip(reason)
@@ -96,6 +97,10 @@ def detached_cli(tmp_path, monkeypatch):
         ("XDG_DATA_HOME", "data"),
     ):
         monkeypatch.setenv(variable, str(tmp_path / directory))
+    alias_file = config.get_xdg_config_home() / session_naming.ALIAS_FILENAME
+    alias_file.parent.mkdir(parents=True, exist_ok=True)
+    alias_file.write_text('[aliases]\nhost-a = "tst"\n', encoding="utf-8")
+    register_repo(tmp_path, "myproject")
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
     monkeypatch.setenv("SHELL", "/bin/sh")
     monkeypatch.setenv("TERM", "xterm-256color")

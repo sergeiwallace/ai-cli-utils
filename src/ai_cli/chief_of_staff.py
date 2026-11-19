@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -42,6 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config as _config
+from . import tmux_binary
 
 try:
     import fcntl as _fcntl
@@ -334,10 +334,10 @@ def read_registration(home: Path) -> dict | None:
 
 def tmux_has_session(target: str) -> bool:
     """Whether a tmux session named exactly ``target`` exists (False without tmux)."""
-    if not target or shutil.which("tmux") is None:
+    if not target or tmux_binary.which() is None:
         return False
     try:
-        result = subprocess.run(["tmux", "has-session", "-t", f"={target}"], capture_output=True, check=False)
+        result = subprocess.run(tmux_binary.argv("has-session", "-t", f"={target}"), capture_output=True, check=False)
     except OSError:
         return False
     return result.returncode == 0

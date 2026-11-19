@@ -1,0 +1,1 @@
+- `ai copier-update` opens or reuses a pull request when direct pushes to `main` are gated or refused by the worktree hook. The run reports the pull request number and URL and counts it as a successful update pending review.

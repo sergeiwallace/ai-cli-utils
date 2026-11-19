@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import (
-    _REAL_CANONICAL_WORKTREE_REGISTRY,
+    _COLLECTION_CANONICAL_WORKTREE_REGISTRY,
     _REAL_HOME,
     canonical_registry_breach,
 )
@@ -35,40 +35,46 @@ def test_given_an_ordinary_test_when_the_registry_resolves_then_it_is_outside_th
     """The property the autouse redirect exists for, asserted without opting into anything."""
     resolved = get_canonical_worktree_registry_path()
 
-    assert resolved != _REAL_CANONICAL_WORKTREE_REGISTRY
+    assert resolved != _COLLECTION_CANONICAL_WORKTREE_REGISTRY
     assert _REAL_HOME not in resolved.parents
     assert canonical_registry_breach() == ""
 
 
-def test_given_a_test_that_registers_a_worktree_when_it_runs_then_the_real_registry_is_untouched(tmp_path):
-    """The end-to-end property: a real registration lands in the per-test file, not the live one.
-
-    This is the exact call that produced the 935 stray entries, driven deliberately here.
-    """
-    before = _REAL_CANONICAL_WORKTREE_REGISTRY.read_bytes() if _REAL_CANONICAL_WORKTREE_REGISTRY.exists() else None
+def test_given_a_worktree_when_registered_then_the_collection_time_registry_is_untouched(tmp_path):
+    """A real registration leaves the collection-time registry untouched."""
+    before = (
+        _COLLECTION_CANONICAL_WORKTREE_REGISTRY.read_bytes()
+        if _COLLECTION_CANONICAL_WORKTREE_REGISTRY.exists()
+        else None
+    )
     worktree = tmp_path / "myproject" / ".worktrees" / "session-1"
     worktree.mkdir(parents=True)
 
     action, registry = register_canonical_worktree(worktree, engine="c", session_name="c-myproject-1")
 
     assert action == "created"
-    assert registry != _REAL_CANONICAL_WORKTREE_REGISTRY
+    assert registry != _COLLECTION_CANONICAL_WORKTREE_REGISTRY
+    assert not registry.is_relative_to(_REAL_HOME)
     assert json.loads(registry.read_text(encoding="utf-8"))["worktrees"][0]["path"] == str(worktree.resolve())
-    after = _REAL_CANONICAL_WORKTREE_REGISTRY.read_bytes() if _REAL_CANONICAL_WORKTREE_REGISTRY.exists() else None
-    assert after == before, "the registration reached the operator's real registry"
+    after = (
+        _COLLECTION_CANONICAL_WORKTREE_REGISTRY.read_bytes()
+        if _COLLECTION_CANONICAL_WORKTREE_REGISTRY.exists()
+        else None
+    )
+    assert after == before, "the registration reached the collection-time registry"
 
 
-def test_given_the_override_points_at_the_real_registry_when_the_guard_checks_then_it_reports_a_breach():
+def test_given_the_collection_time_registry_override_when_the_guard_checks_then_it_reports_a_breach():
     """Negative control: the guard must FAIL when the redirect is undone.
 
     Applied with ``patch.dict`` rather than ``monkeypatch`` so the environment is restored
     before this test's teardown runs -- the guard is autouse, and a breach still in force at
     teardown would (correctly) fail this test for causing one.
     """
-    with patch.dict(os.environ, {OVERRIDE: str(_REAL_CANONICAL_WORKTREE_REGISTRY)}):
+    with patch.dict(os.environ, {OVERRIDE: str(_COLLECTION_CANONICAL_WORKTREE_REGISTRY)}):
         breach = canonical_registry_breach()
 
-    assert str(_REAL_CANONICAL_WORKTREE_REGISTRY) in breach
+    assert str(_COLLECTION_CANONICAL_WORKTREE_REGISTRY) in breach
 
 
 def test_given_windows_resolution_when_only_home_is_redirected_then_the_guard_still_reports_a_breach():

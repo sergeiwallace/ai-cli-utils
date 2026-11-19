@@ -807,7 +807,7 @@ Leaving that gap open would narrow an explicit trigger, so it goes to the operat
 
 - Restarts healthy sessions about once per N hours, which the audit read as contrary to the ask.
 
-##### (c) Configure a cross-host observer on each host pair
+##### (c) Configure a cross-host observer on each machine host group
 
 **Pros:**
 

@@ -13,7 +13,7 @@ import textwrap
 
 import pytest
 from click.testing import CliRunner
-from name_fleet import DOLT_REF, HOST, NAMES, POLICY_TOML, REPO, build_fleet, git
+from name_fleet import DOLT_REF, HOST, NAMES, POLICY_TOML, REGISTRY_TEST_TIMEOUT_S, REPO, build_fleet, git
 
 from ai_cli import name_import, session_naming
 from ai_cli import name_registry as reg
@@ -41,7 +41,7 @@ def _database(fleet, name: str = "observer") -> DoltRegistry:
         dolt_ref=DOLT_REF,
         remote="origin",
         policy_file=fleet.repo / reg.POLICY_MARKER,
-        timeout_s=15,
+        timeout_s=REGISTRY_TEST_TIMEOUT_S,
         attempts=5,
         path=fleet.tmp / f"{name}.dolt",
     )

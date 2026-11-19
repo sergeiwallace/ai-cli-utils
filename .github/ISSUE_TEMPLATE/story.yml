@@ -1,0 +1,33 @@
+name: Story
+description: A user-facing capability, written as one user-story sentence with testable acceptance criteria.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: Story
+      description: Exactly one sentence in this form.
+      placeholder: "As a ..., I want ..., so that ..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this exists, what depends on it, and the design, plan or decision it comes from, by link.
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Two to eight criteria, each observable and each a test someone can run.
+      placeholder: |
+        1. Given <starting state>, when <action>, then <observable result>.
+        2. Given <starting state>, when <action>, then <observable result>.
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What a reader might reasonably assume is included and is not.
+      placeholder: "- ..."

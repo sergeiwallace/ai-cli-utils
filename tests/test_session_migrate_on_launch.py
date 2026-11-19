@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 import test_session_migrate
 import test_session_migrate_hooks
-from conftest import run_cli as _run_cli
 from test_session_migrate import (
     NEW,
     OLD,
@@ -520,7 +519,9 @@ def test_given_the_finish_refuses_when_new_is_relaunched_from_its_recipe_then_it
 
 
 def test_given_the_launch_help_when_printed_then_it_names_the_finish_the_refusal_and_the_override():
-    code, out, _err = _run_cli(["ai", "c", "--help"])
+    from conftest import run_cli
+
+    code, out, _err = run_cli(["ai", "c", "--help"])
     assert code == 0
     text = " ".join(out.split())
     assert "migrate-session OLD NEW --finish -y" in text

@@ -15,11 +15,25 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import overload
 
 from . import output as _out
 from .output import Tag
+
+_INSPECTION_ONLY = ContextVar("inspection_only", default=False)
+
+
+@contextlib.contextmanager
+def inspection_only():
+    """Keep transitive config/path reads from initializing or migrating local state."""
+    token = _INSPECTION_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _INSPECTION_ONLY.reset(token)
+
 
 TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
@@ -55,6 +69,8 @@ def _pid_alive(pid: int) -> bool:
 def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     """Rename old XDG dir to new name if old exists and new does not."""
     if old.exists() and not new.exists():
+        if _INSPECTION_ONLY.get():
+            return old
         old.rename(new)
     return new
 
@@ -106,6 +122,11 @@ def resolve_base_dir(env_var: str, fallback: Path | str) -> Path | str:
 
 #: ``host_id_source`` when nothing identified the machine and its hostname stood in.
 HOST_ID_SOURCE_HOSTNAME = "hostname"
+#: ``host_id_source`` when the id is the one recorded in config.toml's ``[machine]`` table.
+HOST_ID_SOURCE_CONFIG = "config.toml [machine] host_id"
+#: Set by a read-only load that filled a missing ``host_id`` by detection, naming the tier
+#: that answered, so the filled value is never reported as a recorded one.
+_DETECTED_SOURCE_KEY = "_host_id_detected_from"
 
 
 def machine_marker_file(config: dict | None = None) -> Path | None:
@@ -135,8 +156,11 @@ def detect_machine_profile(config: dict | None = None) -> dict[str, str]:
     """Return this machine's host_id, os_type, and which tier supplied the host_id.
 
     host_id: the ``AI_HOST`` environment variable, then the ``[machine] marker_file`` marker
-    (:func:`machine_marker_file`; ``config`` is passed through to it), then
-    ``socket.gethostname()``.
+    (:func:`machine_marker_file`; ``config`` is passed through to it), then the
+    ``[machine] host_id`` the machine's first launch recorded in config.toml, then
+    ``socket.gethostname()``. The recorded tier is what makes every shell on one machine agree:
+    a shell whose login profile does not export ``AI_HOST`` takes the recorded id rather than
+    its hostname.
     os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'.
 
     The marker tier is the point.  ``AI_HOST`` is exported by an interactive login profile, so
@@ -155,10 +179,23 @@ def detect_machine_profile(config: dict | None = None) -> dict[str, str]:
     """
     host_id = os.environ.get("AI_HOST", "").strip()
     source = "AI_HOST"
-    marker = machine_marker_file(config) if not host_id else None
-    if marker is not None:
-        host_id = _read_machine_marker(marker) or ""
-        source = str(marker)
+    if not host_id:
+        cfg = load_config(read_only=True) if config is None else config
+        marker = machine_marker_file(cfg)
+        if marker is not None:
+            host_id = _read_machine_marker(marker) or ""
+            source = str(marker)
+        if not host_id:
+            # The id the machine's first launch recorded. A shell whose login profile does not
+            # export AI_HOST (PowerShell beside Git Bash on one Windows machine) takes it here,
+            # so it never names sessions or registers itself as a second machine.
+            machine = cfg.get("machine")
+            if not isinstance(machine, dict):
+                machine = {}
+            recorded = machine.get("host_id")
+            if isinstance(recorded, str) and recorded.strip():
+                host_id = recorded.strip()
+                source = machine.get(_DETECTED_SOURCE_KEY) or HOST_ID_SOURCE_CONFIG
     if not host_id:
         host_id = socket.gethostname()
         source = HOST_ID_SOURCE_HOSTNAME
@@ -309,6 +346,27 @@ def auto_restart_enabled(path: str | Path) -> bool:
     except Exception:  # any read or parse failure keeps restarts on
         return True
     return not (isinstance(section, dict) and section.get("auto_restart") is False)
+
+
+RESTART_STOP_WINDOW_DEFAULT_SECONDS = 3
+
+
+def restart_stop_window_seconds(path: str | Path) -> int:
+    """``[session] restart_stop_window_seconds`` in the config file at ``path``, read now; never raises.
+
+    The whole seconds the wrapper waits after a clean agent exit before restarting it, during
+    which one Ctrl+C ends the session instead. ``0`` restarts at once. A missing key, an
+    unreadable or malformed file, or a value that is not a non-negative finite number gives
+    the default; a fraction rounds up. Read at every clean exit, so an edit applies at the next.
+    """
+    try:
+        section = tomllib.loads(Path(path).read_text(encoding="utf-8")).get("session", {})
+    except Exception:  # any read or parse failure keeps the default window
+        return RESTART_STOP_WINDOW_DEFAULT_SECONDS
+    value = section.get("restart_stop_window_seconds") if isinstance(section, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+        return RESTART_STOP_WINDOW_DEFAULT_SECONDS
+    return math.ceil(value)
 
 
 def config_file_text() -> str:
@@ -656,6 +714,27 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Example: ["example-plugin@example-marketplace"]. Empty refreshes nothing.
 # refresh_plugins = []
 
+[extensions]
+## Commands run once by every `ai c` launch, before the session starts, on the machine
+## that hosts the session. Read on every launch. Nothing listed: nothing runs.
+## Guide: docs/guides/launch-extensions.md.
+## on_error: what a failing extension does (a missing path or command, a non-zero exit,
+## a timeout). "fail" prints and logs an error and refuses the launch; "warn" prints and
+## logs a warning and the launch continues. Each extension may override it.
+# on_error = "fail"
+## Seconds each extension may run. One that starts something long-lived detaches it and
+## returns; the launcher stops one that is still running at the timeout.
+# timeout_seconds = 30
+## One table per extension, run in the order listed. path: the directory the command runs
+## in, absolute or relative to [project] projects_dir. command: the argument list, run
+## without a shell; a relative first element with a directory part (bin/start) resolves
+## inside path, a bare name (python3) is looked up on PATH.
+# [extensions.run.heartbeat]
+# path = "myextensions"
+# command = ["python3", "scripts/heartbeat.py", "--file", "heartbeat.txt"]
+# on_error = "warn"
+# timeout_seconds = 10
+
 [restart_session]
 ## Safe restart defaults, read on every call. External commands belong in
 ## restart-session.d/*.toml beside this file.
@@ -845,6 +924,24 @@ stale_session_timeout = 15
 ## means true. false lets the session end at the agent's next exit. The supervisor reads
 ## this from this file at every exit, so a change applies at the next exit, no relaunch.
 # auto_restart = true
+## After a clean exit (/exit, Ctrl+D, or Claude Code's own double Ctrl+C, which all return
+## 0), wait this many whole seconds before restarting; one Ctrl+C in that window ends the
+## session instead (so does `ai exit-session`). 0 restarts at once. Default 3. Read at
+## every clean exit, so a change applies at the next one.
+# restart_stop_window_seconds = 3
+
+[tmux]
+## The multiplexer executable every tmux call runs: the launch, attach, ls and every
+## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more
+## than one build answers to `tmux` (on Windows psmux installs tmux.exe, pmux.exe and
+## psmux.exe, and an MSYS2 tmux may also be on PATH), so every shell on this machine
+## runs the same one. A bare name is looked up on PATH; a path is used as given. A
+## binary that does not exist is refused by name, never replaced by the tmux on PATH.
+# binary = "C:/Users/user/AppData/Local/Microsoft/WinGet/Links/psmux.exe"
+## One machine's value, by its [machine] host_id, overriding the one above on that
+## machine. Useful when one config.toml is shared between machines.
+#[tmux.hosts.my-laptop]
+# binary = "/opt/homebrew/bin/tmux"
 
 [session_names]
 ## Every key here ships commented out. Unset, a key comes from the shared name
@@ -915,8 +1012,6 @@ scope = "group"
 ## Fallback member ID or SSH alias when [machine] session_group_members is unset.
 ## Empty uses the default remote machine, when configured.
 group_host = ""
-## Deprecated alias of group_host, still read: pair_host. Use group_host.
-# pair_host = ""
 
 [stale_session_reaper]
 ## The independently supervised reaper evaluates candidates in observe mode by
@@ -1117,6 +1212,13 @@ boot = false
 ## Read fresh on every launch, so editing this takes effect immediately: no CC
 ## session or agent needs to restart, unlike an environment-variable override.
 # script_path = "~/projects/myenv/scripts/dolt_server.py"
+
+[copier_update]
+## Name of the repository under projects_dir that holds the canonical readme-sync
+## configuration (config/canonical-readme-sync.toml). 'ai copier-update' skips the
+## template files that configuration mirrors from that repository. The shipped default
+## is read from the package's copier-update.toml; set this to override it for one machine.
+# canonical_source_repo = "my-source-repo"
 """
 
 
@@ -1143,6 +1245,7 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
 
 
 def load_config(*, read_only: bool = False):
+    read_only = read_only or _INSPECTION_ONLY.get()
     # Inspection commands must not initialise a profile or change permissions.
     config_path = Path(config_file_text()) if read_only else get_xdg_config_home() / "config.toml"
 
@@ -1172,6 +1275,8 @@ def load_config(*, read_only: bool = False):
         if missing:
             profile = detect_machine_profile(cfg)
             machine.update({key: profile[key] for key in missing})
+            if "host_id" in missing:
+                machine[_DETECTED_SOURCE_KEY] = profile["host_id_source"]
     elif ensure_machine_profile_registered(config_path, cfg):
         try:
             with config_path.open("rb") as f:
@@ -1682,10 +1787,11 @@ def resolve_project_prefix(path: Path | None = None) -> str:
     metadata = _read_local_project_metadata(root)
     if metadata:
         prefix, project_type = metadata
-        register_project(root, prefix, project_type)
+        if not _INSPECTION_ONLY.get():
+            register_project(root, prefix, project_type)
         return prefix
 
-    if not _can_prompt():
+    if _INSPECTION_ONLY.get() or not _can_prompt():
         raise ProjectPrefixError(
             f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
         )
@@ -1764,16 +1870,21 @@ def save_session_map(d, engine="c"):
 WORKTREE_DIR = ".worktrees"
 
 
+def projects_dir_from(config: dict) -> Path:
+    """``[project] projects_dir`` of an already loaded ``config``; ``~/projects`` when unset."""
+    section = config.get("project", {})
+    custom = section.get("projects_dir") if isinstance(section, dict) else None
+    if custom:
+        return Path(custom).expanduser()
+    return Path.home() / "projects"
+
+
 def _get_projects_dir() -> Path:
     """Return the base directory for all projects. Configurable via [project] projects_dir."""
     try:
-        cfg = load_config().get("project", {})
-        custom = cfg.get("projects_dir")
-        if custom:
-            return Path(custom).expanduser()
+        return projects_dir_from(load_config())
     except Exception:
-        pass
-    return Path.home() / "projects"
+        return Path.home() / "projects"
 
 
 def get_worktree_marker_prefix() -> str:
@@ -1819,6 +1930,26 @@ def get_environment_repo() -> str:
     except Exception:
         return ""
     return value.strip() if isinstance(value, str) else ""
+
+
+def get_canonical_source_repo() -> str:
+    """Read ``[copier_update] canonical_source_repo`` with the shipped default as fallback."""
+    try:
+        section = load_config(read_only=True).get("copier_update")
+    except (AttributeError, ValueError):
+        section = None
+    value = section.get("canonical_source_repo") if isinstance(section, dict) else None
+    name = value.strip() if isinstance(value, str) else ""
+    if name not in {".", ".."} and re.fullmatch(r"[^/\\:\x00]+", name):
+        return name
+
+    module_path = Path(__file__).resolve()
+    defaults_path = module_path.parent / "data" / "copier-update.toml"
+    if not defaults_path.is_file():
+        # Editable installations read the same defaults from the source checkout.
+        defaults_path = module_path.parents[2] / "config" / "copier-update.toml"
+    with defaults_path.open("rb") as defaults:
+        return tomllib.load(defaults)["copier_update"]["canonical_source_repo"]
 
 
 def _find_project_dir(name: str, _home: Path | None = None) -> Path:
