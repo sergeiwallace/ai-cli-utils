@@ -15,11 +15,25 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import overload
 
 from . import output as _out
 from .output import Tag
+
+_INSPECTION_ONLY = ContextVar("inspection_only", default=False)
+
+
+@contextlib.contextmanager
+def inspection_only():
+    """Keep transitive config/path reads from initializing or migrating local state."""
+    token = _INSPECTION_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _INSPECTION_ONLY.reset(token)
+
 
 TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
@@ -55,6 +69,8 @@ def _pid_alive(pid: int) -> bool:
 def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     """Rename old XDG dir to new name if old exists and new does not."""
     if old.exists() and not new.exists():
+        if _INSPECTION_ONLY.get():
+            return old
         old.rename(new)
     return new
 
@@ -1115,6 +1131,13 @@ boot = false
 ## Read fresh on every launch, so editing this takes effect immediately: no CC
 ## session or agent needs to restart, unlike an environment-variable override.
 # script_path = "~/projects/myenv/scripts/dolt_server.py"
+
+[copier_update]
+## Name of the repository under projects_dir that holds the canonical readme-sync
+## configuration (config/canonical-readme-sync.toml). 'ai copier-update' skips the
+## template files that configuration mirrors from that repository. The shipped default
+## is read from the package's copier-update.toml; set this to override it for one machine.
+# canonical_source_repo = "my-source-repo"
 """
 
 
@@ -1141,6 +1164,7 @@ def get_sidecar_config(config: dict) -> dict[str, bool | str]:
 
 
 def load_config(*, read_only: bool = False):
+    read_only = read_only or _INSPECTION_ONLY.get()
     # Inspection commands must not initialise a profile or change permissions.
     config_path = Path(config_file_text()) if read_only else get_xdg_config_home() / "config.toml"
 
@@ -1680,10 +1704,11 @@ def resolve_project_prefix(path: Path | None = None) -> str:
     metadata = _read_local_project_metadata(root)
     if metadata:
         prefix, project_type = metadata
-        register_project(root, prefix, project_type)
+        if not _INSPECTION_ONLY.get():
+            register_project(root, prefix, project_type)
         return prefix
 
-    if not _can_prompt():
+    if _INSPECTION_ONLY.get() or not _can_prompt():
         raise ProjectPrefixError(
             f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
         )
@@ -1817,6 +1842,26 @@ def get_environment_repo() -> str:
     except Exception:
         return ""
     return value.strip() if isinstance(value, str) else ""
+
+
+def get_canonical_source_repo() -> str:
+    """Read ``[copier_update] canonical_source_repo`` with the shipped default as fallback."""
+    try:
+        section = load_config(read_only=True).get("copier_update")
+    except (AttributeError, ValueError):
+        section = None
+    value = section.get("canonical_source_repo") if isinstance(section, dict) else None
+    name = value.strip() if isinstance(value, str) else ""
+    if name not in {".", ".."} and re.fullmatch(r"[^/\\:\x00]+", name):
+        return name
+
+    module_path = Path(__file__).resolve()
+    defaults_path = module_path.parent / "data" / "copier-update.toml"
+    if not defaults_path.is_file():
+        # Editable installations read the same defaults from the source checkout.
+        defaults_path = module_path.parents[2] / "config" / "copier-update.toml"
+    with defaults_path.open("rb") as defaults:
+        return tomllib.load(defaults)["copier_update"]["canonical_source_repo"]
 
 
 def _find_project_dir(name: str, _home: Path | None = None) -> Path:

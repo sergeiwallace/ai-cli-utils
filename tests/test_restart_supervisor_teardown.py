@@ -76,10 +76,30 @@ def _describe(processes):
     return lines
 
 
-@pytest.mark.parametrize("outcome", ["pass", "fail", "kill", "worker-kill", "watcher-kill", "long-lifetime"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "pass",
+        "fail",
+        "kill",
+        "worker-kill",
+        "watcher-kill",
+        "long-lifetime",
+        "script-kill",
+        "script-watcher-kill",
+        "script-long-lifetime",
+    ],
+)
 def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_process_survives(tmp_path, outcome):
+    script_fixture = outcome.startswith("script-")
+    outcome = outcome.removeprefix("script-")
     lifetime_test = outcome in {"watcher-kill", "long-lifetime"}
-    lifetime = process_wait_seconds(8)
+    lifetime = process_wait_seconds(16 if script_fixture else 8)
+    fixture_import = (
+        "from test_session_script_restart_finish import migrated, slot, wrapper as supervisor_fixture"
+        if script_fixture
+        else "from test_restart_supervisor import supervisor_fixture"
+    )
     ready = tmp_path / "ready.json"
     proceed = tmp_path / "proceed"
     inner = tmp_path / "test_inner.py"
@@ -89,12 +109,14 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
         from pathlib import Path
         import psutil
         import pytest
-        from test_restart_supervisor import supervisor_fixture
+        {fixture_import}
 
         @pytest.mark.real_tmux
-        @pytest.mark.parametrize("supervisor_fixture", [{("current" if lifetime_test else None)!r}], indirect=True)
+        @pytest.mark.parametrize("supervisor_fixture", [{("current" if lifetime_test and not script_fixture else None)!r}], indirect=True)
         def test_inner(supervisor_fixture):
-            root, script, supervisor = supervisor_fixture
+            root, supervisor, _ = supervisor_fixture if {script_fixture!r} else (
+                supervisor_fixture[0], supervisor_fixture[2], supervisor_fixture[1]
+            )
             launches = root / "launches"
             while not launches.exists() or not launches.read_text(encoding="utf-8").endswith("\\n"):
                 assert supervisor.poll() is None, "the fixture wrapper exited before its agent started"
@@ -196,13 +218,18 @@ def test_given_a_running_supervisor_fixture_when_its_test_ends_then_no_wrapper_p
                 assert_gone()
         finally:
             if runner.poll() is None:
+                # Preserve identities before killing a runner that failed before publishing its record.
+                with contextlib.suppress(psutil.Error):
+                    members.extend(psutil.Process(runner.pid).children(recursive=True))
                 runner.kill()
                 runner.wait(timeout=_WAIT)
             # The fixture has no terminal or reaper heartbeat, so its entire payload
             # stays in the supervisor's group, including children launched after ready.
-            if any(_alive(p) for p in members):
+            for process in members:
                 with contextlib.suppress(ProcessLookupError):
-                    os.killpg(supervisor_pid, signal.SIGKILL)
+                    if _alive(process) and os.getpgid(process.pid) == supervisor_pid:
+                        os.killpg(supervisor_pid, signal.SIGKILL)
+                        break
             for process in members:
                 with contextlib.suppress(psutil.Error):
                     if _alive(process):
