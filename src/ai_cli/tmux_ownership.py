@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import psutil
 
+from . import tmux_binary
+
 _IDENTITY_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}"
 _FENCE_FORMAT = "#{session_id}|#{@ai_cli_session_generation}"
 _FENCE_MISMATCH = "__ai_cli_ownership_mismatch__"
@@ -59,12 +61,12 @@ def capture_tmux_session_identity(
     target: str,
     *,
     expected_generation: str | None = None,
-    tmux_command: Sequence[str] = ("tmux",),
+    tmux_command: Sequence[str] | None = None,
 ) -> TmuxSessionIdentity | None:
     """Capture a validated opaque ID and managed-generation marker."""
     try:
         result = subprocess.run(
-            [*tmux_command, "display-message", "-p", "-t", target, _IDENTITY_FORMAT],
+            [*tmux_binary.command(tmux_command), "display-message", "-p", "-t", target, _IDENTITY_FORMAT],
             capture_output=True,
             text=True,
             check=False,
@@ -91,7 +93,7 @@ def capture_tmux_session_identity(
 def kill_owned_tmux_session(
     identity: TmuxSessionIdentity,
     *,
-    tmux_command: Sequence[str] = ("tmux",),
+    tmux_command: Sequence[str] | None = None,
     terminate_pane_processes: bool = False,
     process_timeout: float = _PROCESS_TERMINATION_TIMEOUT_SECONDS,
 ) -> bool:
@@ -110,7 +112,7 @@ def kill_owned_tmux_session(
     try:
         result = subprocess.run(
             [
-                *tmux_command,
+                *tmux_binary.command(tmux_command),
                 "if-shell",
                 "-F",
                 "-t",
@@ -132,11 +134,11 @@ def kill_owned_tmux_session(
     return killed
 
 
-def _capture_pane_process_tree(target: str, tmux_command: Sequence[str]) -> list[psutil.Process]:
+def _capture_pane_process_tree(target: str, tmux_command: Sequence[str] | None) -> list[psutil.Process]:
     """Return the pane process and descendants while their relationship exists."""
     try:
         result = subprocess.run(
-            [*tmux_command, "display-message", "-p", "-t", target, _PANE_PID_FORMAT],
+            [*tmux_binary.command(tmux_command), "display-message", "-p", "-t", target, _PANE_PID_FORMAT],
             capture_output=True,
             text=True,
             check=False,

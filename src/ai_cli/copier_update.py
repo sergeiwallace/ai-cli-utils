@@ -3,8 +3,8 @@
 Two modes:
 
 * **isolated** (default, AI-CLI-91) — for each target repo, create a temporary git
-  worktree off fresh ``origin/main``, run ``copier update`` there, commit, push
-  ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
+  worktree off fresh ``origin/main``, run ``copier update`` there, and commit.
+  After a successful push to ``main``, sync the main tree and remove the worktree. All churn is isolated
   from the repo's main working tree, so this is safe to run while other CC sessions
   are actively working in a repo. Before committing, the worktree gets the repo's
   dependency environment so its own commit and push hooks run as they would in the
@@ -19,8 +19,9 @@ Two modes:
   that is not git-ignored fails the project before any commit. Conflicts and
   semantic failures are saved under verified ``refs/backup/`` anchors and filed
   as repository issues before cleanup.
-  A rejected push is anchored (and copied to origin when its gate allows), filed as a
-  recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
+  A fleet gate on main or a worktree push refusal routes the update through a pull request.
+  Other rejected pushes and failed PR attempts are anchored, filed as recovery issues,
+  and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
 
 * **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
   each repo's main working tree and leave the changes uncommitted for a manual
@@ -60,7 +61,8 @@ import yaml
 from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
-from .config import get_canonical_source_repo
+from .config import get_canonical_source_repo, get_fleet_registry_path
+from .copier_pr import PendingUpdatePR, _open_update_pr
 from .copier_recovery import (
     _anchor_failed_update,
     _check_recovery_target,
@@ -563,6 +565,25 @@ def _mirror_skip_note(paths: tuple[str, ...]) -> str:
     return f" (skipped canonical-readme-sync mirrors from this repository: {', '.join(paths)})"
 
 
+def _load_gated_main_projects() -> set[str]:
+    """Read the existing direct-push gate from the fleet project registry."""
+    path = get_fleet_registry_path()
+    if path is None:
+        return set()
+    with path.open("rb") as file:
+        projects = tomllib.load(file).get("projects", [])
+    if not isinstance(projects, list):
+        raise ValueError("expected a list of fleet projects")
+    return {
+        project["name"].casefold()
+        for project in projects
+        if isinstance(project, dict)
+        and isinstance(project.get("name"), str)
+        and isinstance(project.get("gated_branches"), list)
+        and "main" in project["gated_branches"]
+    }
+
+
 def _question_defaults(config: dict[str, object]) -> dict[str, object]:
     """Literal defaults of the template's questions, so an answer the project never stored still renders."""
     defaults: dict[str, object] = {}
@@ -997,6 +1018,22 @@ def _git_read(args: list[str]) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def _worktree_removed(root: Path, wt_dir: Path, branch: str) -> bool:
+    remaining = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
+    listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
+    return (
+        not os.path.lexists(wt_dir)
+        and remaining is not None
+        and not remaining.strip()
+        and listing is not None
+        and not any(
+            Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        )
+    )
+
+
 def _leftover_hold_reason(root: Path, wt_dir: Path, branch: str) -> str | None:
     """Why a prior run's temp worktree/branch must be kept, or None when it is disposable.
 
@@ -1385,7 +1422,8 @@ def _do_update_in_worktree(
     inspect: bool = False,
     *,
     mirror_excludes: tuple[str, ...] = (),
-) -> tuple[str, str | list[str] | DeliveredUpdate]:
+    pr_only: bool = False,
+) -> tuple[str, str | list[str] | DeliveredUpdate | PendingUpdatePR]:
     """Run copier + commit/push inside an already-created worktree.
 
     Returns (status, detail) where status is one of:
@@ -1394,7 +1432,8 @@ def _do_update_in_worktree(
       nochange  — copier produced no changes — detail unused
       conflict  — merge conflicts — detail = list[str] of relative paths
       parityfail — a template file or hunk did not land — detail = str (message)
-      pushfail  — committed but push rejected — detail = str (git stderr)
+      prpending: update has an open pull request, detail = PendingUpdatePR
+      pushfail  — committed but push or PR failed — detail = str (diagnostics)
       failed    — copier or commit failed — detail = str (message)
     """
     update_error, original_answers, template_changes = _run_copier_update(
@@ -1483,24 +1522,36 @@ def _do_update_in_worktree(
         assert changed_files is not None  # guaranteed by check at line 650
         delivered_update = DeliveredUpdate(wt_dir, commit_hash.stdout.strip(), changed_files)
 
-    if push:
-        pr = subprocess.run(
+    if not push:
+        return "ok", delivered_update if inspect else ""
+
+    report = "Direct push to main is gated by the fleet project registry."
+    if not pr_only:
+        pushed = subprocess.run(
             ["git", "-C", str(wt_dir), "push", "origin", "HEAD:main"],
             capture_output=True,
             text=True,
             env=_git_env(),
             check=False,
         )
-        if pr.returncode != 0:
-            # A pre-push hook (the repo's test gate) reports on stdout, so stderr alone
-            # shows only git's closing "failed to push some refs" line.
-            report = "\n".join(part for part in (pr.stdout.strip(), pr.stderr.strip()) if part)
+        if pushed.returncode == 0:
+            # Keep the repo's main working tree in sync with what we just shipped.
+            subprocess.run(
+                ["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False
+            )
+            repair_bare_worktree_config(root)
+            return "ok", delivered_update if inspect else ""
+        # Hooks may report on stdout while Git's closing failure line is on stderr.
+        report = "\n".join(part for part in (pushed.stdout.strip(), pushed.stderr.strip()) if part)
+        if "worktree push refused" not in report:
             return "pushfail", (report or "push failed")
-        # Keep the repo's main working tree in sync with what we just shipped.
-        subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
-        repair_bare_worktree_config(root)
 
-    return "ok", delivered_update if inspect else ""
+    if resolved_source is None:
+        return "pushfail", f"{report}\nCould not resolve the template version for the PR."
+    try:
+        return "prpending", _open_update_pr(wt_dir, root.name, resolved_source)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return "pushfail", f"{report}\n{exc}"
 
 
 def _update_one_isolated(
@@ -1511,10 +1562,11 @@ def _update_one_isolated(
     resolved_source: str | None = None,
     *,
     mirror_excludes: tuple[str, ...] = (),
-) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure]:
+    pr_only: bool = False,
+) -> tuple[str, str | list[str] | DeliveredUpdate | RecoveredPushFailure | PendingUpdatePR]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
-    On ok/nochange/failed the temp worktree is removed. Conflicts and semantic
+    On ok/nochange/failed/prpending the temp worktree is removed. Conflicts and semantic
     failures and rejected pushes are anchored and removed. Recovery failures keep
     the checkout and return ``recoveryfail``. A
     leftover from a prior run that is not provably disposable returns ``kept`` with
@@ -1579,7 +1631,14 @@ def _update_one_isolated(
         return "failed", f"worktree add failed: {add.stderr.strip()}"
 
     status, detail = _do_update_in_worktree(
-        wt_dir, root, copier_bin, push, resolved_source, inspect=inspect, mirror_excludes=mirror_excludes
+        wt_dir,
+        root,
+        copier_bin,
+        push,
+        resolved_source,
+        inspect=inspect,
+        mirror_excludes=mirror_excludes,
+        pr_only=pr_only,
     )
 
     if inspect and status == "ok":
@@ -1630,19 +1689,7 @@ def _update_one_isolated(
             else:
                 _check_recovery_target(root, wt_dir, branch, ref)
             _cleanup_worktree(root, wt_dir, branch)
-            remaining = _git_read(["-C", str(root), "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"])
-            listing = _git_read(["-C", str(root), "worktree", "list", "--porcelain"])
-            if (
-                os.path.lexists(wt_dir)
-                or remaining is None
-                or remaining.strip()
-                or listing is None
-                or any(
-                    Path(line[len("worktree ") :]).resolve() == wt_dir.resolve()
-                    for line in listing.splitlines()
-                    if line.startswith("worktree ")
-                )
-            ):
+            if not _worktree_removed(root, wt_dir, branch):
                 raise RuntimeError(f"backup anchor {ref}: worktree or branch cleanup failed")
             if filing_error:
                 return "recoveryfail", f"backup anchor {ref}: issue filing failed: {filing_error}"
@@ -1655,8 +1702,11 @@ def _update_one_isolated(
             return "recoveryfail", f"{wt_dir}: recovery failed: {exc}"
 
     # Clean updates and transient failures retain their existing cleanup policy.
-    if status in ("ok", "nochange", "failed"):
+    if status in ("ok", "nochange", "failed", "prpending"):
         _cleanup_worktree(root, wt_dir, branch)
+        if status == "prpending" and not _worktree_removed(root, wt_dir, branch):
+            assert isinstance(detail, PendingUpdatePR)
+            return "recoveryfail", f"{detail.url}: worktree or branch cleanup failed"
 
     return status, detail
 
@@ -1676,7 +1726,7 @@ def run_copier_update(
 ) -> int | CopierUpdateInspection:
     """Run copier update across all matching projects.
 
-    isolate=True (default) runs each repo in a throwaway worktree and ships to main;
+    isolate=True (default) runs each repo in a throwaway worktree and delivers the update;
     isolate=False runs copier directly in each repo's main tree (legacy, unsafe while
     sessions are active).
 
@@ -1737,8 +1787,17 @@ def _run_isolated(
     mirror_excludes: dict[str, tuple[str, ...]] | None = None,
 ) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
+    gated_projects = set()
+    if push:
+        try:
+            gated_projects = _load_gated_main_projects()
+        except (OSError, ValueError):
+            _out.error(Tag.COPIER, "update", "Could not read the fleet project registry for main push gates.")
+            return EX_CONFIG
     with _prepared_copier_sources(projects) as prepared_sources:
-        return _run_isolated_prepared(projects, copier_bin, push, inspect, prepared_sources, mirror_excludes or {})
+        return _run_isolated_prepared(
+            projects, copier_bin, push, inspect, prepared_sources, mirror_excludes or {}, gated_projects
+        )
 
 
 def _run_isolated_prepared(
@@ -1748,11 +1807,13 @@ def _run_isolated_prepared(
     inspect: bool,
     prepared_sources: dict[Path, PreparedCopierSource],
     mirror_excludes: dict[str, tuple[str, ...]],
+    gated_projects: set[str],
 ) -> int | CopierUpdateInspection:
     """Run isolated updates while their run-scoped template snapshots exist."""
     _out.emit(Tag.COPIER, "update", f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
+    pending = 0
     has_partial_mutation = False
     has_config_failure = False
     has_transient_failure = False
@@ -1772,6 +1833,7 @@ def _run_isolated_prepared(
                 inspect=inspect,
                 resolved_source=prepared.source if prepared is not None else None,
                 mirror_excludes=excludes,
+                pr_only=project_dir.name.casefold() in gated_projects,
             )
         if status == "ok":
             result = "✓ updated + pushed" if push else "✓ updated (committed, not pushed)"
@@ -1780,6 +1842,10 @@ def _run_isolated_prepared(
             if inspect:
                 assert isinstance(detail, DeliveredUpdate)
                 delivered_updates.append(detail)
+        elif status == "prpending":
+            assert isinstance(detail, PendingUpdatePR)
+            _out.cont(Tag.COPIER, "update", f"✓ updated, PR pending #{detail.number} {detail.url}" + note)
+            pending += 1
         elif status == "nochange":
             _out.cont(Tag.COPIER, "update", "· no changes" + note)
         elif status == "conflict":
@@ -1842,6 +1908,8 @@ def _run_isolated_prepared(
 
     if failed:
         _out.emit(Tag.COPIER, "update", f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+    elif pending:
+        _out.emit(Tag.COPIER, "update", f"All updates succeeded ({changed} updated, {pending} PR pending).")
     else:
         _out.emit(Tag.COPIER, "update", f"All projects up to date ({changed} updated).")
     if has_partial_mutation:

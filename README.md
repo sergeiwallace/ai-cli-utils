@@ -991,6 +991,25 @@ ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
 ai ssh [alias]                     # Open an interactive shell on that machine
 ```
 
+#### Codex clipboard from a remote shell (Linux)
+
+Codex copies to the native clipboard through the graphical display. A shell reached over
+SSH has no `DISPLAY` or `XAUTHORITY`, so a copy from a Codex session started there fails,
+even while you are signed in to the same machine's desktop (for example over remote
+desktop). When neither variable is set, each Codex start in a supervised `ai cx` session,
+fresh or resumed, looks for your desktop session and gives Codex its display. It uses
+the pair only when all of these hold:
+
+- logind (`loginctl`) has exactly one session of your user that is `State=active`,
+  `Remote=no` and of `Type` `x11` or `wayland`;
+- your systemd user manager (`systemctl --user show-environment`) holds a `DISPLAY` and
+  `XAUTHORITY`, and an X11 session that names its display names the same one;
+- the `XAUTHORITY` file exists, is owned by you and is not older than the session.
+
+Otherwise Codex starts without them and the launch log says why. A `DISPLAY` or
+`XAUTHORITY` you set yourself is kept as it is, and only the Codex process gets the pair:
+your shell and the tmux environment are untouched. macOS and Windows are unchanged.
+
 ### Session boot relaunch
 
 On macOS and Linux, a boot or login job can run `ai sessions relaunch -b/--boot`
@@ -1722,7 +1741,7 @@ The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. E
   does not make an already-published version uninstallable. Development and CI run on 3.14 alone —
   that is a separate decision about this repository, not a restriction on installing the package —
   and the shipped source is byte-compiled on 3.11 in CI so the wider claim stays falsifiable.
-- [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`. Native Windows also has no pty API, so there the harness cannot drive compaction (the engine's own auto-compact still runs); a launch says so only under `-v`, and `ai doctor` reports it as its `compact` row)
+- [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`, unless psmux is installed, which answers to `tmux`. Where more than one build answers to `tmux`, `[tmux] binary` names the one every call runs. Native Windows also has no pty API, so there the harness cannot drive compaction (the engine's own auto-compact still runs); a launch says so only under `-v`, and `ai doctor` reports it as its `compact` row)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)

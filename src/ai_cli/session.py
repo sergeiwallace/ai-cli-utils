@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
 
-from . import launch_reporter
+from . import launch_reporter, tmux_binary
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
@@ -288,7 +288,7 @@ class SessionSlotAmbiguityError(RuntimeError):
 def _tmux_session_names() -> list[str]:
     """Return the live tmux session names, or no names when tmux is unavailable."""
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+        tmux_binary.argv("list-sessions", "-F", "#{session_name}"), capture_output=True, text=True, check=False
     )
     if res.returncode != 0:
         return []
@@ -427,7 +427,7 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
 
 def find_recent_session(prefix: str) -> str:
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        tmux_binary.argv("list-sessions", "-F", "#{session_name} #{session_activity}"),
         capture_output=True,
         text=True,
         check=False,
@@ -548,7 +548,7 @@ def _sweep_stale_iterm2_profiles() -> None:
 
         # Get current tmux sessions
         res = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            tmux_binary.argv("list-sessions", "-F", "#{session_name}"),
             capture_output=True,
             text=True,
             check=False,
@@ -589,7 +589,7 @@ def session_name_for(prefix: str, name: str) -> str:
 def resolve_session(prefix: str, name: str) -> str:
     if not name:
         res = subprocess.run(
-            ["tmux", "display-message", "-p", "#{session_name}"], capture_output=True, text=True, check=False
+            tmux_binary.argv("display-message", "-p", "#{session_name}"), capture_output=True, text=True, check=False
         )
         current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.casefold().startswith(prefix.casefold()):
@@ -603,7 +603,7 @@ def resolve_session(prefix: str, name: str) -> str:
         return name if name in _tmux_session_names() else ""
     # Exact `=NAME`: a bare name is a unique-PREFIX match in tmux, so slot 1 would
     # answer for a live slot 10 and -r would attach there (AI-CLI-gqb3).
-    res = subprocess.run(["tmux", "has-session", "-t", f"={target}"], capture_output=True, check=False)
+    res = subprocess.run(tmux_binary.argv("has-session", "-t", f"={target}"), capture_output=True, check=False)
     if res.returncode == 0:
         return target
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)

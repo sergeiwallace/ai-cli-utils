@@ -1,0 +1,1 @@
+- A `[tmux] binary` setting in config.toml names the multiplexer executable every tmux call runs, with `[tmux.hosts.<host id>] binary` overriding it on one machine, so a Windows machine whose tmux is psmux runs the same build in every shell. Unset, `tmux` is still found on PATH; a configured binary that does not exist is refused by name.

@@ -59,6 +59,29 @@ socket under the MSYS2 `/tmp`. A psmux client therefore never talks to an MSYS2 
 server, and the reverse. The client/server refusal still applies within one kind: it
 compares versions, and the message names the kind and the client binary's path.
 
+## Pinning one build: `[tmux] binary`
+
+A machine with psmux can have more than one executable answering to `tmux`: psmux's
+own `tmux.exe`, `pmux.exe` and `psmux.exe`, and an MSYS2 or Cygwin tmux that Git Bash
+may put first on its PATH. Which one runs then depends on each shell's PATH, and a
+server started by one is invisible to the other (see above), so `ai ls` in one shell
+can miss a session `ai c` started in another.
+
+`[tmux] binary` in config.toml names the executable every launcher tmux call runs, and
+`[tmux.hosts.<host id>] binary` names it for one machine. With neither set, the
+launcher runs `tmux` through PATH, as before. A configured path that does not exist is
+refused by name, and the tmux on PATH is never run in its place. On a psmux machine,
+set it to the full path of the psmux executable, for example:
+
+```toml
+[tmux]
+binary = "C:/Users/user/AppData/Local/Microsoft/WinGet/Links/psmux.exe"
+```
+
+The supervisor script that runs inside each session calls `tmux` by name; when the
+setting is present the launcher prepends a `tmux()` shell function to that script
+naming the same executable, so the session's own calls reach the same server.
+
 ## Git Bash
 
 psmux runs Git Bash panes and runs tmux plugin scripts with Git Bash

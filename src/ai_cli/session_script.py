@@ -265,6 +265,7 @@ def get_engine_script(
     from .config import config_file_text
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
+    from .tmux_binary import shell_prelude
     from .transport import _TERMINAL_RESTORE
 
     _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
@@ -336,7 +337,9 @@ def get_engine_script(
         }
     )
 
-    return f"""
+    # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
+    # so PATH decides as before); baked in at generation like the session shell above.
+    return f"""{shell_prelude()}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.
@@ -1141,6 +1144,25 @@ def get_engine_script(
         set -- env {" ".join(f"-u {key}" for key in DAEMON_IDENTITY_ENV)} "$@"
       fi
     # END BACKGROUND ATTACH
+    # BEGIN CODEX DISPLAY
+      # Codex's native clipboard needs a display. Without one in this shell, give this
+      # Codex process (never the shell or tmux) the pair of the user's own verified
+      # local graphical session; the helper writes why it found none to the launch log.
+      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+        _cx_display="" _cx_authority=""
+        _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
+        while IFS= read -r _cx_display_line; do
+          if [[ "$_cx_display_line" == DISPLAY=* ]]; then
+            _cx_display="${{_cx_display_line#DISPLAY=}}"
+          elif [[ "$_cx_display_line" == XAUTHORITY=* ]]; then
+            _cx_authority="${{_cx_display_line#XAUTHORITY=}}"
+          fi
+        done <<< "$_cx_display_reply"
+        if [[ -n "$_cx_display" && -n "$_cx_authority" ]]; then
+          set -- env "DISPLAY=$_cx_display" "XAUTHORITY=$_cx_authority" "$@"
+        fi
+      fi
+    # END CODEX DISPLAY
     # BEGIN PINNED RESTART exec
       if ${{_restart_event_completion:-false}}; then
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"

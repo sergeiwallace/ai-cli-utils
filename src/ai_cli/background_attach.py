@@ -17,7 +17,6 @@ import math
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import tempfile
 import time
@@ -29,6 +28,7 @@ from typing import TypeGuard
 
 import psutil
 
+from . import tmux_binary
 from .config import get_xdg_state_home, read_relaunch_config
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
@@ -226,7 +226,7 @@ def list_live_background_sessions() -> list[dict] | None:
 
 def _capture_pane(tmux_session: str, destination: Path) -> bool:
     """Save the pane text, scrollback included. tmux is POSIX-only, as is the supervisor that calls this."""
-    tmux = shutil.which("tmux")
+    tmux = tmux_binary.which()
     if not tmux or not tmux_session:
         return False
     try:
@@ -564,7 +564,7 @@ def _attach_or_hold(row: dict, prompted: bool, ai_name: str, cwd: Path) -> Resol
 
 
 def _tmux(*args: str) -> subprocess.CompletedProcess | None:
-    tmux = shutil.which("tmux")
+    tmux = tmux_binary.which()
     if not tmux:
         return None
     try:
