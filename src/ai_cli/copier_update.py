@@ -62,6 +62,7 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from . import output as _out
 from .config import get_canonical_source_repo, get_fleet_registry_path
+from .copier_mirror_lock import CopierMirrorLockError, copier_mirror_lock
 from .copier_pr import PendingUpdatePR, _open_update_pr
 from .copier_recovery import (
     _anchor_failed_update,
@@ -916,23 +917,24 @@ def _run_copier_update(
     # the checkout, so hide it from ``git status`` for the length of the run.
     hidden = source_rewritten and _hide_answers_change(project_dir, answers_file)
     try:
-        result = subprocess.run(
-            [
-                copier_bin,
-                "update",
-                "--defaults",
-                "--data-file",
-                str(answers_file),
-                "--trust",
-                "--vcs-ref",
-                "HEAD",
-                *exclude_args,
-            ],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with copier_mirror_lock(cwd=project_dir):
+            result = subprocess.run(
+                [
+                    copier_bin,
+                    "update",
+                    "--defaults",
+                    "--data-file",
+                    str(answers_file),
+                    "--trust",
+                    "--vcs-ref",
+                    "HEAD",
+                    *exclude_args,
+                ],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         if result.returncode != 0:
             failure = result.stderr.strip() or "copier update failed"
         else:
@@ -941,6 +943,8 @@ def _run_copier_update(
                 failure = _ANSWERS_NOT_PRESERVED
             elif lost := _unpreserved_answers(original_answers, answers_after, template_changes.declared_questions):
                 failure = _unpreserved_answers_error(lost, answers_after)
+    except CopierMirrorLockError as exc:
+        failure = str(exc)
     finally:
         if hidden:
             _hide_answers_change(project_dir, answers_file, hide=False)
@@ -1147,24 +1151,25 @@ def _render_template_version(
     with tempfile.TemporaryDirectory(prefix="ai-copier-answers-") as scratch:
         data_file = Path(scratch) / "answers.yml"
         data_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
-        result = subprocess.run(
-            [
-                copier_bin,
-                "copy",
-                "--defaults",
-                "--trust",
-                "--skip-tasks",
-                "--vcs-ref",
-                ref,
-                "--data-file",
-                str(data_file),
-                source,
-                str(destination),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with copier_mirror_lock():
+            result = subprocess.run(
+                [
+                    copier_bin,
+                    "copy",
+                    "--defaults",
+                    "--trust",
+                    "--skip-tasks",
+                    "--vcs-ref",
+                    ref,
+                    "--data-file",
+                    str(data_file),
+                    source,
+                    str(destination),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
     return result.returncode == 0
 
 
@@ -1463,9 +1468,12 @@ def _do_update_in_worktree(
     if conflicts and original_answers is not None:
         source = resolved_source or _resolve_copier_source(wt_dir, original_answers)
         if source is not None:
-            conflicts = _resolve_unchanged_conflicts(
-                wt_dir, root, [Path(c) for c in conflicts], copier_bin, source, original_answers
-            )
+            try:
+                conflicts = _resolve_unchanged_conflicts(
+                    wt_dir, root, [Path(c) for c in conflicts], copier_bin, source, original_answers
+                )
+            except CopierMirrorLockError as exc:
+                _out.emit(Tag.COPIER, "update", f"    {exc}", err=True)
     if conflicts:
         rels = [str(Path(c).relative_to(wt_dir)) for c in conflicts]
         return "conflict", rels
