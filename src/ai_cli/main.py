@@ -87,6 +87,7 @@ from .config import (  # noqa: F401
     save_session_map,
     validate_registry_completeness,
 )
+from .extensions import run_launch_extensions
 from .git_repair import (
     GitProbeError,
     _git_env,
@@ -6612,6 +6613,8 @@ def _session_command(engine: str):
                 _tunnel._ensure_nats_tunnel(config)
                 if not remote:
                     _process_manager._start_stale_session_reaper_for_launch()
+                    # After any re-exec, so each runs once per launch, on the host the session runs on.
+                    run_launch_extensions(config, reporter, launch_log.path)
             _do_session_launch(
                 engine=engine,
                 name=name,

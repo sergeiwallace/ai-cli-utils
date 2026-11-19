@@ -693,6 +693,27 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Example: ["example-plugin@example-marketplace"]. Empty refreshes nothing.
 # refresh_plugins = []
 
+[extensions]
+## Commands run once by every `ai c` launch, before the session starts, on the machine
+## that hosts the session. Read on every launch. Nothing listed: nothing runs.
+## Guide: docs/guides/launch-extensions.md.
+## on_error: what a failing extension does (a missing path or command, a non-zero exit,
+## a timeout). "fail" prints and logs an error and refuses the launch; "warn" prints and
+## logs a warning and the launch continues. Each extension may override it.
+# on_error = "fail"
+## Seconds each extension may run. One that starts something long-lived detaches it and
+## returns; the launcher stops one that is still running at the timeout.
+# timeout_seconds = 30
+## One table per extension, run in the order listed. path: the directory the command runs
+## in, absolute or relative to [project] projects_dir. command: the argument list, run
+## without a shell; a relative first element with a directory part (bin/start) resolves
+## inside path, a bare name (python3) is looked up on PATH.
+# [extensions.run.heartbeat]
+# path = "myextensions"
+# command = ["python3", "scripts/heartbeat.py", "--file", "heartbeat.txt"]
+# on_error = "warn"
+# timeout_seconds = 10
+
 [restart_session]
 ## Safe restart defaults, read on every call. External commands belong in
 ## restart-session.d/*.toml beside this file.
@@ -1823,16 +1844,21 @@ def save_session_map(d, engine="c"):
 WORKTREE_DIR = ".worktrees"
 
 
+def projects_dir_from(config: dict) -> Path:
+    """``[project] projects_dir`` of an already loaded ``config``; ``~/projects`` when unset."""
+    section = config.get("project", {})
+    custom = section.get("projects_dir") if isinstance(section, dict) else None
+    if custom:
+        return Path(custom).expanduser()
+    return Path.home() / "projects"
+
+
 def _get_projects_dir() -> Path:
     """Return the base directory for all projects. Configurable via [project] projects_dir."""
     try:
-        cfg = load_config().get("project", {})
-        custom = cfg.get("projects_dir")
-        if custom:
-            return Path(custom).expanduser()
+        return projects_dir_from(load_config())
     except Exception:
-        pass
-    return Path.home() / "projects"
+        return Path.home() / "projects"
 
 
 def get_worktree_marker_prefix() -> str:
