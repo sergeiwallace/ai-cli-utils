@@ -361,11 +361,14 @@ def test_given_running_engine_when_terminal_interrupt_exits_then_original_shell_
     pane_session, engine, remote, mode
 ):
     pane_session.start(engine=engine, remote=remote, mode=mode, caller=True)
-    # A clean TUI exit after a healthy run must stop too; in raw mode the
-    # wrapper receives no SIGINT and cannot rely on its own interrupt marker.
+    # A raw TUI that exits 0 on Ctrl+C after a healthy run looks like /exit, so it
+    # restarts unless the next Ctrl+C lands in the wrapper's restart window.
     if mode == "raw-clean":
         time.sleep(3.2)
     pane_session.interrupt()
+    if mode == "raw-clean":
+        assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
+        pane_session.interrupt()
     pane_session.assert_caller()
     assert pane_session.count() == 1, "an intentional interrupt relaunched the engine"
 

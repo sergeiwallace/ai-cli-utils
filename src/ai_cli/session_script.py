@@ -1739,13 +1739,29 @@ with open(path, 'w') as f:
     # END BACKGROUND ATTACH
 
     # BEGIN SHELL RETURN interrupt-exit
-      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
-      # a clean exit or status 130 is a deliberate stop, even immediately after
-      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell
-      # whose interactive prompt consumes all further interrupts.
-      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then
+      # Status 130 is a deliberate stop. So is a clean exit inside the startup
+      # guard: a raw-mode TUI consumes an early Ctrl+C and exits 0, and treating
+      # that as a failure opens a remote recovery shell whose prompt consumes all
+      # further interrupts.
+      if $agent_attempted && (( agent_exit_code == 130 || \\
+        (agent_exit_code == 0 && $(date +%s) - start_ts < 3) )); then
         _ai_final_manual_exit
         exit 77
+      fi
+      # After a healthy run a clean exit restarts the agent. Claude Code returns 0
+      # for /exit, Ctrl+D and its own double Ctrl+C alike, so the exit status cannot
+      # say which was meant: one Ctrl+C in this window, which reaches this wrapper
+      # now that the agent has released the terminal, stops the session instead.
+      if $agent_attempted && (( agent_exit_code == 0 )); then
+        printf '%s\\n' "$(( $(date +%s) + 3 ))" > "$_child_int_escape_file"
+        _ai_emit info exit "Agent exited; restarting in 3s. Press Ctrl+C to stop."
+        printf '%s\\n' "$(( $(date +%s) + 3 ))" > "$_child_int_escape_file"
+        sleep 3 2>/dev/null || true
+        if [[ -f "$_child_int_exit_file" ]]; then
+          _ai_final_manual_exit
+          exit 77
+        fi
+        rm -f "$_child_int_escape_file"
       fi
     # END SHELL RETURN
 
