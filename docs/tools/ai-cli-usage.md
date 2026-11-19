@@ -1036,6 +1036,17 @@ line lists the skipped paths and the reason. Other projects still receive the te
 the command cannot read the mapping, `ai copier-update` prints one warning and continues without
 mirror exclusions.
 
+Isolated updates normally push to `main`. If the fleet project registry lists `main` in
+`gated_branches`, the command goes straight to the pull request route. It also takes that
+route when Git reports `worktree push refused` during a push to `main`.
+
+The pull request route uses `copier-update/<short-template-sha>` as the head branch and
+targets `main`. It reports an existing open pull request for that head, or uses `gh` to
+open one. If the remote branch already exists, the command reuses it. The run summary shows
+the pull request number and URL. A pending pull request counts as success. If the branch push
+or a `gh` command fails, the command saves a verified backup anchor, files a recovery issue,
+and returns a nonzero exit code.
+
 ### ai update
 
 ```bash
