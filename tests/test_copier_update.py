@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from ai_cli.copier_update import (
     _excluded_on_update,
     _find_copier_projects,
     _load_mirror_excludes,
+    _prepare_dependencies,
     _reachable_source,
     _repo_root,
     _resolve_copier_source,
@@ -1153,6 +1155,97 @@ def test_given_no_package_json_when_committing_update_then_nothing_is_installed(
     assert installs == []
     assert status == "failed"
     assert "lint-tool: not found" in detail
+
+
+@pytest.fixture
+def js_workspace(tmp_path, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("the fake npm executable is a POSIX shell script")
+    project = tmp_path / "myproject"
+    web = project / "apps" / "web"
+    web.mkdir(parents=True)
+    (project / "package.json").write_text(json.dumps({"workspaces": ["apps/*"]}), encoding="utf-8")
+    (project / "package-lock.json").touch()
+    (web / "package.json").write_text('{"name": "web"}', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    npm = bin_dir / "npm"
+    npm.write_text(
+        '#!/bin/sh\nprintf "%s\\t%s\\n" "$*" "$PWD" >> "$CALL_LOG"\n'
+        'if [ "$1" = run ] && [ -f fail-install ]; then\n'
+        '    printf "discard this prefix %02010d\\nbrowser install failed\\n" 0 >&2\n'
+        "    exit 23\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    npm.chmod(0o755)
+    log = tmp_path / "npm-calls"
+    monkeypatch.setenv("PATH", str(bin_dir), prepend=os.pathsep)
+    monkeypatch.setenv("CALL_LOG", str(log))
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "git" and command[3:] == ["check-ignore", "-q", "node_modules"]:
+            return subprocess.CompletedProcess(command, 0)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return project, web, log
+
+
+def test_given_workspace_e2e_install_when_preparing_dependencies_then_it_runs_once_after_ci(js_workspace):
+    project, web, log = js_workspace
+    (web / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [f"ci\t{project}", f"run e2e:install\t{web}"]
+
+
+def test_given_failing_e2e_install_when_preparing_dependencies_then_it_reports_package_and_exit_status(js_workspace):
+    project, web, _ = js_workspace
+    (web / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+    (web / "fail-install").touch()
+
+    error = _prepare_dependencies(project)
+
+    assert error is not None
+    assert str(web) in error
+    assert "`npm run e2e:install` failed with exit status 23: " in error
+    assert error.endswith("0" * (2000 - len("\nbrowser install failed")) + "\nbrowser install failed")
+    assert "discard this prefix" not in error
+
+
+def test_given_no_e2e_install_when_preparing_dependencies_then_only_ci_runs(js_workspace):
+    project, _, log = js_workspace
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [f"ci\t{project}"]
+
+
+def test_given_root_and_workspace_scripts_when_preparing_dependencies_then_exact_hooks_run_once(js_workspace):
+    project, web, log = js_workspace
+    (project / "package.json").write_text(
+        json.dumps(
+            {
+                "workspaces": ["apps/*", "apps/web", "tools"],
+                "scripts": {"e2e:install": "setup-browser", "e2e:install-extra": "extra-step"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (web / "package.json").write_text('{"scripts": {"e2e:install-extra": "extra-step"}}', encoding="utf-8")
+    tools = project / "tools"
+    tools.mkdir()
+    (tools / "package.json").write_text('{"scripts": {"e2e:install": "setup-browser"}}', encoding="utf-8")
+    (tools / "package-lock.json").touch()
+
+    assert _prepare_dependencies(project) is None
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        f"ci\t{project}",
+        f"ci\t{tools}",
+        f"run e2e:install\t{project}",
+        f"run e2e:install\t{tools}",
+    ]
 
 
 _NEEDS_PYTHON_DEV_DEPENDENCY_HOOK = (
