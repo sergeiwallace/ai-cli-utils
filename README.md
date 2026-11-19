@@ -27,6 +27,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Human session names** | `ai c` names each new session with a short human first name (for example `ada`) from a shared registry (git ref, Dolt or SQLite); `ai locate-session` finds which host holds one, and `ai reconcile-names` frees the names of retired sessions |
 | **Session migration** | `ai migrate-session OLD NEW` renames a session and carries its worktree, branch, transcripts, virtual environments, tasks and issues; `--finish` completes whatever was left while the new session ran |
 | **Session lifecycle** | `ai sessions list/stop/wind-down/relaunch` with durable run state per session; `ai -X/--restart-session` restarts a session behind safety gates; `ai sessions relaunch --boot` brings sessions back after a reboot |
+| **Launch extensions** | Run your own commands before every `ai c` session starts, configured in `config.toml` and kept in any repository you choose; each warns or stops the launch on failure ([guide](docs/guides/launch-extensions.md)) |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -1341,6 +1342,10 @@ Two escape hatches:
   reinstalling dependencies. It never consults the fingerprint, so it is the way
   to force a refresh when the installed build is suspect.
 
+### Launch extensions
+
+`ai c` can run commands of your own before the session starts, such as one that starts a helper process. Each is a table under `[extensions.run.<name>]` in `config.toml` naming the command and the directory it runs in, absolute or relative to `[project] projects_dir`, so the extension's code lives in your own repository and nothing about it is stored here. `on_error` decides whether a failure prints a warning and launches anyway or prints an error and refuses the launch; it has a default for all extensions and a per-extension override. Every attempt is recorded in the launch log. With nothing configured, nothing runs. The configuration, the run contract and a worked example are in [docs/guides/launch-extensions.md](docs/guides/launch-extensions.md).
+
 ### Launch output
 
 Every line the launcher prints on its own behalf follows one grammar on stderr, so
@@ -1571,13 +1576,14 @@ suffix = ":"
 style = "bold cyan"
 pattern = '^[a-z][a-z0-9-]*$'
 vocabulary = [
-    "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
+    "start", "request", "host", "install", "update", "reexec", "remote", "probe", "transport", "extension",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
     "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
     "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
     "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
     "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
+    "add", "remove", "spare", "reconcile", "release", "reassign", "locate", "publish",
 ]
 
 [output.elements.operation.styles]
