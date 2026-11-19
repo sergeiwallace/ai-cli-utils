@@ -217,6 +217,19 @@ stale_session_timeout = 15
 ## this from this file at every exit, so a change applies at the next exit, no relaunch.
 # auto_restart = true
 
+[tmux]
+## The multiplexer executable every tmux call runs: the launch, attach, ls and every
+## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more
+## than one build answers to `tmux` (on Windows psmux installs tmux.exe, pmux.exe and
+## psmux.exe, and an MSYS2 tmux may also be on PATH), so every shell on this machine
+## runs the same one. A bare name is looked up on PATH; a path is used as given. A
+## binary that does not exist is refused by name, never replaced by the tmux on PATH.
+# binary = "C:/Users/user/AppData/Local/Microsoft/WinGet/Links/psmux.exe"
+## One machine's value, by its [machine] host_id, overriding the one above on that
+## machine. Useful when one config.toml is shared between machines.
+#[tmux.hosts.my-laptop]
+# binary = "/opt/homebrew/bin/tmux"
+
 [session_names]
 ## Every key here ships commented out. Unset, a key comes from the shared name
 ## registry's policy file: its [hosts.<host id>] table, then its [defaults]. A key

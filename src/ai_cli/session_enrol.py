@@ -12,7 +12,7 @@ import click
 import portalocker
 import psutil
 
-from . import config, output, session_reconcile
+from . import config, output, session_reconcile, tmux_binary
 from . import session_registry as registry
 from . import session_run_state as state
 from .output import Untagged
@@ -22,7 +22,9 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
     """Require one exact live pane; retain its PID to detect replacement."""
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-t", f"={name}", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"],
+            tmux_binary.argv(
+                "list-panes", "-t", f"={name}", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"
+            ),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -369,7 +371,7 @@ def enrol_live_sessions(*, dry_run: bool = False, names: Iterable[str] | None = 
     if names is None:
         try:
             result = subprocess.run(
-                ["tmux", "list-sessions", "-F", "#{session_name}"],
+                tmux_binary.argv("list-sessions", "-F", "#{session_name}"),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
