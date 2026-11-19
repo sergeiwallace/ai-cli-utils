@@ -64,7 +64,11 @@ steps below stay as the fallback for that case and for a process the registry ne
 ### 1. Exit from inside the session
 
 Use `/exit`, or Ctrl-D at an empty prompt. Let the session close itself so its shutdown work
-(transcript flush, worktree state, cleanup traps) runs.
+(transcript flush, worktree state, cleanup traps) runs. In an `ai c` tmux session the agent then
+restarts (`[session] auto_restart`): the wrapper prints
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`, and a Ctrl+C in that window ends the
+session instead. `[session] restart_stop_window_seconds` sets the window (default 3; 0 restarts
+at once, leaving `ai exit-session` as the way to stop).
 
 For `ai c` and `ai cx`, Ctrl+C ends the session when the agent exits. If the agent
 keeps running, press Ctrl+C again within three seconds to stop its restart loop.
@@ -73,10 +77,13 @@ tmux pane closes, the connection ends, and control returns to the original local
 shell in the directory where you launched `ai`. The local terminal pane stays open.
 An interrupt during startup or teardown also ends the session; a registry write
 failure cannot restart the agent after a final exit request.
-Successful agent exits also end the session immediately, including an early
-Ctrl+C handled by a raw-mode terminal interface. These rules apply to sessions
-started with the updated launcher; existing supervisors retain their loaded
-script until they are stopped and relaunched.
+A raw-mode terminal interface such as Claude Code reads Ctrl+C itself and exits
+with status 0, the same status as `/exit`, so the wrapper cannot tell the two
+apart. A clean exit in the first three seconds of a run ends the session. After
+a longer run it restarts the agent, and the Ctrl+C that stops it has to land in
+the three-second window above: Claude Code's own double Ctrl+C followed by one
+more. These rules apply to sessions started with the updated launcher; existing
+supervisors retain their loaded script until they are stopped and relaunched.
 
 A failed remote launch can still offer a recovery shell for fixing credentials.
 In that shell, `exit 78` retries the agent and `exit` closes the remote session,

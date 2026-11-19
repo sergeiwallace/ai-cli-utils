@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
 
-from . import launch_reporter
+from . import launch_reporter, tmux_binary
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
@@ -288,7 +288,7 @@ class SessionSlotAmbiguityError(RuntimeError):
 def _tmux_session_names() -> list[str]:
     """Return the live tmux session names, or no names when tmux is unavailable."""
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+        tmux_binary.argv("list-sessions", "-F", "#{session_name}"), capture_output=True, text=True, check=False
     )
     if res.returncode != 0:
         return []
@@ -427,7 +427,7 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
 
 def find_recent_session(prefix: str) -> str:
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        tmux_binary.argv("list-sessions", "-F", "#{session_name} #{session_activity}"),
         capture_output=True,
         text=True,
         check=False,
@@ -548,7 +548,7 @@ def _sweep_stale_iterm2_profiles() -> None:
 
         # Get current tmux sessions
         res = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            tmux_binary.argv("list-sessions", "-F", "#{session_name}"),
             capture_output=True,
             text=True,
             check=False,
@@ -589,7 +589,7 @@ def session_name_for(prefix: str, name: str) -> str:
 def resolve_session(prefix: str, name: str) -> str:
     if not name:
         res = subprocess.run(
-            ["tmux", "display-message", "-p", "#{session_name}"], capture_output=True, text=True, check=False
+            tmux_binary.argv("display-message", "-p", "#{session_name}"), capture_output=True, text=True, check=False
         )
         current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.casefold().startswith(prefix.casefold()):
@@ -603,7 +603,7 @@ def resolve_session(prefix: str, name: str) -> str:
         return name if name in _tmux_session_names() else ""
     # Exact `=NAME`: a bare name is a unique-PREFIX match in tmux, so slot 1 would
     # answer for a live slot 10 and -r would attach there (AI-CLI-gqb3).
-    res = subprocess.run(["tmux", "has-session", "-t", f"={target}"], capture_output=True, check=False)
+    res = subprocess.run(tmux_binary.argv("has-session", "-t", f"={target}"), capture_output=True, check=False)
     if res.returncode == 0:
         return target
     match = re.fullmatch(_ENGINE_SEGMENT + r"(?:-r)?-(.+)-", prefix)
@@ -758,7 +758,7 @@ def detect_repo_root():
     res = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env(), check=False
     )
-    if res.returncode != 0:
+    if res.returncode != 0 or not res.stdout.strip():
         return None
     git_common = Path(res.stdout.strip())
     if not git_common.is_absolute():
@@ -1030,6 +1030,40 @@ def _contains_git_checkout(directory: Path) -> Path | None:
     for candidate in sorted(directory.rglob(".git")):
         return candidate.parent
     return None
+
+
+def _slot_registration_gone(wt_dir: Path, registered: list[Path]) -> bool:
+    """Return whether ``wt_dir`` is a linked worktree whose admin directory no longer exists.
+
+    Its ``.git`` file reads ``gitdir: <path>``; when that path is gone, no git record refers
+    to the checkout, so moving it aside keeps everything: its commits are on its branch in
+    the repository, and its uncommitted files move with it. A ``.git`` directory (an
+    independent clone) never qualifies, nor does a slot holding a registered worktree
+    nested inside it, which a move would break.
+    """
+    git_entry = wt_dir / ".git"
+    if not git_entry.is_file():
+        return False
+    try:
+        line = git_entry.read_text(errors="replace").strip()
+    except OSError:
+        return False
+    if not line.startswith("gitdir:"):
+        return False
+    target = line.removeprefix("gitdir:").strip()
+    # Windows: Git Bash's git can write ``/c/Users/...``, which Windows Python reads as a
+    # path on the current drive's root. Read it as ``C:/Users/...`` so a live slot never
+    # looks unregistered.
+    msys = re.match(r"^/([A-Za-z])/(.*)$", target)
+    if sys.platform == "win32" and msys:
+        target = f"{msys.group(1)}:/{msys.group(2)}"
+    admin = Path(target)
+    if not admin.is_absolute():
+        admin = wt_dir / admin
+    if admin.exists():
+        return False
+    slot = wt_dir.resolve()
+    return not any(p != slot and p.is_relative_to(slot) for p in (path.resolve() for path in registered))
 
 
 def _is_empty_dir(directory: Path) -> bool:
@@ -1480,6 +1514,13 @@ def create_worktree(
     if not repo_root:
         return None
 
+    from .session_naming import validate_artifact_name
+
+    # Existing legacy homes remain reachable during the configured migration window.
+    validate_artifact_name(
+        ai_name, repo_root, allow_legacy=not probe and (repo_root / WORKTREE_DIR / ai_name).is_dir(), probe=probe
+    )
+
     # Deterministic repair backstop (AI-CLI-99): repo_root is a normal working
     # tree and must never be core.bare=true / carry a stale core.worktree.
     # Check + repair BEFORE any worktree op, regardless of what corrupted it.
@@ -1536,7 +1577,11 @@ def create_worktree(
                 # live process leaves the slot present and deregistered, and every
                 # later launch refused over a directory git would have accepted.
                 holder = _contains_git_checkout(wt_dir)
-                if holder == wt_dir:
+                if holder == wt_dir and _slot_registration_gone(wt_dir, registered_worktrees(repo_root)):
+                    # The repair above could not relink it: its admin directory is gone, so
+                    # git refers to it nowhere. Moving it aside below loses nothing.
+                    holder = None
+                elif holder == wt_dir:
                     raise RuntimeError(_slot_checkout_refusal(repo_root, wt_dir, branch_name))
                 if holder is not None:
                     raise RuntimeError(

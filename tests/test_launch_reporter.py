@@ -510,6 +510,7 @@ def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal
         patch("ai_cli.main._tmux_setup.report_lines", return_value=[]),
         patch("ai_cli.trust.ensure_workspace_trusted"),
         patch("ai_cli.session.resolve_session", return_value=None),
+        patch("ai_cli.session.detect_repo_root", return_value=None),
         patch("ai_cli.session._tmux_session_names", return_value=[]),
     ):
         with pytest.raises(SystemExit) as exc_info:

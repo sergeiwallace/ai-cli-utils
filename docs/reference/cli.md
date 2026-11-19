@@ -261,6 +261,7 @@ Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot
 | `-a` | `--adopt` |  | Adopt every session that is safe to adopt |
 | `-n` | `--dry-run` |  | With -a: show what would be adopted without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt (never covers a title collision) |
+| `-N` | `--naming` |  | Read-only naming census across slots, registry and launch artifacts |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai backfill-trust

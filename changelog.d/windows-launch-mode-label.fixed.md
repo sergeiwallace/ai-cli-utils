@@ -1,0 +1,1 @@
+- On Windows with no tmux on PATH, the first launch line now reads `(local, bare)`. It said `(local, tmux)` although the launch falls back to bare mode there without a further notice.

@@ -25,6 +25,7 @@ from typing import Protocol, TypeGuard
 import portalocker
 import psutil
 
+from . import tmux_binary
 from .process_probe import ProcessIdentity, ProcessProbe, probe_for
 
 LOGGER = logging.getLogger(__name__)
@@ -139,12 +140,13 @@ class TmuxAdapter(Protocol):
 class SubprocessTmuxAdapter:
     """Tmux adapter using delimiter-safe ``list-panes`` output."""
 
-    def __init__(self, tmux_command: Sequence[str] = ("tmux",)) -> None:
-        self._tmux_command = tuple(tmux_command)
+    def __init__(self, tmux_command: Sequence[str] | None = None) -> None:
+        # None: the configured multiplexer (``[tmux] binary``), resolved at each call.
+        self._tmux_command = tuple(tmux_command) if tmux_command is not None else None
 
     def sessions(self) -> Sequence[SessionCandidate]:
         result = subprocess.run(
-            [*self._tmux_command, "list-panes", "-a", "-F", _TMUX_FORMAT],
+            [*tmux_binary.command(self._tmux_command), "list-panes", "-a", "-F", _TMUX_FORMAT],
             capture_output=True,
             text=True,
             check=False,
@@ -178,7 +180,14 @@ class SubprocessTmuxAdapter:
         if not _valid_candidate(candidate):
             return None
         result = subprocess.run(
-            [*self._tmux_command, "display-message", "-p", "-t", candidate.session_id, _TMUX_FINGERPRINT_FORMAT],
+            [
+                *tmux_binary.command(self._tmux_command),
+                "display-message",
+                "-p",
+                "-t",
+                candidate.session_id,
+                _TMUX_FINGERPRINT_FORMAT,
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -202,7 +211,7 @@ class SubprocessTmuxAdapter:
         predicate = f"#{{==:{_TMUX_FINGERPRINT_FORMAT},{fingerprint}}}"
         result = subprocess.run(
             [
-                *self._tmux_command,
+                *tmux_binary.command(self._tmux_command),
                 "if-shell",
                 "-F",
                 "-t",

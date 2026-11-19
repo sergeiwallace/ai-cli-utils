@@ -1,0 +1,1 @@
+- `ai copier-update` runs declared `e2e:install` scripts in projects and their workspaces after installing JavaScript dependencies, so pre-push tests can use tools such as browsers installed by those scripts.

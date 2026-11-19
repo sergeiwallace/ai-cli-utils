@@ -31,6 +31,7 @@ import portalocker
 from . import config as _config
 from . import iterm2 as _iterm2
 from . import session as _session
+from . import tmux_binary
 from .config import get_remote_machine, get_xdg_state_home
 
 LOGGER = logging.getLogger(__name__)
@@ -487,7 +488,10 @@ def _local_session_alive(name: str, *, missing_binary_is_absent: bool = True) ->
     """
     try:
         result = subprocess.run(
-            ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False, timeout=PROBE_TIMEOUT_SECONDS
+            tmux_binary.argv("has-session", "-t", f"={name}"),
+            capture_output=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         return _tmux_absent_without_binary() if missing_binary_is_absent else None
@@ -775,7 +779,7 @@ def _local_candidate(name: str, projects: dict[str, str]) -> AdoptLine:
 def _local_candidates() -> tuple[list[AdoptLine], list[str]]:
     try:
         result = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            tmux_binary.argv("list-sessions", "-F", "#{session_name}"),
             capture_output=True,
             text=True,
             check=False,

@@ -41,6 +41,7 @@ there, not here.
   - [ai iterm2 restore](#ai-iterm2-restore)
   - [ai cdp](#ai-cdp)
   - [ai tunnel](#ai-tunnel)
+  - [ai copier-update](#ai-copier-update)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
   - [ai ps](#ai-ps)
@@ -383,6 +384,19 @@ The question asked is always whether tmux *runs*, never whether it is on `PATH`.
 doctor` runs `tmux -V` too, so a build that resolves and then dies on a missing shared
 library reads as unusable instead of `OK`.
 
+**Which tmux.** `[tmux] binary` in config.toml names the multiplexer executable that
+every tmux call runs: the launch and its preflight, `ai attach`, `ai ls`, every query,
+and the supervisor script inside the session. `[tmux.hosts.<host id>] binary` sets it
+for one machine (its `[machine] host_id`) and wins over the global value there. Both
+are read on every call. Unset or empty, the launcher runs `tmux` and PATH decides. Set
+it where more than one build answers to `tmux`, such as a Windows machine with psmux,
+which installs `tmux.exe`, `pmux.exe` and `psmux.exe`, beside an MSYS2 tmux: one path
+here makes every shell on the machine run the same build, so a session is never
+started by one build and queried by another. A bare name is looked up on PATH; a path
+is used as given. A configured binary that does not exist is refused by name, citing
+the file and table that set it: `ai c` exits before creating anything (unless
+`-b/--bare`), and the tmux on PATH is never run in its place.
+
 **Recovering an unusable tmux.** Two different faults, two different answers:
 
 - **tmux is absent** — one unattended install attempt (rootless managers first:
@@ -468,6 +482,16 @@ offer is the auto-resume *loop*: nothing supervises the process, so when the eng
 exits the session is over. Auto-index assignment also switches source — with tmux it
 probes live sessions, in bare mode it scans `.worktrees/` and treats a directory with
 no live engine process as a reusable slot.
+
+**Auto-restart and stopping a session:** inside tmux, the wrapper restarts the agent
+whenever it exits, resuming the same conversation. That includes `/exit`, Ctrl+D and Claude
+Code's own double Ctrl+C, which all exit with status 0. After a clean exit the wrapper prints
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`; one Ctrl+C in that window ends the
+session and returns to the shell you launched from. `ai exit-session` ends it from inside or
+from another terminal. A clean exit in the first three seconds of a run ends the session
+without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
+0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
+read at each exit, so an edit applies at the next one.
 
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 
@@ -756,6 +780,10 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
+### Copier update environments
+
+In an isolated update, Git submodules are initialized recursively before dependencies are installed. A Python project at the root with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev`, and when the root has one, directories below it are not synced (a nested directory such as a template tree may name a path dependency that only exists after an export). Without a root Python project, each directory one level below that has both files is prepared the same way; when there is exactly one, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. After dependency installs, the same package manager runs any declared `e2e:install` script once in its package directory. This covers the project package and workspaces declared by literal paths or `dir/*` patterns. A failed script stops the update before commit or push. Projects with other layouts or additional tool requirements must provide those separately.
+
 ### Removed ai gemini command
 
 `ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
@@ -1021,6 +1049,27 @@ Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on net
 - `status` — lists alive/dead tunnels, cleans stale PID files.
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
+
+### ai copier-update
+
+Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
+under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
+`config.toml` to override the packaged default. When updating the source repository, both isolated
+and direct updates skip the files that the template mirrors from that repository. The per-project
+line lists the skipped paths and the reason. Other projects still receive the template copies. If
+the command cannot read the mapping, `ai copier-update` prints one warning and continues without
+mirror exclusions.
+
+Isolated updates normally push to `main`. If the fleet project registry lists `main` in
+`gated_branches`, the command goes straight to the pull request route. It also takes that
+route when Git reports `worktree push refused` during a push to `main`.
+
+The pull request route uses `copier-update/<short-template-sha>` as the head branch and
+targets `main`. It reports an existing open pull request for that head, or uses `gh` to
+open one. If the remote branch already exists, the command reuses it. The run summary shows
+the pull request number and URL. A pending pull request counts as success. If the branch push
+or a `gh` command fails, the command saves a verified backup anchor, files a recovery issue,
+and returns a nonzero exit code.
 
 ### ai update
 

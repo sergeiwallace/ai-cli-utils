@@ -19,10 +19,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import run_cli as _run_cli
-from conftest import snapshot_tree, with_environment_config
 from process_ownership import exited_pid
 from process_wait import scaled
+from session_state_isolation import require_isolated_session_state
 
 from ai_cli import session_migrate, session_registry, session_run_state
 from ai_cli.canonical_worktrees import get_canonical_worktree_registry_path, register_canonical_worktree
@@ -37,7 +36,9 @@ CONFIRMED_KEYED = f"{OLD}-{'ab' * 16}.md"
 
 def run_cli(argv, config=None, env=None):
     """``conftest.run_cli`` with the environment's marker prefix and chief homes configured."""
-    return _run_cli(argv, config=with_environment_config(config), env=env)
+    import conftest
+
+    return conftest.run_cli(argv, config=conftest.with_environment_config(config), env=env)
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -55,8 +56,9 @@ def _dead_pid() -> int:
 
 
 @pytest.fixture
-def slot(tmp_path):
+def slot(tmp_path, monkeypatch, request, tmp_path_factory):
     """A repo whose slot ``.worktrees/myrepo-3`` carries every artifact a migration moves."""
+    require_isolated_session_state(request, tmp_path_factory)
     home = Path.home()
     claude = home / ".claude"
     state = get_xdg_state_home()
@@ -67,6 +69,8 @@ def slot(tmp_path):
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
     (repo / "README.md").write_text("hi\n")
+    (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    monkeypatch.setattr("ai_cli.session_naming.resolve_host_alias", lambda: "box")
     _git("add", "-A", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
     repo = repo.resolve()
@@ -180,6 +184,8 @@ def _without_registry_cache(tree: dict | None, root: Path) -> dict | None:
 
 def _everything(slot) -> dict:
     """A snapshot of every tree the migration may touch, for a nothing-changed check."""
+    from conftest import snapshot_tree
+
     trees: dict = {name: snapshot_tree(slot[name]) for name in ("repo", "claude", "state")}
     trees["state"] = _without_registry_cache(trees["state"], slot["state"])
     trees["git-config"] = (slot["repo"] / ".git" / "config").read_text(encoding="utf-8")
@@ -293,6 +299,8 @@ def vanished_run(slot, monkeypatch):
 
 @pytest.mark.parametrize("list_first", [False, True])
 def test_given_vanished_relaunched_run_when_migration_plans_then_liveness_is_reconciled(slot, vanished_run, list_first):
+    from conftest import with_environment_config
+
     config = {"machine": {"host_id": "m"}}
     if list_first:
         code, out, err = run_cli(["ai", "sessions", "list", "-j"], config=config)
@@ -474,7 +482,7 @@ def test_given_an_unregistered_slot_when_migrating_then_it_points_at_session_ado
 def test_given_a_new_name_that_is_not_a_session_name_when_migrating_then_it_is_refused(slot):
     code, _out, err = run_cli(["ai", "migrate-session", OLD, "My Repo", "-r", str(slot["repo"]), "-y"])
     assert code == 2
-    assert "is not a session name" in err
+    assert "session charset rule" in err
 
 
 def test_given_a_dry_run_or_a_refusal_when_migrating_then_every_line_carries_the_migrate_tag(slot):

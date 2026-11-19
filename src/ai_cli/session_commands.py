@@ -25,6 +25,7 @@ from . import (
     session_publish_timer,
     session_reconcile,
     session_state_publish,
+    tmux_binary,
 )
 from . import session_registry as registry
 from . import session_run_state as state
@@ -299,11 +300,6 @@ def _group_hosts(cfg: dict, group_host: str, local: str, published_local: str) -
     return hosts, notes
 
 
-class _ScopeChoice(click.Choice):
-    def convert(self, value, param, ctx):
-        return super().convert(session_list_view.normalize_scope(value), param, ctx)
-
-
 def _earlier_boot_gone(record: dict, boot: str | None) -> bool:
     """Whether a running record is from an earlier boot of this host and is proved gone.
 
@@ -346,7 +342,7 @@ def _snapshot_rows(host: str, doc: dict) -> list[session_list_view.Row]:
 @click.option(
     "-S",
     "--scope",
-    type=_ScopeChoice(session_list_view.SCOPES),
+    type=click.Choice(session_list_view.SCOPES),
     help="Request this host, its machine host group, or all publishing hosts within the profile's limit",
 )
 @click.option("-g", "--group-by", type=click.Choice(session_list_view.GROUP_KEYS), help="Column to group rows by")
@@ -488,7 +484,7 @@ class StopReport:
 def _pane_pids(tmux_session: str) -> list[int]:
     try:
         listed = subprocess.run(
-            ["tmux", "list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"],
+            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"),
             capture_output=True,
             text=True,
             check=False,

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import portalocker
 
-from . import launch_reporter
+from . import launch_reporter, tmux_binary
 from . import output as _out
 from .config import get_xdg_config_home, get_xdg_state_home
 from .output import Untagged
@@ -691,7 +691,7 @@ def _iterm_pane_tty_for_tmux_session(tmux_session: str) -> str:
     if not tmux_session:
         return ""
     result = subprocess.run(
-        ["tmux", "list-clients", "-t", tmux_session, "-F", "#{client_tty}"],
+        tmux_binary.argv("list-clients", "-t", tmux_session, "-F", "#{client_tty}"),
         capture_output=True,
         text=True,
         check=False,
@@ -733,12 +733,12 @@ def _configure_tmux_for_iterm2(session_id: str) -> None:
     Both options are silently ignored on tmux versions that don't support them.
     """
     subprocess.run(
-        ["tmux", "set-option", "-p", "-t", session_id, "allow-passthrough", "all"],
+        tmux_binary.argv("set-option", "-p", "-t", session_id, "allow-passthrough", "all"),
         capture_output=True,
         check=False,
     )
     subprocess.run(
-        ["tmux", "set-window-option", "-t", session_id, "automatic-rename", "off"],
+        tmux_binary.argv("set-window-option", "-t", session_id, "automatic-rename", "off"),
         capture_output=True,
         check=False,
     )
@@ -747,7 +747,7 @@ def _configure_tmux_for_iterm2(session_id: str) -> None:
 def _rename_tmux_window(session_id: str, name: str) -> None:
     """Set the tmux window name shown in tmux's native status line."""
     subprocess.run(
-        ["tmux", "rename-window", "-t", session_id, name],
+        tmux_binary.argv("rename-window", "-t", session_id, name),
         capture_output=True,
         check=False,
     )
