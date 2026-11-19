@@ -62,35 +62,37 @@ def _stub_base():
 
 
 def test_create_worktree_when_the_add_runs_then_it_attests_ai_c_and_the_slot_name(tmp_path):
-    wt_dir = tmp_path / ".worktrees" / "session-2"
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    wt_dir = tmp_path / ".worktrees" / "myrepo-tst-2"
     recorder = _GitRecorder(wt_dir)
 
     with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_base():
         with patch("subprocess.run", side_effect=recorder):
-            assert create_worktree("session-2") == wt_dir
+            assert create_worktree("myrepo-tst-2") == wt_dir
 
     adds = recorder.envs_for_adds()
     assert len(adds) == 1
     assert adds[0][CREATOR_VAR] == "ai-c"
     # The declared leaf is the destination's own directory name: the backstop admits the ONE
     # path the marker names, not every canonical-looking leaf.
-    assert adds[0][CANONICAL_LEAF_VAR] == wt_dir.name == "session-2"
+    assert adds[0][CANONICAL_LEAF_VAR] == wt_dir.name == "myrepo-tst-2"
 
 
 def test_create_worktree_when_the_first_add_fails_then_the_fallback_add_attests_too(tmp_path):
     """The retry against an existing branch is just as flat, so it needs the marker too."""
-    wt_dir = tmp_path / ".worktrees" / "session-3"
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    wt_dir = tmp_path / ".worktrees" / "myrepo-tst-3"
     recorder = _GitRecorder(wt_dir, first_add_returncode=128)
 
     with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_base():
         with patch("subprocess.run", side_effect=recorder):
-            assert create_worktree("session-3") == wt_dir
+            assert create_worktree("myrepo-tst-3") == wt_dir
 
     adds = recorder.envs_for_adds()
     assert len(adds) == 2
     for env in adds:
         assert env[CREATOR_VAR] == "ai-c"
-        assert env[CANONICAL_LEAF_VAR] == "session-3"
+        assert env[CANONICAL_LEAF_VAR] == "myrepo-tst-3"
 
 
 def test_create_worktree_when_a_git_call_creates_nothing_then_it_carries_no_attestation(tmp_path):
@@ -100,12 +102,13 @@ def test_create_worktree_when_a_git_call_creates_nothing_then_it_carries_no_atte
     it across every git call would hand it to `prune`, `rev-parse` and `branch`, none of
     which create anything — and any of which could be the one that leaks it onward.
     """
-    wt_dir = tmp_path / ".worktrees" / "session-4"
+    (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myrepo"\n')
+    wt_dir = tmp_path / ".worktrees" / "myrepo-tst-4"
     recorder = _GitRecorder(wt_dir)
 
     with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_base():
         with patch("subprocess.run", side_effect=recorder):
-            assert create_worktree("session-4") == wt_dir
+            assert create_worktree("myrepo-tst-4") == wt_dir
 
     non_adds = recorder.envs_for_non_adds()
     # A positive control: without a non-add git call in the log this would assert nothing.
@@ -150,7 +153,7 @@ def test_creator_env_when_built_then_it_keeps_the_git_env_containment():
         "PATH": "/usr/bin",
     }
     with patch.dict("os.environ", base, clear=True):
-        env = _creator_env("ai-c", "session-1")
+        env = _creator_env("ai-c", "myrepo-tst-1")
 
     assert "GIT_DIR" not in env
     assert "GIT_WORK_TREE" not in env
