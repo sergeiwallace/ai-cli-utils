@@ -2211,6 +2211,25 @@ def _handle_internal(argv: list[str]) -> None:
         source, host = resolve_host_env(config)
         _out.raw(Untagged.INTERNAL_REPLY, f"{source} {host}")
         sys.exit(0)
+    elif action == "resolve-codex-display":
+        from .codex_display import resolve_codex_display
+        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
+        resolution = resolve_codex_display(os.environ)
+        if resolution.reason:
+            log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+            launch_log = open_launch_log(log_path) if log_path else None
+            previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
+            try:
+                LaunchReporter().detail("display", resolution.reason)
+            finally:
+                _out.flush_sinks()
+                _out.attach_file_sink(previous_sink)
+                if launch_log is not None:
+                    launch_log.close()
+        for variable, value in resolution.values.items():
+            _out.raw(Untagged.INTERNAL_REPLY, f"{variable}={value}")
+        sys.exit(0)
     elif action == "resolve-background-target":
         if len(argv) < 3:
             _out.emit(
