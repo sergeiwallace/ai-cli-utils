@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import portalocker
 import pytest
 import yaml
 from conftest import run_cli
@@ -31,6 +32,7 @@ from ai_cli.copier_update import (
     _load_mirror_excludes,
     _prepare_dependencies,
     _reachable_source,
+    _render_template_version,
     _repo_root,
     _resolve_copier_source,
     _run_copier_update,
@@ -126,6 +128,90 @@ def test_conflict_files_returns_empty_when_none(tmp_path):
 
 def _make_answers(proj_dir: Path, src_path: str = "/projects/project-template") -> None:
     (proj_dir / ".copier-answers.yml").write_text(f"_src_path: {src_path}\n_commit: previous\n")
+
+
+@pytest.fixture(autouse=True)
+def copier_cache(tmp_path_factory, monkeypatch):
+    cache = tmp_path_factory.mktemp("copier-cache") / "git"
+    monkeypatch.setenv("COPIER_CACHE_DIR", str(cache))
+    monkeypatch.setenv("AI_CLI_COPIER_MIRROR_LOCK_TIMEOUT", "10")
+    return cache
+
+
+@pytest.mark.parametrize("operation", ["update", "copy"])
+def test_given_copier_cache_when_subprocess_runs_then_its_mirror_lock_is_held(tmp_path, monkeypatch, operation):
+    project = tmp_path / "project"
+    project.mkdir()
+    _make_answers(project)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPIER_CACHE_DIR", "copier-cache")
+    cache = (project if operation == "update" else tmp_path) / "copier-cache"
+    cache.mkdir()
+    lock_path = cache / "copier-mirror.lock"
+
+    def run(command, **kwargs):
+        assert command[:2] == ["copier", operation]
+        with pytest.raises(portalocker.exceptions.AlreadyLocked), portalocker.Lock(lock_path, timeout=0):
+            pytest.fail("Copier ran without its mirror lock")
+        return subprocess.CompletedProcess(command, 1, stderr="Copier failed")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run) as subprocess_run,
+        patch("ai_cli.copier_update._template_diff", return_value=TemplateChanges(set(), set(), set(), set())),
+    ):
+        if operation == "update":
+            error, _, _ = _run_copier_update(project, "copier", "/projects/project-template")
+            assert error == "Copier failed"
+        else:
+            assert not _render_template_version("copier", "template", "HEAD", {}, project)
+
+    subprocess_run.assert_called_once()
+    with portalocker.Lock(lock_path, timeout=0):
+        assert lock_path.is_file()
+
+
+def test_given_contended_mirror_when_updating_then_project_reports_timeout_without_starting_copier(
+    tmp_path, copier_cache, monkeypatch
+):
+    _make_answers(tmp_path)
+    copier_cache.mkdir()
+    lock_path = copier_cache / "copier-mirror.lock"
+    monkeypatch.setenv("AI_CLI_COPIER_MIRROR_LOCK_TIMEOUT", "0.01")
+    with (
+        portalocker.Lock(lock_path, timeout=0),
+        patch("ai_cli.copier_update.subprocess.run") as subprocess_run,
+        patch("ai_cli.copier_update._template_diff", return_value=TemplateChanges(set(), set(), set(), set())),
+    ):
+        error, _, _ = _run_copier_update(tmp_path, "copier", "/projects/project-template")
+
+    subprocess_run.assert_not_called()
+    assert error is not None and "Timed out" in error and str(lock_path) in error
+
+
+def test_given_contended_mirror_when_rendering_a_conflict_then_project_reports_timeout_and_keeps_conflict(
+    tmp_path, copier_cache, monkeypatch, capsys
+):
+    copier_cache.mkdir()
+    lock_path = copier_cache / "copier-mirror.lock"
+    monkeypatch.setenv("AI_CLI_COPIER_MIRROR_LOCK_TIMEOUT", "0.01")
+    conflict = tmp_path / "conflict.txt"
+    conflict.write_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> template\n")
+    with (
+        portalocker.Lock(lock_path, timeout=0),
+        patch("ai_cli.copier_update._run_copier_update", return_value=(None, {"_commit": "previous"}, None)),
+        patch("ai_cli.copier_update._conflict_files", return_value=[str(conflict)]),
+        patch(
+            "ai_cli.copier_update.subprocess.run", return_value=MagicMock(stdout=" M conflict.txt\n", returncode=1)
+        ) as run,
+    ):
+        status, detail = _do_update_in_worktree(tmp_path, tmp_path, "copier", False, "template")
+
+    assert status == "conflict"
+    assert detail == ["conflict.txt"]
+    assert run.call_count == 1
+    assert run.call_args.args[0][0] == "git"
+    captured = capsys.readouterr()
+    assert "Timed out" in captured.err and str(lock_path) in captured.err
 
 
 def _init_git_repo(path: Path) -> None:

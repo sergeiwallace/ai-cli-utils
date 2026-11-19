@@ -1051,6 +1051,11 @@ Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/
 
 ### ai copier-update
 
+`ai copier-update` serializes its Copier calls using `copier-mirror.lock` alongside the Git
+mirrors in the Copier cache. The lock follows `COPIER_CACHE_DIR` when set. The command reports
+when it has to wait and fails the project if the lock is still held after 900 seconds. Set
+`AI_CLI_COPIER_MIRROR_LOCK_TIMEOUT` to change the wait limit in seconds.
+
 Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
 under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
 `config.toml` to override the packaged default. When updating the source repository, both isolated
