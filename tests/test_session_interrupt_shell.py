@@ -15,7 +15,7 @@ from conftest import TEST_BOOT_ID, tmux_runnable
 from process_ownership import watch_tmux_directory
 from process_wait import scaled
 
-from ai_cli import session, session_commands, session_lifecycle_script, session_migrate
+from ai_cli import config, session, session_commands, session_lifecycle_script, session_migrate
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_script import get_engine_script
@@ -417,6 +417,21 @@ def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_re
     pane_session.interrupt()
     pane_session.assert_caller()
     assert pane_session.count() == 1, "an interrupt in the restart window relaunched the engine"
+
+
+@pytest.mark.parametrize(("window", "notice"), [("0", False), ("1", True)])
+def test_given_stop_window_set_while_running_when_agent_exits_cleanly_then_the_window_it_names_applies(
+    pane_session, window, notice
+):
+    pane_session.start()
+    # Written after launch: the wrapper reads the window at the exit, not at launch.
+    path = Path(config.config_file_text())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"[session]\nrestart_stop_window_seconds = {window}\n", encoding="utf-8")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+    assert ("restarting in 1s. Press Ctrl+C to stop" in pane_session.capture()) is notice, pane_session.capture()
 
 
 @pytest.mark.parametrize("remote", [False, True])

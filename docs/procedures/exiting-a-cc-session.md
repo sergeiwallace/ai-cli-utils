@@ -66,8 +66,9 @@ steps below stay as the fallback for that case and for a process the registry ne
 Use `/exit`, or Ctrl-D at an empty prompt. Let the session close itself so its shutdown work
 (transcript flush, worktree state, cleanup traps) runs. In an `ai c` tmux session the agent then
 restarts (`[session] auto_restart`): the wrapper prints
-`Agent exited; restarting in 3s. Press Ctrl+C to stop.`, and a Ctrl+C in those three seconds ends
-the session instead.
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`, and a Ctrl+C in that window ends the
+session instead. `[session] restart_stop_window_seconds` sets the window (default 3; 0 restarts
+at once, leaving `ai exit-session` as the way to stop).
 
 For `ai c` and `ai cx`, Ctrl+C ends the session when the agent exits. If the agent
 keeps running, press Ctrl+C again within three seconds to stop its restart loop.

@@ -348,6 +348,27 @@ def auto_restart_enabled(path: str | Path) -> bool:
     return not (isinstance(section, dict) and section.get("auto_restart") is False)
 
 
+RESTART_STOP_WINDOW_DEFAULT_SECONDS = 3
+
+
+def restart_stop_window_seconds(path: str | Path) -> int:
+    """``[session] restart_stop_window_seconds`` in the config file at ``path``, read now; never raises.
+
+    The whole seconds the wrapper waits after a clean agent exit before restarting it, during
+    which one Ctrl+C ends the session instead. ``0`` restarts at once. A missing key, an
+    unreadable or malformed file, or a value that is not a non-negative finite number gives
+    the default; a fraction rounds up. Read at every clean exit, so an edit applies at the next.
+    """
+    try:
+        section = tomllib.loads(Path(path).read_text(encoding="utf-8")).get("session", {})
+    except Exception:  # any read or parse failure keeps the default window
+        return RESTART_STOP_WINDOW_DEFAULT_SECONDS
+    value = section.get("restart_stop_window_seconds") if isinstance(section, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+        return RESTART_STOP_WINDOW_DEFAULT_SECONDS
+    return math.ceil(value)
+
+
 def config_file_text() -> str:
     """``config.toml``'s path as text, never migrating the old directory.
 
@@ -903,6 +924,11 @@ stale_session_timeout = 15
 ## means true. false lets the session end at the agent's next exit. The supervisor reads
 ## this from this file at every exit, so a change applies at the next exit, no relaunch.
 # auto_restart = true
+## After a clean exit (/exit, Ctrl+D, or Claude Code's own double Ctrl+C, which all return
+## 0), wait this many whole seconds before restarting; one Ctrl+C in that window ends the
+## session instead (so does `ai exit-session`). 0 restarts at once. Default 3. Read at
+## every clean exit, so a change applies at the next one.
+# restart_stop_window_seconds = 3
 
 [session_names]
 ## Every key here ships commented out. Unset, a key comes from the shared name
