@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Session list configuration and scope use machine host group terminology; the old scope and host key are no longer accepted.
 
+### Fixed
+
+- A failed remote session-name allocation (`ai c NAME -R`) now names its exit code and the signal
+  that ended it, instead of failing with no detail when the call printed nothing. A call cut off by
+  SIGKILL or SIGTERM before it answered is retried once.
+
 ## [0.9.0] - 2026-11-16
 
 ### Added

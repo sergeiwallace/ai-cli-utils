@@ -7,6 +7,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1951,6 +1952,42 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
     return True, output or "current"
 
 
+_REMOTE_ALLOCATION_RETRY_DELAY_S = 1.0
+# Signals that end a call from outside it (an external kill, a shutdown) rather than
+# from the user: a call cut off by one never ran to an answer, so asking again is safe.
+_TRANSIENT_KILL_SIGNALS = frozenset({signal.SIGKILL, signal.SIGTERM})
+
+
+def _exit_signal(returncode: int) -> "signal.Signals | None":
+    """The signal behind an ssh call's exit status, or None.
+
+    A negative status means the local ssh client itself was killed. A status above 128
+    is how the remote shell reports a command a signal ended.
+    """
+    number = -returncode if returncode < 0 else returncode - 128 if returncode > 128 and returncode != 255 else 0
+    try:
+        return signal.Signals(number) if number else None
+    except ValueError:
+        return None
+
+
+def _remote_exit_text(returncode: int) -> str:
+    sig = _exit_signal(returncode)
+    if returncode < 0:
+        return f"the local ssh client was killed by {sig.name if sig else f'signal {-returncode}'}"
+    if returncode == 255:
+        return "exit 255: ssh could not reach the remote host"
+    if sig is not None:
+        return f"exit {returncode}: the remote command was killed by {sig.name}"
+    return f"exit {returncode}"
+
+
+def _remote_call_killed_silently(result: subprocess.CompletedProcess) -> bool:
+    if result.returncode == 0 or (result.stdout or "").strip() or (result.stderr or "").strip():
+        return False
+    return _exit_signal(result.returncode) in _TRANSIENT_KILL_SIGNALS
+
+
 def _request_remote_session_allocation(
     ssh_args: list[str],
     engine: str,
@@ -1972,15 +2009,18 @@ def _request_remote_session_allocation(
         f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
         + "".join(f" {shlex.quote(arg)}" for arg in naming_args)
     )
-    result = subprocess.run(
-        [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    ssh_command = [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"]
+    result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
+    if _remote_call_killed_silently(result):
+        exit_text = _remote_exit_text(result.returncode)
+        _launch_reporter.active().warning(
+            "session", f"remote session-name allocation was cut off ({exit_text}); retrying once"
+        )
+        time.sleep(_REMOTE_ALLOCATION_RETRY_DELAY_S)
+        result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"remote session-name allocation failed{f': {detail}' if detail else ''}")
+        detail = (result.stderr or result.stdout).strip() or "no output"
+        raise RuntimeError(f"remote session-name allocation failed ({_remote_exit_text(result.returncode)}): {detail}")
     try:
         allocation = json.loads(result.stdout)
         session_id = allocation["session_id"]
