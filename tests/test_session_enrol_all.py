@@ -15,7 +15,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from ai_cli import config, main, session_enrol
+from ai_cli import config, main, session_enrol, session_naming
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 
@@ -23,11 +23,12 @@ _LOAD_CONFIG = config.load_config
 
 
 @pytest.fixture
-def live_sessions(tmp_path, monkeypatch):
+def live_sessions(tmp_path, monkeypatch, register_repo):
     root = tmp_path / "state"
     root.mkdir()
     cwd = tmp_path / "myproject"
     cwd.mkdir()
+    register_repo(cwd, "session")
     monkeypatch.setattr(config, "get_xdg_state_home", lambda: root)
     monkeypatch.setattr(registry, "registry_path", lambda: root / "registry.json")
     cfg = {"machine": {"host_id": "host-a"}}
@@ -85,6 +86,16 @@ def live_sessions(tmp_path, monkeypatch):
 
 def invoke(*args):
     return CliRunner().invoke(main._cli_group, ["sessions", "enrol", *args])
+
+
+def test_given_registered_repo_when_rendering_enrolment_script_then_wrong_alias_is_still_refused(live_sessions):
+    script = live_sessions.add()
+    before = script.read_bytes()
+    meta = {**live_sessions.meta["c-session-1"], "ai_name": "wrong-1", "session": "c-wrong-1"}
+    with pytest.raises(session_naming.NamingConventionError, match="repo alias rule"):
+        main._engine_script_from_meta(meta)
+    assert script.read_bytes() == before
+    assert not registry.registry_path().exists()
 
 
 @pytest.fixture

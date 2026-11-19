@@ -16,7 +16,11 @@ CLIENTS = {"c": "claude-code", "g": "gemini", "p": "pi", "cx": "codex"}
 def fleet(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_CLI_SESSION_NAMES", "1")
     monkeypatch.setattr("ai_cli.session._tmux_session_names", list)
-    return build_fleet(tmp_path, monkeypatch)
+    result = build_fleet(tmp_path, monkeypatch)
+    owner = result.projects / REPO
+    owner.mkdir()
+    (owner / "pyproject.toml").write_text(f'[tool.ai-cli]\ntask_prefix = "{REPO}"\n')
+    return result
 
 
 def _launch_name(engine: str) -> str:

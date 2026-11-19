@@ -45,7 +45,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any
+from typing import IO, Any
 
 import psutil
 from process_wait import scaled
@@ -61,6 +61,25 @@ OWNED_PROCESS_LIFETIME = 30
 
 #: How long to wait for a signalled process to actually go, per escalation step.
 _REAP_TIMEOUT = 5
+
+# Only the payload inherits the pipe writer, so the independent timer exits
+# early on EOF after ordinary cleanup. Stay above the shell's reserved fds.
+_REPORT_GROUP_AND_EXEC = """\
+import fcntl, os, sys
+pipe_fd = int(sys.argv[1])
+fd = fcntl.fcntl(pipe_fd, fcntl.F_DUPFD, 10)
+os.close(pipe_fd)
+os.set_inheritable(fd, True)
+os.write(fd, f"{os.getpgrp()}\\n".encode())
+os.execvp(sys.argv[2], sys.argv[2:])
+"""
+_LIMIT_GROUP_LIFETIME = """\
+import contextlib, os, select, signal, sys
+group = sys.stdin.buffer.readline()
+if group and not select.select([sys.stdin], [], [], float(sys.argv[1]))[0]:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(int(group), signal.SIGKILL)
+"""
 
 
 def group_spawn_kwargs() -> dict[str, Any]:
@@ -221,26 +240,71 @@ def reap_tree(proc: subprocess.Popen) -> None:
     Safe on a process that has already exited, and always ends in a bounded
     ``wait()``.
     """
-    victims: list[psutil.Process] = []
-    with contextlib.suppress(psutil.Error):
-        root = psutil.Process(proc.pid)
-        root.suspend()  # a stopped root cannot start a child the snapshot misses
-        victims = [*root.children(recursive=True), root]
-    groups: set[int] = set()
-    if sys.platform != "win32":
-        for victim in victims:
-            with contextlib.suppress(OSError):
-                groups.add(os.getpgid(victim.pid))
-        groups.discard(os.getpgrp())
-    for victim in victims:
+    if proc.poll() is not None:
+        return
+    try:
+        victims: list[psutil.Process] = []
         with contextlib.suppress(psutil.Error):
-            victim.kill()
-    for group in groups:
+            root = psutil.Process(proc.pid)
+            root.suspend()  # a stopped root cannot start a child the snapshot misses
+            victims = [*root.children(recursive=True), root]
+        groups: set[int] = set()
+        if sys.platform != "win32":
+            for victim in victims:
+                with contextlib.suppress(OSError):
+                    groups.add(os.getpgid(victim.pid))
+            groups.discard(os.getpgrp())
+        for victim in victims:
+            with contextlib.suppress(psutil.Error):
+                victim.kill()
+        for group in groups:
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+    finally:
+        # An interrupted descendant walk must never leave the root stopped.
         with contextlib.suppress(OSError):
-            os.killpg(group, signal.SIGKILL)
-    with contextlib.suppress(OSError):
-        proc.kill()
-    proc.wait(timeout=scaled(_REAP_TIMEOUT))
+            proc.kill()
+        proc.wait(timeout=scaled(_REAP_TIMEOUT))
+
+
+@contextlib.contextmanager
+def bounded_supervisor(
+    script: Path, diagnostics: IO[str], *, default_lifetime: float, env: dict[str, str] | None = None
+) -> Iterator[subprocess.Popen]:
+    """Launch a terminal-free POSIX wrapper with an independent group deadline.
+
+    The payload must stay in its own process group. Also watch its session so
+    killing the test worker ends the wrapper right away, even before the deadline.
+    """
+    lifetime = float(os.environ.get("RESTART_FIXTURE_LIFETIME_SECONDS", default_lifetime))
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb") as writer:
+        timer = _REAL_POPEN(
+            [sys.executable, "-I", "-S", "-c", _LIMIT_GROUP_LIFETIME, str(lifetime)],
+            stdin=reader,
+            stdout=diagnostics,
+            stderr=diagnostics,
+            start_new_session=True,
+        )
+        try:
+            process = _REAL_POPEN(
+                [sys.executable, "-I", "-S", "-c", _REPORT_GROUP_AND_EXEC, str(write_fd), "bash", str(script)],
+                stdin=subprocess.DEVNULL,
+                stdout=diagnostics,
+                stderr=diagnostics,
+                start_new_session=True,
+                pass_fds=(write_fd,),
+                env=env,
+            )
+            try:
+                writer.close()
+                with watch_session(process):
+                    yield process
+            finally:
+                reap_tree(process)
+        finally:
+            writer.close()
+            assert timer.wait(timeout=scaled(5)) == 0, "supervisor lifetime timer failed"
 
 
 @contextlib.contextmanager

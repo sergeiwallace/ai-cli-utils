@@ -1,0 +1,32 @@
+name: Task
+description: A technical change with no user-story sentence.
+labels: [task]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What changes, and what forced the change.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Approach
+      description: The intended change, file by file or tool by tool.
+      placeholder: "- ..."
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Each criterion observable and testable, with at least one failure path.
+      placeholder: |
+        1. When <trigger>, the system shall <response>.
+        2. If <failure condition>, then the system shall <response>.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk
+      description: What breaks if this goes wrong, and how it is reverted.

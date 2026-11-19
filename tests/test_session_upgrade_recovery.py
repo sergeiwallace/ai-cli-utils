@@ -31,10 +31,11 @@ def wait_for(check, timeout=30):
 
 
 @pytest.fixture(params=["bash", "zsh"])
-def old_session(tmp_path, monkeypatch, request):
+def old_session(tmp_path, monkeypatch, request, register_repo):
     shell = shutil.which(request.param)
     if shell is None:
         pytest.skip(f"{request.param} unavailable")
+    register_repo(tmp_path, "myproject")
     binaries = tmp_path / "bin"
     binaries.mkdir()
     home = tmp_path / "home"
