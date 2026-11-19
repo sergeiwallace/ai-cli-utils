@@ -19,7 +19,18 @@ from pathlib import Path
 
 import portalocker
 import pytest
-from name_fleet import DOLT_REF, HOST, OTHER_HOST, POLICY_TOML, REPO, build_fleet, git, publish_list
+from name_fleet import (
+    DOLT_REF,
+    HOST,
+    OTHER_HOST,
+    POLICY_TOML,
+    REGISTRY_TEST_TIMEOUT_S,
+    REPO,
+    build_fleet,
+    git,
+    publish_list,
+    shipped_budget_defaults,
+)
 
 from ai_cli import name_dolt
 from ai_cli import name_registry as reg
@@ -71,7 +82,7 @@ def _remote_sql(fleet, query: str) -> list[dict]:
         dolt_ref=DOLT_REF,
         remote="origin",
         policy_file=fleet.repo / reg.POLICY_MARKER,
-        timeout_s=15,
+        timeout_s=REGISTRY_TEST_TIMEOUT_S,
         attempts=1,
         path=fleet.tmp / f"sql-{time.monotonic_ns()}.dolt",
     )
@@ -802,24 +813,20 @@ def _user_config(fleet, monkeypatch, text: str) -> None:
 
 
 def test_given_distinct_fetch_and_push_timeouts_when_writing_then_each_dolt_call_gets_only_its_own(fleet, monkeypatch):
+    # Each budget distinct from the others and from the publish budget, and each above the
+    # slowest real push measured on a slow host (87 s), so the real call finishes inside it.
     _user_config(
-        fleet, monkeypatch, "[session_names]\nregistry_fetch_timeout_seconds = 31\nregistry_push_timeout_seconds = 37\n"
+        fleet,
+        monkeypatch,
+        "[session_names]\nregistry_fetch_timeout_seconds = 401\nregistry_push_timeout_seconds = 407\n",
     )
-    fleet.registry.timeout_s = 4
     calls = _dolt_calls(monkeypatch)
-    real_run = subprocess.run
-
-    def slow_network(command, *args, **kwargs):
-        if isinstance(command, list) and command[:2] in (["dolt", "fetch"], ["dolt", "push"]):
-            time.sleep(5)  # longer than the publish budget, inside the configured one
-        return real_run(command, *args, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", slow_network)
 
     reservation = reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
 
-    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {31}
-    assert {timeout for command, _env, timeout in calls if command[1] == "push"} == {37}
+    assert fleet.registry.timeout_s not in (401, 407)
+    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {401}
+    assert {timeout for command, _env, timeout in calls if command[1] == "push"} == {407}
     assert not reservation.offline
     assert reg.read_spool() == {}
 
@@ -857,6 +864,7 @@ def test_given_a_host_with_no_clone_yet_when_it_writes_then_it_fetches_only_to_r
 
 
 def test_given_no_clone_timeout_setting_when_cloning_then_windows_waits_longer_than_other_platforms(fleet, monkeypatch):
+    shipped_budget_defaults(monkeypatch)
     budgets = {}
     for platform in ("linux", "darwin", "win32"):
         fresh = fleet.other_machine(f"clone-{platform}")

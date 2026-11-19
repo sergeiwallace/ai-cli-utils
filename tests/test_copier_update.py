@@ -1307,13 +1307,52 @@ def test_given_submodule_failure_when_preparing_dependencies_then_it_reports_ste
     assert error is not None and "dependency install" in error and "submodule" in error
 
 
-def test_given_nested_projects_when_preparing_dependencies_then_it_installs_in_gate_locations(tmp_path):
+def test_given_root_and_nested_python_projects_when_preparing_dependencies_then_only_root_syncs(tmp_path):
     from ai_cli.copier_update import _prepare_dependencies
 
-    backend = tmp_path / "backend"
-    backend.mkdir()
-    (backend / "pyproject.toml").touch()
-    (backend / "uv.lock").touch()
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "uv.lock").touch()
+    export = tmp_path / "export-docs"
+    export.mkdir()
+    (export / "pyproject.toml").write_text(
+        '[project]\nname = "export-docs"\nversion = "0.1.0"\ndependencies = ["test-support"]\n'
+        '[tool.uv.sources]\ntest-support = { path = "packages/test-support", editable = true }\n'
+    )
+    (export / "uv.lock").write_text(
+        'version = 1\n[[package]]\nname = "test-support"\nversion = "0.1.0"\n'
+        'source = { editable = "packages/test-support" }\n'
+    )
+    for project in (tmp_path, export):
+        (project / "package.json").touch()
+        (project / "package-lock.json").touch()
+    installs = []
+
+    def run(command, **kwargs):
+        if command[0] in ("/fake/uv", "/fake/npm"):
+            installs.append((command[0], kwargs["cwd"]))
+        if command[0] == "/fake/uv" and kwargs["cwd"] == export:
+            return MagicMock(returncode=2, stdout="", stderr="Distribution not found at: packages/test-support")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.shutil.which", side_effect=lambda name: "/fake/" + name),
+    ):
+        assert _prepare_dependencies(tmp_path) is None
+    assert installs == [("/fake/uv", tmp_path), ("/fake/npm", tmp_path), ("/fake/npm", export)]
+
+
+@pytest.mark.parametrize("python_projects", [("backend",), ("backend", "worker")])
+def test_given_nested_projects_when_preparing_dependencies_then_it_installs_in_gate_locations(
+    tmp_path, python_projects
+):
+    from ai_cli.copier_update import _prepare_dependencies
+
+    python_dirs = [tmp_path / name for name in python_projects]
+    for directory in python_dirs:
+        directory.mkdir()
+        (directory / "pyproject.toml").touch()
+        (directory / "uv.lock").touch()
     web = tmp_path / "web"
     web.mkdir()
     (web / "package.json").touch()
@@ -1329,9 +1368,12 @@ def test_given_nested_projects_when_preparing_dependencies_then_it_installs_in_g
         patch("ai_cli.copier_update.shutil.which", side_effect=lambda name: "/fake/" + name),
     ):
         assert _prepare_dependencies(tmp_path) is None
-    uv_call = next(kwargs for command, kwargs in calls if command[0] == "/fake/uv")
-    assert uv_call["cwd"] == backend
-    assert uv_call["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
+    uv_calls = [kwargs for command, kwargs in calls if command[0] == "/fake/uv"]
+    assert [call["cwd"] for call in uv_calls] == python_dirs
+    if len(python_dirs) == 1:
+        assert uv_calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
+    else:
+        assert all(call["env"] is None for call in uv_calls)
     assert any(command[0] == "/fake/npm" and kwargs["cwd"] == web for command, kwargs in calls)
 
 

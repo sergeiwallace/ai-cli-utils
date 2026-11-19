@@ -122,6 +122,11 @@ def resolve_base_dir(env_var: str, fallback: Path | str) -> Path | str:
 
 #: ``host_id_source`` when nothing identified the machine and its hostname stood in.
 HOST_ID_SOURCE_HOSTNAME = "hostname"
+#: ``host_id_source`` when the id is the one recorded in config.toml's ``[machine]`` table.
+HOST_ID_SOURCE_CONFIG = "config.toml [machine] host_id"
+#: Set by a read-only load that filled a missing ``host_id`` by detection, naming the tier
+#: that answered, so the filled value is never reported as a recorded one.
+_DETECTED_SOURCE_KEY = "_host_id_detected_from"
 
 
 def machine_marker_file(config: dict | None = None) -> Path | None:
@@ -151,8 +156,11 @@ def detect_machine_profile(config: dict | None = None) -> dict[str, str]:
     """Return this machine's host_id, os_type, and which tier supplied the host_id.
 
     host_id: the ``AI_HOST`` environment variable, then the ``[machine] marker_file`` marker
-    (:func:`machine_marker_file`; ``config`` is passed through to it), then
-    ``socket.gethostname()``.
+    (:func:`machine_marker_file`; ``config`` is passed through to it), then the
+    ``[machine] host_id`` the machine's first launch recorded in config.toml, then
+    ``socket.gethostname()``. The recorded tier is what makes every shell on one machine agree:
+    a shell whose login profile does not export ``AI_HOST`` takes the recorded id rather than
+    its hostname.
     os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'.
 
     The marker tier is the point.  ``AI_HOST`` is exported by an interactive login profile, so
@@ -171,10 +179,23 @@ def detect_machine_profile(config: dict | None = None) -> dict[str, str]:
     """
     host_id = os.environ.get("AI_HOST", "").strip()
     source = "AI_HOST"
-    marker = machine_marker_file(config) if not host_id else None
-    if marker is not None:
-        host_id = _read_machine_marker(marker) or ""
-        source = str(marker)
+    if not host_id:
+        cfg = load_config(read_only=True) if config is None else config
+        marker = machine_marker_file(cfg)
+        if marker is not None:
+            host_id = _read_machine_marker(marker) or ""
+            source = str(marker)
+        if not host_id:
+            # The id the machine's first launch recorded. A shell whose login profile does not
+            # export AI_HOST (PowerShell beside Git Bash on one Windows machine) takes it here,
+            # so it never names sessions or registers itself as a second machine.
+            machine = cfg.get("machine")
+            if not isinstance(machine, dict):
+                machine = {}
+            recorded = machine.get("host_id")
+            if isinstance(recorded, str) and recorded.strip():
+                host_id = recorded.strip()
+                source = machine.get(_DETECTED_SOURCE_KEY) or HOST_ID_SOURCE_CONFIG
     if not host_id:
         host_id = socket.gethostname()
         source = HOST_ID_SOURCE_HOSTNAME
@@ -1207,6 +1228,8 @@ def load_config(*, read_only: bool = False):
         if missing:
             profile = detect_machine_profile(cfg)
             machine.update({key: profile[key] for key in missing})
+            if "host_id" in missing:
+                machine[_DETECTED_SOURCE_KEY] = profile["host_id_source"]
     elif ensure_machine_profile_registered(config_path, cfg):
         try:
             with config_path.open("rb") as f:
