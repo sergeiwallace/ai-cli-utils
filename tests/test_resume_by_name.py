@@ -69,7 +69,7 @@ class Env:
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch, tmux_available, interactive_terminal):  # noqa: F811
+def env(tmp_path, monkeypatch, tmux_available, interactive_terminal, register_repo):  # noqa: F811
     own_host_id = session_naming.host_id
     fleet = build_fleet(tmp_path, monkeypatch)
     # Keep the suite's host id, the one its alias file names (alias "tst").
@@ -78,6 +78,7 @@ def env(tmp_path, monkeypatch, tmux_available, interactive_terminal):  # noqa: F
     repo = fleet.projects / REPO
     repo.mkdir()
     git(repo.parent, "init", "-q", "-b", "main", str(repo))
+    register_repo(repo, REPO)
     monkeypatch.chdir(repo)
     live: list[str] = []
     state = Env(fleet, repo, live)

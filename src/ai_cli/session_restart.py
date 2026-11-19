@@ -39,7 +39,8 @@ from typing import TypeGuard
 import portalocker
 import psutil
 
-from . import config, session_run_state
+from . import config, session_run_state, tmux_binary
+from .background_attach import daemon_client_environment
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
 TAIL_LIMIT = 8 * 1024 * 1024
@@ -161,7 +162,15 @@ def _pane(record: dict) -> tuple[str, str]:
 
 def _run(argv: list[str], timeout: float = 15) -> str:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", check=False, timeout=timeout)
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout,
+            env=daemon_client_environment() if argv == ["claude", "agents", "--json"] else None,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal("probe-unavailable") from exc
     if result.returncode:
@@ -199,9 +208,9 @@ def _pane_attach_client(target: str | None) -> str | None:
     """
     pane = os.environ.get("TMUX_PANE")
     if target:
-        query = ["tmux", "list-panes", "-s", "-t", target, "-F", "#{pane_pid}"]
+        query = tmux_binary.argv("list-panes", "-s", "-t", target, "-F", "#{pane_pid}")
     elif pane:
-        query = ["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"]
+        query = tmux_binary.argv("display-message", "-p", "-t", pane, "#{pane_pid}")
     else:
         return None
     try:
@@ -939,6 +948,21 @@ _RETIRED_QUOTA_WATCH_START = (
 )
 
 
+# The clean-exit branch every program launched before clean exits restarted again runs.
+_PREVIOUS_INTERRUPT_EXIT = (
+    "    # BEGIN SHELL RETURN interrupt-exit\n"
+    "      # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;\n"
+    "      # a clean exit or status 130 is a deliberate stop, even immediately after\n"
+    "      # startup. Otherwise an early raw Ctrl+C opens a remote recovery shell\n"
+    "      # whose interactive prompt consumes all further interrupts.\n"
+    "      if $agent_attempted && (( agent_exit_code == 130 || agent_exit_code == 0 )); then\n"
+    "        _ai_final_manual_exit\n"
+    "        exit 77\n"
+    "      fi\n"
+    "    # END SHELL RETURN\n"
+)
+
+
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
@@ -959,7 +983,7 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
@@ -975,6 +999,23 @@ def _compatible(source: str, expected: str) -> bool:
 
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
+        return True
+    # Reconstruct the previous resolver in our trusted template. Replacing this
+    # block in the running source would hide changes to its transcript safeguards.
+    previous_resolver = re.sub(
+        r"(?ms)^    # BEGIN RESTART TRANSCRIPT\n.*?^    # END RESTART TRANSCRIPT\n",
+        '        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")\n        resolve_status=$?\n',
+        expected,
+    )
+    if previous_resolver != expected and _compatible(source, previous_resolver):
+        return True
+    # The same for the clean-exit branch: rebuild its previous form in our template.
+    previous_interrupt_exit = re.sub(
+        r"(?ms)^    # BEGIN SHELL RETURN interrupt-exit\n.*?^    # END SHELL RETURN\n",
+        lambda _: _PREVIOUS_INTERRUPT_EXIT,
+        expected,
+    )
+    if previous_interrupt_exit != expected and _compatible(source, previous_interrupt_exit):
         return True
     # Like the earlier wrapper below, the retired block is added to our trusted
     # template, never ignored in the running source.
@@ -1008,7 +1049,7 @@ def _tmux_pane_environment(session: str) -> dict[str, str]:
     """The environment tmux hands a new pane in *session*: global, then session overrides."""
     environment: dict[str, str] = {}
     for scope in (["-g"], ["-t", session]):
-        for line in _run(["tmux", "show-environment", *scope]).splitlines():
+        for line in _run(tmux_binary.argv("show-environment", *scope)).splitlines():
             name, separator, value = line.partition("=")
             if separator:
                 environment[name] = value
@@ -1072,14 +1113,13 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
             raise Refusal("uptime")
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}\t#{pane_start_command}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -1348,14 +1388,13 @@ def _validate_request(request: dict, session: str, *, child: bool) -> None:
         pane_session, pane = _pane({"tmux": request["tmux"]})
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -1572,7 +1611,7 @@ def trigger_verdicts(record: dict, commands: dict) -> dict:
     if update != "YES":
         try:
             _, pane = _pane(record)
-            footer = _run(["tmux", "capture-pane", "-p", "-t", pane, "-S", "-12"])
+            footer = _run(tmux_binary.argv("capture-pane", "-p", "-t", pane, "-S", "-12"))
             if "Update installed · Restart to apply" in footer:
                 update = "YES"
         except Refusal:
@@ -1707,14 +1746,13 @@ def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> b
             return False
         shown = (
             _run(
-                [
-                    "tmux",
+                tmux_binary.argv(
                     "display-message",
                     "-p",
                     "-t",
                     pane,
                     "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                ]
+                )
             )
             .strip()
             .split("\t")
@@ -2092,14 +2130,13 @@ def _verify_replacement(old: dict, settings: dict, commands: dict) -> dict:
                 request = _object(state_paths(session)[2])
                 shown = (
                     _run(
-                        [
-                            "tmux",
+                        tmux_binary.argv(
                             "display-message",
                             "-p",
                             "-t",
                             pane,
                             "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{@ai_cli_session_generation}",
-                        ]
+                        )
                     )
                     .strip()
                     .split("\t")

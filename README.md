@@ -27,6 +27,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Human session names** | `ai c` names each new session with a short human first name (for example `ada`) from a shared registry (git ref, Dolt or SQLite); `ai locate-session` finds which host holds one, and `ai reconcile-names` frees the names of retired sessions |
 | **Session migration** | `ai migrate-session OLD NEW` renames a session and carries its worktree, branch, transcripts, virtual environments, tasks and issues; `--finish` completes whatever was left while the new session ran |
 | **Session lifecycle** | `ai sessions list/stop/wind-down/relaunch` with durable run state per session; `ai -X/--restart-session` restarts a session behind safety gates; `ai sessions relaunch --boot` brings sessions back after a reboot |
+| **Launch extensions** | Run your own commands before every `ai c` session starts, configured in `config.toml` and kept in any repository you choose; each warns or stops the launch on failure ([guide](docs/guides/launch-extensions.md)) |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -388,6 +389,18 @@ Once the probe has exited, remove its worktree and branch with the ordinary git
 commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`).
 The launcher never removes them itself. Design:
 [docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
+
+#### Auto-restart and stopping a session
+
+Inside tmux, the wrapper restarts the agent
+whenever it exits, resuming the same conversation. That includes `/exit`, Ctrl+D and Claude
+Code's own double Ctrl+C, which all exit with status 0. After a clean exit the wrapper prints
+`Agent exited; restarting in 3s. Press Ctrl+C to stop.`; one Ctrl+C in that window ends the
+session and returns to the shell you launched from. `ai exit-session` ends it from inside or
+from another terminal. A clean exit in the first three seconds of a run ends the session
+without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
+0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
+read at each exit, so an edit applies at the next one.
 
 #### Restarting an idle Claude Code session
 
@@ -978,6 +991,25 @@ ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
 ai ssh [alias]                     # Open an interactive shell on that machine
 ```
 
+#### Codex clipboard from a remote shell (Linux)
+
+Codex copies to the native clipboard through the graphical display. A shell reached over
+SSH has no `DISPLAY` or `XAUTHORITY`, so a copy from a Codex session started there fails,
+even while you are signed in to the same machine's desktop (for example over remote
+desktop). When neither variable is set, each Codex start in a supervised `ai cx` session,
+fresh or resumed, looks for your desktop session and gives Codex its display. It uses
+the pair only when all of these hold:
+
+- logind (`loginctl`) has exactly one session of your user that is `State=active`,
+  `Remote=no` and of `Type` `x11` or `wayland`;
+- your systemd user manager (`systemctl --user show-environment`) holds a `DISPLAY` and
+  `XAUTHORITY`, and an X11 session that names its display names the same one;
+- the `XAUTHORITY` file exists, is owned by you and is not older than the session.
+
+Otherwise Codex starts without them and the launch log says why. A `DISPLAY` or
+`XAUTHORITY` you set yourself is kept as it is, and only the Codex process gets the pair:
+your shell and the tmux environment are untouched. macOS and Windows are unchanged.
+
 ### Session boot relaunch
 
 On macOS and Linux, a boot or login job can run `ai sessions relaunch -b/--boot`
@@ -1297,7 +1329,7 @@ ai ps clean              # Kill orphaned processes after a prompt; -f/--force ad
 ai memory watch          # Watch for Claude Code memory file changes
 ai quota publish         # Publish the statusline's native quota reading to NATS
 ai telemetry writer      # Run telemetry writer daemon
-ai doctor [-n/--dry-run] # Check required native tools and direnv
+ai doctor [-n/--dry-run] # Check required native tools, direnv, and harness-driven compaction
 ai register -p <path> -x <prefix>  # Register a repository and task prefix
 ai ws pull [-d/--dry-run]          # Pull/rebase repositories in a workspace
 ai upgrade            # Upgrade an installed uv tool from PyPI
@@ -1340,6 +1372,10 @@ Two escape hatches:
 - `ai update --force` — reinstall on demand, bypassing uv's cache and
   reinstalling dependencies. It never consults the fingerprint, so it is the way
   to force a refresh when the installed build is suspect.
+
+### Launch extensions
+
+`ai c` can run commands of your own before the session starts, such as one that starts a helper process. Each is a table under `[extensions.run.<name>]` in `config.toml` naming the command and the directory it runs in, absolute or relative to `[project] projects_dir`, so the extension's code lives in your own repository and nothing about it is stored here. `on_error` decides whether a failure prints a warning and launches anyway or prints an error and refuses the launch; it has a default for all extensions and a per-extension override. Every attempt is recorded in the launch log. With nothing configured, nothing runs. The configuration, the run contract and a worked example are in [docs/guides/launch-extensions.md](docs/guides/launch-extensions.md).
 
 ### Launch output
 
@@ -1571,13 +1607,14 @@ suffix = ":"
 style = "bold cyan"
 pattern = '^[a-z][a-z0-9-]*$'
 vocabulary = [
-    "start", "request", "install", "update", "reexec", "remote", "probe", "transport",
+    "start", "request", "host", "install", "update", "reexec", "remote", "probe", "transport", "extension",
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
     "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
     "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
     "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
     "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
+    "add", "remove", "spare", "reconcile", "release", "reassign", "locate", "publish",
 ]
 
 [output.elements.operation.styles]
@@ -1704,7 +1741,7 @@ The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. E
   does not make an already-published version uninstallable. Development and CI run on 3.14 alone —
   that is a separate decision about this repository, not a restriction on installing the package —
   and the shipped source is byte-compiled on 3.11 in CI so the wider claim stays falsifiable.
-- [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`)
+- [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`, unless psmux is installed, which answers to `tmux`. Where more than one build answers to `tmux`, `[tmux] binary` names the one every call runs. Native Windows also has no pty API, so there the harness cannot drive compaction (the engine's own auto-compact still runs); a launch says so only under `-v`, and `ai doctor` reports it as its `compact` row)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)

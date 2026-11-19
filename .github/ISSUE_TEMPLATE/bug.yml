@@ -1,0 +1,41 @@
+name: Bug
+description: Something that behaves differently from what it should, with reproduction steps and the exact error.
+labels: [bug]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed
+      description: What happens, with the exact message, the command or input, and where it ran.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      placeholder: |
+        1. Step.
+        2. Step.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Which environment or tool, which version or revision, and when it was observed.
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      value: |
+        1. The behaviour no longer reproduces with the steps above.
+        2. A regression test pins the fix.
+    validations:
+      required: true

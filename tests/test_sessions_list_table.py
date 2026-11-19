@@ -195,6 +195,9 @@ def test_given_group_by_status_in_config_when_a_flag_says_none_then_the_flag_win
         ({"sort_by": ["size"]}, [], "sort_by"),
         ({"show_all": "yes"}, [], "show_all"),
         ({"order": "name"}, [], "order"),
+        ({"pair_host": "host-b"}, [], "unknown key pair_host"),
+        ({"scope": "pair"}, [], "scope must be one of"),
+        ({}, ["-S", "pair"], "Invalid value"),
         ({}, ["-s", "name,size"], "-s/--sort-by"),
     ],
 )
@@ -250,9 +253,9 @@ def test_given_a_fixed_registry_when_listed_as_json_then_records_keep_their_shap
     assert refused.exit_code == 2
 
 
-def test_given_legacy_group_settings_when_listed_then_the_members_running_rows_follow_this_hosts(published):
-    published["sessions_list"] = {"scope": "pair", "pair_host": "host-b"}
-    out = _run("sessions", "list", "-S", "pair")
+def test_given_group_settings_when_listed_then_the_members_running_rows_follow_this_hosts(published):
+    published["sessions_list"] = {"scope": "group", "group_host": "host-b"}
+    out = _run("sessions", "list", "-S", "group")
     _, body = _table(out)
 
     assert [row["HOST"] for row in body if row["HOST"]] == [LOCAL, "host-b"]
@@ -280,7 +283,17 @@ def test_given_a_remote_group_member_without_an_outbound_target_when_listed_then
     out = _run("sessions", "list")
 
     assert f"{LOCAL}: published snapshot from 2026-01-04T00:00:00Z" in out
-    assert "no pair host" not in out
+    assert "no machine host group" not in out
+
+
+@pytest.mark.parametrize("profile_class", ["personal", "work"])
+def test_given_an_invalid_machine_scope_when_listed_then_it_is_refused(host, profile_class):
+    cfg, _ = host
+    cfg["machine"].update(profile_class=profile_class, sessions_list_scope="pair")
+    result = CliRunner().invoke(_cli_group, ["sessions", "list"])
+
+    assert result.exit_code == 2
+    assert "[machine] sessions_list_scope must be one of" in result.output
 
 
 def test_given_a_group_member_without_a_snapshot_when_listed_then_available_rows_and_a_publish_hint_appear(published):

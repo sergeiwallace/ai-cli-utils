@@ -1,0 +1,140 @@
+name: CI (macOS)
+
+# The macOS half of CI, split out of ci.yml so that each operating system's run is
+# cancelled and re-run on its own. Job names, and so the required `test-macos` check,
+# are unchanged, and the triggers are the same as ci.yml's.
+#
+# Every job's `runs-on` follows the hosted-first fallback contract with the OS key
+# `macos`: attempt 1 always asks for the GitHub-hosted label, and a later attempt of a
+# trusted run asks for a self-hosted label set only when the repository variable
+# CI_FALLBACK_RUNS_ON authorizes that exact run, attempt and OS key. Steps guarded by
+# `runner.environment` are the self-hosted variants; on a GitHub-hosted runner every
+# job runs the steps it always ran. docs/procedures/github-actions-status.md describes
+# the contract, and tests/test_ci_runner_fallback_contract.py pins it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels that pull request's older run of this
+# workflow. Any other event gets a group of its own, so a push to main never cancels
+# or waits on another run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The macOS suite runs as two shards in parallel, like Windows, and `test-macos`
+  # below is the one check that reports for both, so the required-check name did not
+  # change. Healthy single runs on main took 42 minutes by 2026-11-15 against the
+  # 45-minute cap, and the session-name registry's real-Dolt cases pushed a pull
+  # request run past it at 83% with no failing test.
+  test-macos-shard:
+    name: test-macos (shard ${{ matrix.shard }}/2)
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-macos', github.run_id, github.run_attempt)] || 'macos-latest' }}
+    strategy:
+      # A failure in one shard should not cancel the other: both results are wanted.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    # A REQUIRED CHECK as of AI-CLI-66mk, alongside `lint`, `test` and
+    # `test-windows`. It used to carry `continue-on-error: true` because it was
+    # expected to be red when first added (AI-CLI-3cai) and a job permitted to fail
+    # cannot gate anything -- so promoting it meant removing that flag, not merely
+    # naming it in branch protection. Requiring a job that is allowed to fail is how
+    # a required check gets quietly disabled.
+    #
+    # The promotion trigger the flag used to carry was "once AI-CLI-3cai is fixed and
+    # this job stays green across two weeks of PRs". It was met early on the first
+    # half and short on the second: the operator chose all three platform tiers
+    # deliberately, and the pytest step itself (not merely the job conclusion, which
+    # `continue-on-error` would have painted green regardless) passed on run
+    # 36290320909 and on PR #193.
+    #
+    # Why it exists at all: two recent defects were invisible to a
+    # ubuntu + windows matrix. AI-CLI-ta1l's macOS half, and AI-CLI-3cai, where
+    # test_supervisor_terminal_handoff fails 5 of 6 on macOS while both covered
+    # platforms pass. macOS is also the platform the iTerm2 and tmux surface
+    # actually targets, so it was the least covered and most exercised OS.
+    #
+    # macOS runners are the slowest and the most expensive per minute, so bound a
+    # hang rather than discovering it on the bill. Healthy runs reached 19 minutes by
+    # 2026-10. By 2026-11 the suite had grown: healthy runs on main took 27 and 29
+    # minutes, and another main run and both attempts of a pull request were cancelled
+    # at the old 30-minute cap at 98-99% with no failing test. The cap is 45 so a
+    # healthy run clears it with room, and a real hang still stops well before an hour.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A self-hosted runner's account may have no writable home, and the uv cache,
+      # Dolt's config and the coverage tooling all write under it.
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Kept in sync with `.python-version` by the lint job's version-sync step.
+          python-version: "3.14"
+      # No `services:` block, unlike the Linux job in ci.yml: GitHub service
+      # containers are Linux-only, so a NATS sidecar cannot run here. The suite
+      # tolerates NATS being absent -- a full local run on macOS with no broker
+      # passed 3020 tests -- so the tests that need it skip rather than fail.
+      #
+      # tmux is NOT guaranteed on the macOS runner image, and its absence is not
+      # benign here: two consecutive runs of this job differed only in that, and
+      # produced 3034 passed / 33 skipped / 0 failed versus 3041 passed /
+      # 45 skipped / 3 failed. The three failures were tests that use tmux
+      # without guarding for it ("tmux binary not available on PATH"), and the
+      # twelve extra skips were tests that do guard. So the job silently changed
+      # what it covered from run to run, which makes a red result unreadable.
+      # Installing it makes coverage deterministic, and every other job now does
+      # the same -- MSYS2 for `test-windows`, apt for `test`. The suite enforces the
+      # converse too: it fails a run that skips a tmux test while tmux IS usable,
+      # so this install going missing can no longer pass as a smaller green run.
+      - if: runner.environment == 'github-hosted'
+        run: brew install tmux
+      # A self-hosted runner keeps its tools between jobs, so install tmux only when
+      # the host does not already provide it.
+      - name: Provide tmux on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          command -v tmux >/dev/null || brew install tmux
+          tmux -V
+      # The session-name registry tests run the real `dolt` program against a bare git
+      # remote (docs/designs/session-name-registry-dolt.md). The version is the design's
+      # floor, D-6. In CI a Dolt test fails rather than skips when the binary is missing,
+      # so this step going missing shows as red, never as a smaller green run.
+      - name: Install Dolt
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/dolt.tar.gz" https://github.com/dolthub/dolt/releases/download/v2.3.4/dolt-darwin-arm64.tar.gz
+          tar -xzf "$RUNNER_TEMP/dolt.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/dolt-darwin-arm64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dolt-darwin-arm64/bin/dolt" version
+      - run: uv sync --locked --dev
+      # CI_TEST_WRAPPER is a command prefix a self-hosted runner may export, for
+      # example to run the suite in its own network namespace. It is unset on
+      # GitHub-hosted runners, where the expansion is empty.
+      - run: ${CI_TEST_WRAPPER:-} uv run pytest --tb=short -q -p pytest_ci_shard --ci-shard=${{ matrix.shard }}/2 --durations=15
+
+  test-macos:
+    if: always()
+    needs: test-macos-shard
+    # Routed with the shards' OS key, so a re-routed run reports on the same
+    # self-hosted runner after its shards instead of waiting for hosted Linux again.
+    runs-on: ${{ github.run_attempt > 1 && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_FALLBACK_RUNS_ON || '{}')[format('{0}-{1}-macos', github.run_id, github.run_attempt)] || 'ubuntu-latest' }}
+    steps:
+      - name: Use a job-scoped home on a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/dolt-root"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          echo "DOLT_ROOT_PATH=$RUNNER_TEMP/dolt-root" >> "$GITHUB_ENV"
+      - name: Every macOS shard passed
+        run: test "${{ needs.test-macos-shard.result }}" = "success"

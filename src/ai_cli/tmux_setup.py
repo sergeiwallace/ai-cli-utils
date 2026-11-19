@@ -24,7 +24,6 @@ bare mode is the correct permanent answer there.
 import contextlib
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import launch_reporter, native_deps
+from . import launch_reporter, native_deps, tmux_binary
 from .native_deps import Candidate, InstallResult, LoaderRepair, attempt_installs
 from .tmux_ownership import classify_new_session_output
 
@@ -80,12 +79,13 @@ _MANUAL_HINTS: dict[str, tuple[str, ...]] = {
 
 
 def tmux_present() -> bool:
-    """True when a tmux executable is on PATH.
+    """True when the multiplexer executable resolves: ``[tmux] binary``, else ``tmux`` on PATH.
 
     Presence only. A tmux that resolves but cannot run is a distinct state —
-    see :func:`tmux_runs`.
+    see :func:`tmux_runs`. A configured binary that does not exist is absent, and
+    PATH's tmux is never consulted in its place (:mod:`ai_cli.tmux_binary`).
     """
-    return shutil.which("tmux") is not None
+    return tmux_binary.which() is not None
 
 
 def tmux_runs(timeout: int = 10) -> bool:
@@ -104,7 +104,7 @@ def tmux_runs(timeout: int = 10) -> bool:
     """
     if not tmux_present():
         return False
-    return _probe_output(["tmux", "-V"], timeout) is not None
+    return _tmux_probe("-V", timeout=timeout) is not None
 
 
 def repair_tmux_loader_path(timeout: int = 15) -> LoaderRepair:
@@ -119,7 +119,7 @@ def repair_tmux_loader_path(timeout: int = 15) -> LoaderRepair:
     ``tmux -V`` creates no server, no session and no window, so running it twice
     (once to fail, once to prove the repair) mutates nothing.
     """
-    return native_deps.repair_loader_path(["tmux", "-V"], timeout=timeout)
+    return native_deps.repair_loader_path(tmux_binary.argv("-V"), timeout=timeout)
 
 
 def install_tmux(timeout: int = 300) -> InstallResult:
@@ -198,6 +198,15 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
     and must be free to continue in bare mode, which is what a False result
     tells it to do.
     """
+    # A configured multiplexer that does not exist is refused by name before anything
+    # else: installing or repairing PATH's tmux cannot produce the binary the setting
+    # names, and running PATH's tmux in its place is exactly what the setting forbids.
+    refusal = tmux_binary.resolve().refusal
+    if refusal:
+        if not quiet:
+            launch_reporter.active().warning("tmux", refusal)
+        return InstallResult(False, detail=refusal, unusable=True)
+
     if tmux_runs():
         return InstallResult(True, tool="already-present")
 
@@ -265,6 +274,9 @@ class TmuxReport:
     # Which multiplexer answers to ``tmux``: "tmux", or "psmux" for the native
     # Windows multiplexer that installs itself under that name. Read from ``-V``.
     kind: str = "tmux"
+    # Set when ``[tmux] binary`` names an executable that does not exist: the message
+    # that refuses it by name. ``present`` is False then, and PATH's tmux was not probed.
+    refusal: str | None = None
 
     @property
     def runs(self) -> bool:
@@ -353,7 +365,7 @@ def formats_expand_probe(timeout: int = 20, *, runner: "Callable[..., object] | 
             out_path = Path(scratch) / "new-session.out"
             with out_path.open("w", encoding="utf-8") as handle:
                 run(
-                    ["tmux", "new-session", "-d", "-s", name, "-P", "-F", "#{session_id}"],
+                    tmux_binary.argv("new-session", "-d", "-s", name, "-P", "-F", "#{session_id}"),
                     stdout=handle,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
@@ -368,7 +380,7 @@ def formats_expand_probe(timeout: int = 20, *, runner: "Callable[..., object] | 
         # answer, so a probe that errored may still have left one behind.
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             run(
-                ["tmux", "kill-session", "-t", name],
+                tmux_binary.argv("kill-session", "-t", name),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -406,12 +418,21 @@ def formats_expand(
     guessing that formats are broken would trade detach/reattach away on no
     evidence, which is a worse bug than the one this detection exists to catch.
     """
-    server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
+    server = _tmux_probe("display-message", "-p", "#{version}", timeout=timeout)
     if server is not None:
         return not _looks_unexpanded(server)
     if not allow_probe:
         return None
     return formats_expand_probe(timeout=max(timeout, 20), runner=runner)
+
+
+def _tmux_probe(*args: str, timeout: int) -> str | None:
+    """One bounded tmux probe through the resolved executable. None for a missing configured binary."""
+    try:
+        argv = tmux_binary.argv(*args)
+    except tmux_binary.TmuxBinaryMissing:
+        return None
+    return _probe_output(argv, timeout)
 
 
 def _probe_output(argv: list[str], timeout: int) -> str | None:
@@ -476,16 +497,16 @@ def probe(timeout: int = 10, *, query_versions: bool = True) -> TmuxReport:
     # made to spawn a probe anyway. A bare launch on a machine that happens to
     # have tmux must still reach no tmux process at all.
     if not tmux_present():
-        return TmuxReport(present=False, versions_probed=query_versions)
-    path = shutil.which("tmux")
+        return TmuxReport(present=False, versions_probed=query_versions, refusal=tmux_binary.resolve().refusal)
+    path = tmux_binary.which()
     if not query_versions:
         return TmuxReport(present=True, path=path, versions_probed=False)
 
-    printed = _probe_output(["tmux", "-V"], timeout)
+    printed = _tmux_probe("-V", timeout=timeout)
     client = parse_client_version(printed) if printed is not None else None
     kind = parse_kind(printed) if printed is not None else "tmux"
 
-    server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
+    server = _tmux_probe("display-message", "-p", "#{version}", timeout=timeout)
 
     return TmuxReport(present=True, path=path, client_version=client, server_version=server, kind=kind)
 
@@ -507,6 +528,10 @@ def report_lines(
     if auto_installed:
         lines.append(("tmux", f"auto-installed via {auto_installed}"))
 
+    if not report.present and report.refusal:
+        lines.append(("Warning", report.refusal))
+        lines.append(("mode", f"launching bare, the configured multiplexer was not found ({reason})"))
+        return lines
     if not report.present:
         lines.append(("mode", f"launching bare, tmux not found on PATH ({reason})"))
         return lines

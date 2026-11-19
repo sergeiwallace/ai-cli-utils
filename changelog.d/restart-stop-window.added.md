@@ -1,0 +1,1 @@
+- `[session] restart_stop_window_seconds` sets how long an `ai c` tmux session waits after a clean agent exit before restarting the agent (default 3, 0 restarts at once). One Ctrl+C in that window ends the session; `ai exit-session` also ends it. The wrapper reads the value at each clean exit, so an edit applies at the next one.
