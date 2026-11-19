@@ -8,8 +8,7 @@ template_version: "bug-1.0.0"
 
 # A session with auto-restart on ends instead of restarting after the agent exits cleanly
 
-**Status:** fixed in [PR 637](https://github.com/sergeiwallace/ai-cli-utils/pull/637), merged as
-`bec4aa4a`.
+**Status:** fixed in #637, merged as `bec4aa4a`.
 
 ## Table of Contents
 
