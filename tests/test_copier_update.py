@@ -2225,6 +2225,187 @@ def test_given_verified_conflict_anchor_when_isolated_update_ends_then_cleanup_r
     issue.assert_called_once_with(tmp_path, ref, ["a.py"], "previous..abcdef0")
 
 
+_PR_BRANCH = "copier-update/abcdef0"
+_PR_REF = f"refs/heads/{_PR_BRANCH}"
+_PR_URL = "https://github.com/example/myproject/pull/12"
+_PR_REFUSAL = "worktree push refused: copier-update-tmp tracks refs/remotes/origin/main"
+_PR_LIST = ("pr", "list", "--head", _PR_BRANCH, "--state", "open", "--json", "number,url")
+
+
+@pytest.fixture
+def run_with_pr_remote(tmp_path, monkeypatch):
+    """Run the isolated flow with fake Git and GitHub state shared across invocations."""
+    project = tmp_path / "myproject"
+    direct = tmp_path / "other-project"
+    source = "https://example.com/project-template.git"
+    for repo in (project, direct):
+        repo.mkdir()
+        _make_answers(repo, source)
+    calls = []
+    anchor_ref = "refs/backup/2026-01-01/copier-update/myproject-abcdef0"
+
+    def run(cmd, *, cwd=None, **kwargs):
+        if cmd[:2] == ["git", "ls-remote"]:
+            assert cmd[2:] == [source, "HEAD"]
+            return subprocess.CompletedProcess(cmd, 0, f"abcdef0{'a' * 33}\tHEAD\n", "")
+        if cmd[0] == "gh":
+            repo = cwd.parent.parent.name
+            assert kwargs["env"]["GH_REPO"] == f"github.com/example/{repo}"
+            args = tuple(cmd[1:])
+            calls.append((repo, args))
+            if args == _PR_LIST:
+                rows = [{"number": 12, "url": _PR_URL}] if run.pr_open else []
+                return subprocess.CompletedProcess(cmd, int(run.error == "list"), json.dumps(rows), "")
+            assert args[:2] == ("pr", "create")
+            assert args[args.index("--head") + 1] == _PR_BRANCH
+            assert args[args.index("--base") + 1] == "main"
+            assert "abcdef0" in args[args.index("--body") + 1]
+            assert "myproject" in args[args.index("--body") + 1]
+            assert run.branch_exists and not run.pr_open
+            if run.error == "create":
+                return subprocess.CompletedProcess(cmd, 1, "", "creation failed")
+            run.pr_open = True
+            return subprocess.CompletedProcess(cmd, 0, _PR_URL + "\n", "")
+
+        assert cmd[:2] == ["git", "-C"]
+        path = Path(cmd[2])
+        repo = path.parent.parent.name if path.name == "copier-update" else path.name
+        args = tuple(cmd[3:])
+        calls.append((repo, args))
+        if args[:2] == ("rev-parse", "--show-toplevel"):
+            return subprocess.CompletedProcess(cmd, 0, str(path), "")
+        if args == ("status", "--porcelain", "--untracked-files=all"):
+            return subprocess.CompletedProcess(cmd, 0, " M file\n", "")
+        if args == ("remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(cmd, 0, f"git@github.com:example/{repo}.git\n", "")
+        if args == ("push", "origin", "HEAD:main") and (report := run.main_refusals.get(repo)):
+            return subprocess.CompletedProcess(cmd, 1, report, "failed to push some refs")
+        if args[0] == "ls-remote":
+            assert args[-1] == _PR_REF
+            return subprocess.CompletedProcess(cmd, 0 if run.branch_exists else 2, "", "")
+        if args[0] == "push" and args[-1] == f"HEAD:{_PR_REF}":
+            assert not run.branch_exists
+            if run.error == "branch":
+                return subprocess.CompletedProcess(cmd, 1, "", "branch push rejected")
+            run.branch_exists = True
+        if args == ("rev-parse", "origin/main"):
+            return subprocess.CompletedProcess(cmd, 0, "base\n", "")
+        if args == ("rev-list", "--count", "base..HEAD"):
+            return subprocess.CompletedProcess(cmd, 0, "1\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    run.branch_exists = False
+    run.pr_open = False
+    run.error = None
+    run.main_refusals = {project.name: _PR_REFUSAL}
+    monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: tmp_path)
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=run),
+        patch("ai_cli.copier_update.repair_bare_worktree_config"),
+        patch("ai_cli.copier_update._prepare_dependencies", return_value=None),
+        patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ),
+        patch("ai_cli.copier_update._anchor_failed_update", return_value=(anchor_ref, "abcdef0")) as anchor,
+        patch("ai_cli.copier_update._push_backup_anchor", return_value="Backup anchor location: local only"),
+        patch("ai_cli.copier_update._clean_anchored_pushfail"),
+        patch("ai_cli.copier_update._file_recovery_issue") as issue,
+    ):
+        yield project, direct, run, calls, anchor, issue
+
+
+def test_given_main_push_refused_when_running_twice_then_opens_and_reuses_one_pr(run_with_pr_remote, capsys):
+    project, direct, remote, calls, anchor, issue = run_with_pr_remote
+
+    assert _run_isolated([project, direct], "/usr/bin/copier", True) == 0
+    output = capsys.readouterr().out
+    assert f"updated, PR pending #12 {_PR_URL}" in output
+    assert "updated + pushed" in output
+    assert "1 updated, 1 PR pending" in output
+    assert [args[0] for repo, args in calls if repo == direct.name and args[0] in ("push", "pull", "pr")] == [
+        "push",
+        "pull",
+    ]
+    project_calls = [args for repo, args in calls if repo == project.name]
+    assert [args[-1] for args in project_calls if args[0] == "push"] == ["HEAD:main", f"HEAD:{_PR_REF}"]
+    assert [args[:2] for args in project_calls if args[0] == "pr"] == [("pr", "list"), ("pr", "create")]
+    assert project_calls[-4][:2] == ("worktree", "remove")
+    assert project_calls[-3] == ("branch", "-D", "copier-update-tmp")
+
+    calls.clear()
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args for _, args in calls if args[0] in ("push", "ls-remote", "pr")] == [
+        ("push", "origin", "HEAD:main"),
+        _PR_LIST,
+    ]
+    assert remote.pr_open
+    anchor.assert_not_called()
+    issue.assert_not_called()
+
+
+def test_given_update_branch_without_pr_when_main_push_is_refused_then_reuses_branch(run_with_pr_remote, capsys):
+    project, _, remote, calls, anchor, _ = run_with_pr_remote
+    remote.branch_exists = True
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args[-1] for _, args in calls if args[0] == "push"] == ["HEAD:main"]
+    assert remote.pr_open
+    anchor.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["list", "branch", "create", "recovery"])
+def test_given_pr_route_failure_when_update_is_run_then_uses_backup_recovery(run_with_pr_remote, capsys, failure):
+    project, _, remote, calls, anchor, issue = run_with_pr_remote
+    remote.error = "branch" if failure == "recovery" else failure
+    if failure == "recovery":
+        issue.side_effect = RuntimeError("issue filing rejected")
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == EX_PARTIAL_MUTATION
+    output = capsys.readouterr().out
+    assert ("RECOVERY FAILED" if failure == "recovery" else "PUSH FAILED") in output
+    assert "PR pending" not in output
+    assert [args[:2] for _, args in calls if args[0] == "pr"] == (
+        [("pr", "list"), ("pr", "create")] if failure == "create" else [("pr", "list")]
+    )
+    assert (f"HEAD:{_PR_REF}" in [args[-1] for _, args in calls if args[0] == "push"]) == (failure != "list")
+    anchor.assert_called_once()
+    issue.assert_called_once()
+    assert _PR_REFUSAL in issue.call_args.args[-1]
+
+
+def test_given_unrelated_push_failure_when_another_project_has_pr_then_job_still_fails(run_with_pr_remote, capsys):
+    project, direct, remote, calls, anchor, issue = run_with_pr_remote
+    remote.main_refusals[direct.name] = "test gate failed"
+
+    assert _run_isolated([project, direct], "/usr/bin/copier", True) == EX_PARTIAL_MUTATION
+    output = capsys.readouterr().out
+    assert "PUSH FAILED" in output
+    assert "test gate failed" in output
+    assert f"updated, PR pending #12 {_PR_URL}" in output
+    assert [args for repo, args in calls if repo == direct.name and args[0] in ("push", "pr")] == [
+        ("push", "origin", "HEAD:main")
+    ]
+    anchor.assert_called_once()
+    issue.assert_called_once()
+
+
+def test_given_main_gated_in_fleet_config_when_updating_then_skips_main_push(run_with_pr_remote, capsys):
+    project, _, remote, calls, anchor, _ = run_with_pr_remote
+    config_dir = project / "config"
+    config_dir.mkdir()
+    (config_dir / "fleet-projects.toml").write_text('[[projects]]\nname = "myproject"\ngated_branches = ["main"]\n')
+    remote.main_refusals.clear()
+
+    assert _run_isolated([project], "/usr/bin/copier", True) == 0
+    assert f"updated, PR pending #12 {_PR_URL}" in capsys.readouterr().out
+    assert [args[-1] for _, args in calls if args[0] == "push"] == [f"HEAD:{_PR_REF}"]
+    assert not any(args[0] == "pull" for _, args in calls)
+    anchor.assert_not_called()
+
+
 def test_run_isolated_mixed_results(tmp_path, capsys):
     """_run_isolated aggregates: any conflict → EX_PARTIAL_MUTATION."""
     projects = [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
