@@ -12,10 +12,13 @@ Two modes:
   ``pyproject.toml`` and ``uv.lock``, only the root Python project is synced with
   ``uv sync --frozen --all-extras --dev``. Otherwise, first-level Python projects
   with both files are synced, and a single nested project uses the root environment.
-  JS projects receive the frozen install their lockfile names. A missing
-  installer, a failed install or an environment directory that is not git-ignored
-  fails the project before any commit. Conflicts and semantic failures are saved under
-  verified ``refs/backup/`` anchors and filed as repository issues before cleanup.
+  JS projects receive the frozen install their lockfile names. After dependency
+  installs, the same package manager runs each declared ``e2e:install`` script
+  in the root package or a workspace named by a literal path or ``dir/*``.
+  A missing installer, a failed install or script, or an environment directory
+  that is not git-ignored fails the project before any commit. Conflicts and
+  semantic failures are saved under verified ``refs/backup/`` anchors and filed
+  as repository issues before cleanup.
   A rejected push is anchored (and copied to origin when its gate allows), filed as a
   recovery issue, and cleaned up. A later run protects any leftover whose state cannot be proved disposable.
 
@@ -1209,7 +1212,67 @@ _JS_INSTALLERS = (
 )
 
 
-def _install_js_dependencies(wt_dir: Path) -> str | None:
+def _read_package_manifest(package_dir: Path) -> dict[str, object]:
+    try:
+        manifest = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def _js_e2e_packages(wt_dir: Path) -> Iterator[Path]:
+    root = wt_dir.resolve()
+    manifest = _read_package_manifest(root)
+    scripts = manifest.get("scripts")
+    if isinstance(scripts, dict) and "e2e:install" in scripts:
+        yield root
+
+    workspaces = manifest.get("workspaces")
+    if isinstance(workspaces, dict):
+        workspaces = workspaces.get("packages")
+    if not isinstance(workspaces, list):
+        return
+    for workspace in workspaces:
+        if not isinstance(workspace, str):
+            continue
+        pattern = Path(workspace)
+        if pattern.anchor:
+            continue
+        try:
+            if workspace.endswith("/*"):
+                parent = (root / pattern.parent).resolve()
+                candidates = sorted(parent.glob("*")) if parent.is_relative_to(root) else []
+            else:
+                candidates = [root / pattern]
+        except (OSError, RuntimeError, ValueError):
+            continue
+        for candidate in candidates:
+            try:
+                package_dir = candidate.resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if package_dir == root or not package_dir.is_relative_to(root):
+                continue
+            scripts = _read_package_manifest(package_dir).get("scripts")
+            if isinstance(scripts, dict) and "e2e:install" in scripts:
+                yield package_dir
+
+
+def _run_js_e2e_installs(installs: dict[Path, tuple[str, str]]) -> str | None:
+    for package_dir, (tool, tool_bin) in installs.items():
+        result = subprocess.run(
+            [tool_bin, "run", "e2e:install"], cwd=package_dir, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            output = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return (
+                f"dependency install in {package_dir}: `{tool} run e2e:install` "
+                f"failed with exit status {result.returncode}: {output}"
+            )
+    return None
+
+
+def _install_js_dependencies(wt_dir: Path, e2e_installs: dict[Path, tuple[str, str]] | None = None) -> str | None:
     """Install the consumer's JS dependencies in wt_dir; return an error message or None."""
     if not (wt_dir / "package.json").is_file():
         return None
@@ -1233,6 +1296,10 @@ def _install_js_dependencies(wt_dir: Path) -> str | None:
         )
         if ignored.returncode != 0:
             return "dependency install: node_modules is not git-ignored, so the commit would stage it"
+        if e2e_installs is None:
+            return _run_js_e2e_installs(dict.fromkeys(_js_e2e_packages(wt_dir), (tool, tool_bin)))
+        for package_dir in _js_e2e_packages(wt_dir):
+            e2e_installs.setdefault(package_dir, (tool, tool_bin))
         return None
     return None
 
@@ -1293,7 +1360,9 @@ def _prepare_dependencies(wt_dir: Path) -> str | None:
     children = sorted(p for p in wt_dir.iterdir() if not p.name.startswith(".") and p.is_dir() and not p.is_symlink())
     python_dirs = [p for p in children if (p / "pyproject.toml").is_file() and (p / "uv.lock").is_file()]
     root_python = (wt_dir / "pyproject.toml").is_file() and (wt_dir / "uv.lock").is_file()
-    error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir)
+    # Finish frozen installs before scripts put browser binaries into node_modules.
+    e2e_installs: dict[Path, tuple[str, str]] = {}
+    error = _sync_python_dependencies(wt_dir) or _install_js_dependencies(wt_dir, e2e_installs)
     if error:
         return error
     for child in children:
@@ -1301,10 +1370,10 @@ def _prepare_dependencies(wt_dir: Path) -> str | None:
         if not root_python:
             environment_root = wt_dir if len(python_dirs) == 1 and child in python_dirs else None
             python_error = _sync_python_dependencies(child, environment_root)
-        error = python_error or _install_js_dependencies(child)
+        error = python_error or _install_js_dependencies(child, e2e_installs)
         if error:
             return f"{child.name}: {error}"
-    return None
+    return _run_js_e2e_installs(e2e_installs)
 
 
 def _do_update_in_worktree(
