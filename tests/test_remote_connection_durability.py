@@ -231,6 +231,22 @@ class TestTheTerminalIsHandedBack:
         assert "\x1b[?25h" in emitted, "cursor visibility"
         assert "\x1b[>4;0m" in emitted, "xterm modifyOtherKeys"
 
+    def test_given_kitty_keyboard_flags_pushed_on_either_screen_when_restoring_then_both_stacks_are_emptied(
+        self, tmp_path
+    ):
+        """A single ``CSI < u`` pops one entry from the CURRENT screen's stack only.
+
+        The kitty protocol keeps separate stacks for the main and alternate screens, and
+        every agent run that died without its own pop leaves another entry, so one pop
+        can leave keys encoded. An oversized pop empties a stack and resets its flags; it
+        has to run on the alternate screen and again after leaving it (AI-CLI-ftxh6).
+        """
+        emitted = self._drive_loop(tmp_path)
+
+        leave_alternate = emitted.index("\x1b[?1049l")
+        assert "\x1b[<99u" in emitted[:leave_alternate], "the alternate screen's kitty stack was not emptied"
+        assert "\x1b[<99u" in emitted[leave_alternate:], "the main screen's kitty stack was not emptied"
+
     def test_given_a_child_that_had_to_be_killed_when_the_loop_exits_then_the_terminal_is_still_restored(
         self, tmp_path
     ):
