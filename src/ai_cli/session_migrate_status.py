@@ -8,6 +8,7 @@ question of the disk.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,11 @@ def parts_left(result: m.MigrationResult) -> dict[str, str]:
     """``{part: status}`` for each part of the dry-run ``result`` that is not done."""
     if not result.parts:
         summarize(result, resumed=True)
-    return {part: status for part, status in result.parts.items() if status.strip() not in DONE_STATUSES}
+    return {
+        part: status
+        for part, status in result.parts.items()
+        if status.strip() not in DONE_STATUSES and not status.startswith("kept (accepted: ")
+    }
 
 
 def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]:
@@ -184,7 +189,7 @@ def left_after(result: m.MigrationResult) -> dict[str, str]:
 
 
 def finish_command(old: str, new: str, repo: Path) -> str:
-    return f"ai migrate-session {old} {new} --finish -r {repo}"
+    return shlex.join(["ai", "migrate-session", old, new, "--finish", "-r", str(repo)])
 
 
 def deferred_only(left: dict[str, str]) -> bool:

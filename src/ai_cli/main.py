@@ -3820,8 +3820,8 @@ def _finish_recorded_migrations(
     """Refuse the launch of ``ai_name`` while any migration to it this host recorded is partial.
 
     Each recorded pair whose NEW is ``ai_name`` is judged once, by its latest ledger row. A
-    pair whose row is a verified ``finished`` is trusted: that row is the proof of record,
-    and ``ai migrate-session --status -a`` or ``--finish`` re-checks it on demand. A pair
+    pair whose row is a verified ``finished`` is trusted unless it depends on an accepted
+    kept hold, which is re-checked read-only before launch. A pair
     with no ``finished`` row is finished here, since the launch is the one moment the new
     session may have stopped, and that finish's own re-plan is the verdict. An unverified
     ``finished`` pair is also finished if its slot exists and the launch is starting NEW.
@@ -3841,7 +3841,13 @@ def _finish_recorded_migrations(
     :class:`PartialMigrationRefusal`. Each pair, and each slow step of its finish or
     re-plan, prints a line as it starts and ends.
     """
-    from .session_migrate import MIGRATION_FORMAT, finish_session, noted_deferral, pending_finishes
+    from .session_migrate import (
+        MIGRATION_FORMAT,
+        finish_session,
+        kept_hold_acceptances,
+        noted_deferral,
+        pending_finishes,
+    )
     from .session_migrate_status import (
         deferred_only,
         finish_command,
@@ -3869,13 +3875,15 @@ def _finish_recorded_migrations(
     live: bool | None = None
     for old, repo in recorded_pairs(ai_name, state):
         pair = f"migration {old} -> {ai_name}"
-        if finish_state(old, ai_name, state) == "verified":
+        verified = finish_state(old, ai_name, state) == "verified"
+        if verified and not kept_hold_acceptances(state, old, ai_name, repo):
             progress(f"{pair}: verified finished earlier, not re-planned (re-check: `ai migrate-session -s -a`)")
             continue
         if live is None:
             live = attaching_live()
-        if old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir()):
-            progress(f"{pair}: re-planning read-only (not verified)")
+        if verified or (old not in pending and (live or not (repo / ".worktrees" / ai_name).is_dir())):
+            reason = "checking accepted kept holds" if verified else "not verified"
+            progress(f"{pair}: re-planning read-only ({reason})")
             left, _live, _planned = judge_pair(
                 repo, old, ai_name, regenerate_script=_engine_script_from_meta, progress=progress
             )
@@ -7591,7 +7599,8 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
     help=(
         "Launch a Claude Code session. A migration to the session's name that this host "
         "recorded and never finished is finished first, as `ai migrate-session OLD NEW "
-        "--finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` "
+        "--finish -y` would, one recorded verified finished is trusted unless it has accepted kept holds "
+        "(`ai migrate-session -s -a` "
         "re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is "
         "still partial, the launch is refused: it starts nothing, prints the parts left and the "
         "--finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. "
@@ -8752,6 +8761,9 @@ def cmd_adopt_session(
 
 def _print_migration(result) -> None:
     """Every planned (or performed) move of a ``migrate-session`` run, then its warnings."""
+    if result.no_op:
+        _out.emit(Tag.MIGRATE, "migrate", f"{result.old} -> {result.new}: {result.no_op}")
+        return
     if not result.parts:
         from .session_migrate_resume import summarize
 
@@ -9125,23 +9137,24 @@ def _installed_migration_format() -> tuple[str | None, int | None]:
     return ai_bin, None
 
 
-def _require_current_installed_build(*, dry_run: bool) -> None:
-    """Update an installed ``ai`` older than :data:`MIGRATION_FORMAT`, or exit 2 before any write.
+def _require_current_installed_build(*, dry_run: bool, accepting_hold: bool = False) -> None:
+    """Update an installed ``ai`` that cannot read the required format, or exit 2 before writing.
 
     The migrated session relaunches under the installed build, so one that predates a step
     this migration writes reads stale state. A dry run only names the skew.
     """
-    from .session_migrate import MIGRATION_FORMAT
+    from .session_migrate import BASE_MIGRATION_FORMAT, MIGRATION_FORMAT
 
+    required = MIGRATION_FORMAT if accepting_hold else BASE_MIGRATION_FORMAT
     ai_bin, found = _installed_migration_format()
-    if found is not None and found >= MIGRATION_FORMAT:
+    if found is not None and found >= required:
         return
     if found is None:
         what = f"could not read the migration format of the installed `ai` ({ai_bin or 'none on PATH'})"
     else:
         what = (
             f"the installed `ai` ({ai_bin}) reads migration format {found}, "
-            f"older than format {MIGRATION_FORMAT} this migration writes"
+            f"older than format {required} this migration writes"
         )
     if dry_run:
         _out.emit(
@@ -9165,7 +9178,7 @@ def _require_current_installed_build(*, dry_run: bool) -> None:
             what = f"{what}; the update did not run: {exc}"
         else:
             ai_bin, found = _installed_migration_format()
-            if updated.returncode == 0 and found is not None and found >= MIGRATION_FORMAT:
+            if updated.returncode == 0 and found is not None and found >= required:
                 _out.emit(Tag.MIGRATE, "migrate", f"updated the installed `ai` to migration format {found}")
                 return
             said = (updated.stderr or updated.stdout).strip().splitlines()[-1:]
@@ -9280,16 +9293,20 @@ def _migration_row(old: str, new: str, repo: Path, state: str, left: dict[str, s
 def _migration_status(names: list[str], *, every: bool) -> int:
     """``ai migrate-session -s/--status [NAME]``: each recorded pair, re-planned read-only; 1 if any is partial.
 
-    Without ``every`` a pair whose latest ledger row is a verified ``finished`` is not listed.
+    Without ``every`` a verified pair is listed only if it recorded a kept-hold acceptance.
     """
-    from .session_migrate import MIGRATION_LEDGER
+    from .session_migrate import MIGRATION_LEDGER, kept_hold_acceptances
     from .session_migrate_status import finish_state
 
     state = _config.get_xdg_state_home()
     pairs = _recorded_pairs(names)
     if pairs is None:
         return 2
-    listed = [pair for pair in pairs if every or finish_state(pair[0], pair[1], state) != "verified"]
+    listed = [
+        (old, new, repo)
+        for old, new, repo in pairs
+        if every or finish_state(old, new, state) != "verified" or kept_hold_acceptances(state, old, new, repo)
+    ]
     if not listed:
         _out.emit(
             Tag.MIGRATE,
@@ -9437,7 +9454,7 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
         "reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; "
         "a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.\n\n"
         "-s/--status [NAME] lists, read-only, each migration this host records that is not verified "
-        "finished (-a/--all: every one), re-planned as complete or partial with the parts left and "
+        "finished or has an accepted kept hold (-a/--all: every one), re-planned as complete or partial with the parts left and "
         "the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, "
         "and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default "
         "remote machine.\n\n"
@@ -9478,6 +9495,17 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
     ),
 )
 @click.option(
+    "-k",
+    "--accept-kept-hold",
+    multiple=True,
+    metavar="SLOT",
+    help=(
+        "With --finish: acknowledge a collision between two registered agent worktrees and keep both. "
+        "Records their paths, HEADs and container entries; changes require fresh acknowledgement. "
+        "Repeat for multiple slots or use the old worktree path if a name is ambiguous."
+    ),
+)
+@click.option(
     "-b",
     "--beads-only",
     is_flag=True,
@@ -9496,7 +9524,7 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
     "-s",
     "--status",
     is_flag=True,
-    help="List each recorded migration not verified finished as complete or partial, read-only",
+    help="List unverified migrations and those with accepted kept holds as complete or partial, read-only",
 )
 @click.option("-R", "--remote", is_flag=True, help="With -s/--status: run it on the default remote machine")
 @click.option(
@@ -9513,7 +9541,21 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
 @click.option("-L", "--max-length", type=int, default=None, help="Pick names of at most this many letters")
 @click.option("-O", "--over-limit", is_flag=True, help="With -a -T: only names longer than max_name_length")
 def cmd_migrate_session(
-    old, new, repo, dry_run, yes, finish, beads_only, to_name, status, remote, sweep, to_names, max_length, over_limit
+    old,
+    new,
+    repo,
+    dry_run,
+    yes,
+    finish,
+    accept_kept_hold,
+    beads_only,
+    to_name,
+    status,
+    remote,
+    sweep,
+    to_names,
+    max_length,
+    over_limit,
 ):
     """Move the session in slot OLD (``.worktrees/OLD``) to NEW, losing nothing.
 
@@ -9543,6 +9585,8 @@ def cmd_migrate_session(
     from .session_adopt import AdoptionError
     from .session_migrate import finish_session, migrate_session, rekey_beads
 
+    if accept_kept_hold and (not finish or beads_only or status or remote or sweep or to_names or over_limit):
+        raise click.UsageError("--accept-kept-hold requires --finish for one migration")
     if remote or status:
         # Exit 2, not the CLI's usage exit 1, which --status already means "a pair is partial".
         others = (repo, dry_run, yes, finish, beads_only, to_name is not None, to_names, max_length, over_limit)
@@ -9579,7 +9623,7 @@ def cmd_migrate_session(
         sys.exit(_migrate_one_to_name(repo_root, old, to_name or None, max_length=max_length, dry_run=dry_run, yes=yes))
     if not old or not new:
         raise click.UsageError("OLD and NEW are both required, or use --to-name or --all --to-names")
-    if not beads_only:
+    if not beads_only and not accept_kept_hold:
         _require_current_installed_build(dry_run=dry_run)
 
     def _run(preview: bool):
@@ -9593,11 +9637,14 @@ def cmd_migrate_session(
             dry_run=preview,
             regenerate_script=_engine_script_from_meta,
             progress=_migrate_progress,
+            **({"accept_kept_hold": accept_kept_hold} if accept_kept_hold else {}),
         )
 
     try:
         result = _run(True)
-        if not dry_run:
+        if accept_kept_hold and not result.no_op:
+            _require_current_installed_build(dry_run=dry_run, accepting_hold=True)
+        if not dry_run and not result.no_op:
             # A live session refuses the writing run, so there is nothing to confirm, unless the
             # finish defers only NEW's own files and writes the rest.
             if not yes and (not result.live or result.deferred):

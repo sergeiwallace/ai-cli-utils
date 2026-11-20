@@ -87,14 +87,22 @@ def test_given_two_anchors_when_finished_then_only_explicit_acceptance_completes
     assert _ledger(migrated) == rows
 
 
-@pytest.mark.parametrize("changed", ["old-tip", "new-tip", "old-container", "new-container"])
+@pytest.mark.parametrize(
+    "changed", ["old-tip", "new-tip", "old-container", "new-container", "old-content", "new-content"]
+)
 def test_given_recorded_acceptance_when_a_tip_or_container_changes_then_launch_refuses(migrated, anchors, changed):
     repo = migrated["repo"]
+    hold = anchors[0 if changed.startswith("old-") else 1]
+    nested_file = hold / "notes" / "review.txt"
+    if changed.endswith("content"):
+        nested_file.parent.mkdir()
+        nested_file.write_text("before", encoding="utf-8")
     code, out, err = _finish(repo, "-y", ACCEPT, SLOT)
     assert code == 0, out + err
-    hold = anchors[0 if changed.startswith("old-") else 1]
     if changed.endswith("tip"):
         _git("commit", "-q", "--allow-empty", "-m", "changed tip", cwd=hold)
+    elif changed.endswith("content"):
+        nested_file.write_text("edited", encoding="utf-8")
     else:
         (hold.parent / "new-entry").mkdir()
 
