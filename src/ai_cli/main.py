@@ -347,7 +347,14 @@ def _exec_tmux(args: list[str]) -> NoReturn:
 
     The file exec'd is ``args[0]``, the resolved multiplexer, so ``[tmux] binary`` decides
     it exactly as it decides every other tmux call.
+
+    The terminal's input modes are cleared first. The client inherits whatever key and
+    mouse modes the terminal already holds, and a program that died before resetting
+    them (a killed launcher, a hand-run attach whose connection dropped) leaves keys
+    arriving as escape sequences. tmux re-sends the modes it wants on attach, but it
+    never clears a kitty keyboard flag, so nothing else repairs that (AI-CLI-ftxh6).
     """
+    _transport.restore_terminal()
     _exec_handoff(args[0], args)
 
 

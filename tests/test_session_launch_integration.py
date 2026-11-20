@@ -372,6 +372,57 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     assert after["c-myproject-tst-2"] in before_ids
 
 
+def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_modes_are_cleared_before_tmux_attaches(
+    patched_subprocess, monkeypatch
+):
+    """A reattach hands the terminal to a tmux client in whatever key mode it is already in.
+
+    Nothing cleared it on the way in, only on the way out of a session that ended cleanly or
+    dropped under this launcher. A terminal that last ran a program which died without its own
+    cleanup (a killed launcher, a hand-run ``ssh`` + ``tmux attach`` that dropped, a local agent
+    that crashed) still had extended-key and mouse reporting on, and tmux never clears a kitty
+    keyboard flag, so keys reached the session as escape-sequence text (AI-CLI-ftxh6).
+    """
+    # Local: the pty module does not exist on Windows, where this module is skipped.
+    import pty
+    import select
+
+    from ai_cli.transport import _TERMINAL_RESTORE
+
+    server = patched_subprocess
+    server.new_session(session_name="c-myproject-tst-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    leader, follower = pty.openpty()
+    terminal = os.fdopen(os.dup(follower), "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", terminal)
+    try:
+        with (
+            _tmux_versions_agreeing(),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+            patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**_base_launch_kwargs(name="2"))
+        terminal.flush()
+        received = b""
+        while select.select([leader], [], [], 0.2)[0]:
+            received += os.read(leader, 65536)
+    finally:
+        terminal.close()
+        os.close(follower)
+        os.close(leader)
+
+    assert [args[1] for _file, args in server._execvp_calls] == ["attach-session"]
+    assert _TERMINAL_RESTORE.encode() in received, f"the terminal reached tmux attach uncleared: {received!r}"
+
+
 @pytest.mark.parametrize("sandbox", [False, True])
 def test_given_slot_10_live_when_free_slot_1_is_launched_then_slot_1_is_created_and_slot_10_untouched(
     patched_subprocess, capsys, sandbox

@@ -191,6 +191,14 @@ def _stop_epilogue(is_remote: bool) -> str:
     )
 
 
+def rendered_terminal_reset() -> str:
+    """The transport's terminal restore as the session program's ``printf`` argument."""
+    # Imported here: transport imports this module at load time.
+    from .transport import _TERMINAL_RESTORE
+
+    return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -269,9 +277,8 @@ def get_engine_script(
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
     from .tmux_binary import shell_prelude
-    from .transport import _TERMINAL_RESTORE
 
-    _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+    _terminal_reset = rendered_terminal_reset()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the

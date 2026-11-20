@@ -227,12 +227,12 @@ reset
 ```
 
 If `reset` is unavailable, the following narrower sequence disables the common xterm mouse modes,
-resets xterm `modifyOtherKeys`, pops one Kitty keyboard-protocol mode, and repairs the PTY line
-discipline. Run it only from the normal shell after detaching or exiting the TUI, not by injecting
-it into a live application:
+resets xterm `modifyOtherKeys`, empties the Kitty keyboard-protocol stack on both screens, and
+repairs the PTY line discipline. Run it only from the normal shell after detaching or exiting the
+TUI, not by injecting it into a live application:
 
 ```sh
-printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[>4;0m\033[<u'
+printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[>4;0m\033[<99u\033[?1049l\033[<99u'
 stty sane
 ```
 

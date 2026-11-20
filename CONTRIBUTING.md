@@ -156,6 +156,18 @@ uv run pytest tests/test_main.py
 uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_sshs_to_host
 ```
 
+### Running a required CI check locally
+
+`scripts/run_local_ci.py` runs the commands of one required check (`lint`, `test`, `test-macos`
+or `test-windows`), read from its workflow file, on your machine. `-n/--dry-run` prints them, and
+maintainers can add `-r/--report` to post the result as a commit status when hosted runners are
+backed up. See [the CI status doc](docs/procedures/github-actions-status.md#when-the-hosted-queue-is-starved).
+
+```bash
+uv run python scripts/run_local_ci.py -n test-macos
+uv run python scripts/run_local_ci.py lint
+```
+
 ## Code Style
 
 This project uses [ruff](https://github.com/astral-sh/ruff) for linting and formatting,
