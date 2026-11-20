@@ -79,6 +79,8 @@ The index below is non-authoritative; the ask above governs.
 - [Appendix: Provenance Ledger](#appendix-provenance-ledger)
 - [Run History](#run-history)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Context
 
 Why this research exists: the `ai` launcher already drives terminal tab titles for one terminal

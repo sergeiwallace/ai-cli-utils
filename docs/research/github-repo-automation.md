@@ -27,6 +27,8 @@ registry_id: R-1
 - [Sources](#sources)
 - [Appendix: Research Prompt](#appendix-research-prompt)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Summary
 
 This document evaluates GitHub ecosystem tooling, automation, and repository configuration for `ai-cli-utils`, a solo-maintained Python 3.11+ CLI tool. It covers GitHub Apps/bots, release automation, branch protection, CI enhancements, dependency management (Dependabot vs Renovate), pre-commit hooks, going-public preparation, and issue/PR templates. Each recommendation is classified by urgency and ROI for a solo maintainer. The project already has CI (lint + test on single Python version), PyPI publish on tag, Dependabot, and community files (README, CONTRIBUTING.md, SECURITY.md).

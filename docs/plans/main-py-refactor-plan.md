@@ -37,6 +37,8 @@ task: AI-CLI-39
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 `main.py` is 3385 lines across 69 functions. Several distinct subsystems — handoff queue, iTerm2 fleet, transport switching, tunnel/CDP, config loading — are co-located in one file purely because they were added incrementally. The `cli()` dispatch function alone is 1213 lines of interleaved `if sys.argv[1] == "..."` chains and inline closures. This makes the file hard to navigate and extends the pre-existing circular-import workarounds (5 modules already do deferred `from .main import` to avoid cycles at import time).

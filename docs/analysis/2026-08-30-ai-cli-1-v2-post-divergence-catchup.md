@@ -29,6 +29,8 @@ template_version: "analysis-1.0.0"
 - [Recommendation](#recommendation)
 - [Revision Log](#revision-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 This document is a source index and catch-up narrative for Claude Code session

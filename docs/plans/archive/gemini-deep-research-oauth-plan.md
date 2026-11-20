@@ -16,6 +16,8 @@ status: archived
 - [Acceptance Criteria](#acceptance-criteria)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Context
 
 **Task:** `[AI-CLI-45]`

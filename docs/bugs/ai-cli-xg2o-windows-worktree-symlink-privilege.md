@@ -37,6 +37,8 @@ template_version: "bug-1.0.0"
 - [Verification](#verification)
 - [Lessons Learned](#lessons-learned)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Symptoms
 
 `ai c <n>` command fails during worktree initialization with the following error:

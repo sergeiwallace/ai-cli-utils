@@ -16,6 +16,8 @@ status: complete
 - [Verification](#verification)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Context
 
 COMP-18 (companion's Gemini call routing through ai-cli-utils) requires a stable, versioned public API that companion can pin against in its `pyproject.toml`. Without an explicit API contract, any ai-cli-utils refactor risks silent breakage in companion's import paths.

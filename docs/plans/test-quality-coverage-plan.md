@@ -23,6 +23,8 @@
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`). The retired client’s test tasks describe the suite as it existed in April 2026.
+
 ## Overview
 
 Comprehensive test suite quality audit and coverage recovery following the test_main.py split (AI-CLI-12 follow-up). Current coverage: 94% (down from 98%). Three categories of work: (1) fix test quality issues (vacuous assertions, over-mocking, real subprocess in unit tests), (2) fill coverage gaps across all modules, (3) remove lazily-added `# pragma: no cover` annotations from sync.py and replace with real tests. Target: ~100% coverage with no pragmas except `__main__` and unavoidable ImportError fallbacks.

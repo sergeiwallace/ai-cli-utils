@@ -48,6 +48,8 @@ delegation_provenance:
   - [Round 1 Reviewer Prompt](#round-1-reviewer-prompt)
   - [Round 2 Reviewer Prompt (Re-audit)](#round-2-reviewer-prompt-re-audit)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Scope
 
 ### Founding ask and alignment

@@ -35,6 +35,8 @@ source: claude-sonnet-4-6 2026-04-21
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Problem
 
 `ai gemini --depth standard/quick` produces markdown research docs containing web URLs, arXiv citations, and non-arXiv academic citations (DOIs, ACL Anthology links). These docs are consumed by design and implementation work downstream. There is no automated check that:

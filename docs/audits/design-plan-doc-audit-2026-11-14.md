@@ -86,6 +86,8 @@ Docs edited: none (see the citation validation finding, F-03).
 - [Appendix: Files Read](#appendix-files-read)
 - [Appendix: Commands Run](#appendix-commands-run)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## What Was Audited
 
 Every design and plan doc directly under `docs/designs/` and `docs/plans/` at `origin/main`

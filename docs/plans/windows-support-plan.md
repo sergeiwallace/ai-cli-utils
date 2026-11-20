@@ -23,6 +23,8 @@ status: complete
 - [Human Gates](#human-gates)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 The `ai-cli-utils` package currently fails to import on Windows due to a top-level `import fcntl`

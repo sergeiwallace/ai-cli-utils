@@ -37,6 +37,8 @@ source: internal
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 Surface Gemini API usage and cost data automatically, with safety-first design around

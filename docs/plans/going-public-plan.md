@@ -31,6 +31,8 @@ source: "R-2 research"
 - [Deferred Items](#deferred-items)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 Implement all "do now" and "do before going public" recommendations from R-2 research. Goal: repo is ready to flip public with full automation, quality gates, and professional presentation.

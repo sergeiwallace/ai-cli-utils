@@ -53,6 +53,8 @@ template_version: "audit-1.0.0"
 - [Appendix: Commands Run](#appendix-commands-run)
 - [Appendix: Reviewer Prompt](#appendix-reviewer-prompt)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## What Was Audited
 
 The shipped Phase 1 stale-session-reaper implementation at commit

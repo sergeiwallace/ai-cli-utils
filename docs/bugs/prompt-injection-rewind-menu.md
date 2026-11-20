@@ -31,6 +31,8 @@ task: AI-CLI-35
 - [Lessons Learned](#lessons-learned)
 - [Files Involved](#files-involved)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Symptoms
 
 After ai-cli automatically injects keystrokes into a Claude Code tmux session (for session restart, config reload, or handoff pickup), Claude Code's "rewind conversation" TUI screen appears instead of the session restarting cleanly. Affects multiple sessions simultaneously when they all auto-restart. Also observed when sessions are manually `/exit`-ed and auto-restart fires.

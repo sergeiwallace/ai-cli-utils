@@ -12,6 +12,8 @@ related_docs:
 prompt: R-50
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## 1. iTerm2 Escape Sequence Mechanics
 
 Title-overwrite and transport limitations are now carried by [📄 automation framework/docs/research/host-aware-clickable-file-links.md (local)](../../../automation framework/docs/research/host-aware-clickable-file-links.md). Local pre-handoff configuration remains possible. Claims that terminal replacement fixes mosh filtering or that runtime mutation is universally impossible are not carried as facts. Visual configuration stays here.

@@ -11,6 +11,8 @@ task: AI-CLI-165
 
 # [BUG-009] Remote Control startup override was still gated by an obsolete marker
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 **Status:** fix-deployed
 
 **Severity:** P1 — previously paired Claude Code sessions did not receive the launch-time

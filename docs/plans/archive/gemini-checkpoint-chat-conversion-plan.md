@@ -19,6 +19,8 @@ source: session-2026-04-08
 - [Test Plan](#test-plan)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Problem
 
 Gemini CLI 0.36.0 introduced two parallel session-resume systems:

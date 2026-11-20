@@ -9,6 +9,8 @@ registry_id: R-4
 
 # Open-Source Python CLI Package Best Practices
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 **Status:** complete
 
 **Created:** 2026-03-29

@@ -11,6 +11,8 @@ template_version: "bug-1.0.0"
 
 # ai p -R launches pi with no --provider, so it silently fails against an unconfigured default
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 **Status:** fixed
 
 **Severity:** P1 — every `ai p`/`ai p -R` launch failed, with no error message, until this fix

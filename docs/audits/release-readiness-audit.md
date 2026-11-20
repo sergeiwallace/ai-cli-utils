@@ -72,6 +72,8 @@ backlog reconciliation at `30521555df0b2695b9e69a90d7028cfc09d79c4c`; package ve
   - [Round 1 Reviewer Prompt](#round-1-reviewer-prompt)
   - [Round 3 Reviewer Prompt](#round-3-reviewer-prompt)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## What Was Audited
 
 This audit surveyed the unreleased `0.8.0` tree, 550 commits after tag `v0.7.0`, for release blockers, quick wins, stale backlog, structural feature health, handoff retirement, and test health. Every QUICK WIN and RELEASE-BLOCKING classification was checked against current source, tests, or git history rather than accepted from an issue title.

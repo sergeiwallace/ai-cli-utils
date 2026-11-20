@@ -9,6 +9,8 @@ source: ai-cli-utils
 
 # iTerm2 Smart Tab/Window Titles — Implementation Plan
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`). See the [iTerm2 setup guide](../tools/iterm2-setup.md) for the current profile behavior.
+
 **Status:** APPROVED
 **Created:** 2026-03-31
 

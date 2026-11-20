@@ -64,6 +64,8 @@ low blast radius — findings incorporated by Claude
   - [Round 1 Reviewer Prompt](#round-1-reviewer-prompt)
   - [Round 2 Reviewer Prompt (Re-audit)](#round-2-reviewer-prompt-re-audit)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Scope
 
 Target: the AI-CLI-203/AI-CLI-204 fix at commit `23e8796` — `src/ai_cli/session.py`'s

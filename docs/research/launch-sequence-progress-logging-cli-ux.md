@@ -57,6 +57,8 @@ delegation_provenance:
 
 <!-- doc:region name="context" kind="immutable" -->
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Context
 
 ai-cli-utils launches Claude Code, Pi, Gemini, and Codex sessions through a conditional bootstrap

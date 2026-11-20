@@ -38,6 +38,8 @@ source: ai-cli-utils
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`). This design records the April 2026 implementation. The [iTerm2 setup guide](../tools/iterm2-setup.md) describes current profiles.
+
 ## System Overview
 
 This system provides visual identity and status feedback for parallel AI coding sessions managed by ai-cli in iTerm2. It controls three visual properties per tab/pane:

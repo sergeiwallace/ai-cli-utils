@@ -29,6 +29,8 @@ related_docs:
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 The iTerm2 per-pane title and rolling tab color system was refactored in late March 2026 to replace a flawed shared-state combined-title architecture. The refactor resolved ghosting/contamination bugs but introduced or exposed 7 new bugs covering: color collision across same-numbered sessions, broken remote session titles (mosh filtering), Gemini title not being applied, Gemini session resume failing when launched from wrong directory, and limited icon color variety.

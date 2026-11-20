@@ -9,6 +9,8 @@ template_version: "docket-1.0.0"
 
 # Docket
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 **Repository:** ai-cli-utils
 
 **Last refreshed:** 2026-08-20

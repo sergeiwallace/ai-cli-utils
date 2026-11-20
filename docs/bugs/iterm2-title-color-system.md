@@ -38,6 +38,8 @@ related_docs:
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Overview
 
 The iTerm2 per-pane title and rolling tab color system was refactored in the previous session to replace a flawed shared-state combined-title architecture. The new per-pane approach resolves the original ghosting/contamination bugs but has introduced or revealed a new set of issues affecting color assignment, remote sessions, Gemini sessions, and icon color variety.

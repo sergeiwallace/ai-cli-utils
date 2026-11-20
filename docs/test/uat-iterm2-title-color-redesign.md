@@ -33,6 +33,8 @@ related_docs:
 
 ---
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
+
 ## Prerequisites
 
 1. Deploy latest ai-cli-utils: `ai deploy` (already done as of 2026-04-02)
