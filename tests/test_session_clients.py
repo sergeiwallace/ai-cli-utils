@@ -303,6 +303,21 @@ def test_given_omitted_agy_workspace_when_probed_then_absence_cannot_be_proven(h
     assert sc.adapter("agy", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
 
 
+def test_given_no_agy_cache_when_listing_records_then_it_is_empty_but_probe_is_unknown(home, worktree):
+    adapter = sc.adapter("agy", home)
+    adapter.store_root().mkdir(parents=True)
+
+    assert adapter.all_records() == []
+    assert adapter.probe_transcript(worktree, TITLE).state == sc.UNKNOWN
+
+
+def test_given_a_malformed_agy_cache_when_listing_records_then_it_is_unreadable(home, worktree):
+    seed("agy", home, worktree).write_text("{not json")
+
+    with pytest.raises(OSError, match=r"Antigravity conversation cache .* is unavailable"):
+        sc.adapter("agy", home).all_records()
+
+
 def test_given_agy_cache_when_renamed_then_antigravity_data_is_preserved(home, worktree):
     path = seed("agy", home, worktree)
     before = path.read_bytes()

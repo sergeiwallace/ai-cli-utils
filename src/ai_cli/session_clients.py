@@ -417,6 +417,10 @@ class Antigravity(Adapter):
         cache = conversation_cache(self.home)
         try:
             conversations = read_conversations(cache)
+        except FileNotFoundError:
+            # An unused client has no cached records to inventory. Probes still
+            # treat a missing cache as unknown when checking an existing name.
+            return []
         except (OSError, ValueError) as exc:
             # An inaccessible or malformed cache cannot prove a conversation is gone.
             raise OSError(f"Antigravity conversation cache {cache} is unavailable") from exc
