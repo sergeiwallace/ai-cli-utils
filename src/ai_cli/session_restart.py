@@ -963,6 +963,21 @@ _PREVIOUS_INTERRUPT_EXIT = (
 )
 
 
+def _legacy_gemini_launches(template: str, *, sandbox: bool) -> str:
+    """Restore the old g-engine launch statements in a trusted Claude template."""
+    sandbox_flag = "-s" if sandbox else "--no-sandbox"
+    return re.sub(
+        r'(?m)^          run_agent .* -m ai_cli\.agy .*?( --prompt-interactive "\$resume_msg")?$',
+        lambda match: (
+            ('          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n' if match[1] else "")
+            + f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+            + f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+            + "          fi"
+        ),
+        template,
+    )
+
+
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
@@ -1004,17 +1019,7 @@ def _compatible(source: str, expected: str) -> bool:
     # Reconstruct those exact old lines from the trusted template so arbitrary
     # edits to a running wrapper still fail the full program comparison.
     if re.search(r"(?m)^    engine=c$", expected) and "-m ai_cli.agy " in expected:
-        sandbox_flag = "-s" if ', "sandbox": true, "worktree_dir": ' in expected else "--no-sandbox"
-        legacy = re.sub(
-            r'(?m)^          run_agent .* -m ai_cli\.agy .*?( --prompt-interactive "\$resume_msg")?$',
-            lambda match: (
-                ('          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n' if match[1] else "")
-                + f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
-                + f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
-                + "          fi"
-            ),
-            expected,
-        )
+        legacy = _legacy_gemini_launches(expected, sandbox=', "sandbox": true, "worktree_dir": ' in expected)
         legacy = re.sub(
             r', "sandbox": (true|false), "worktree_dir": ',
             r', "session_id_uuid": "", "sandbox": \1, "worktree_dir": ',

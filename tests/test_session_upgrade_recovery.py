@@ -12,13 +12,38 @@ from pathlib import Path
 
 import pytest
 
-from ai_cli import config, main
+from ai_cli import config, main, session_enrol
 from ai_cli import session_registry as registry
 
 pytestmark = [
     pytest.mark.real_tmux,
     pytest.mark.skipif(sys.platform == "win32" or os.name != "posix", reason="tmux supervisors require POSIX shells"),
 ]
+
+
+@pytest.mark.parametrize("altered", [False, True], ids=["unchanged", "altered-launch"])
+def test_given_a_pre_antigravity_claude_script_when_validated_then_only_the_known_launches_are_accepted(
+    tmp_path, monkeypatch, register_repo, altered
+):
+    name = "c-myproject-box-1"
+    register_repo(tmp_path, "myproject")
+    monkeypatch.setattr(config, "get_xdg_state_home", lambda: tmp_path)
+    script = tmp_path / "sessions" / f"{name}.sh"
+    script.parent.mkdir()
+    source = (Path(__file__).parent / "fixtures/session_restart_legacy.txt").read_text(encoding="utf-8")
+    source = source.replace("__PROJECT_DIR__", tmp_path.as_posix())
+    if altered:
+        source = source.replace("run_agent gemini -y", "run_agent example-agent -y")
+    script.write_text(source, encoding="utf-8")
+
+    argv = ["bash", str(script)]
+    if altered:
+        with pytest.raises(ValueError, match="generated launch metadata"):
+            session_enrol._live_recipe(name, str(tmp_path), argv, "host-a")
+    else:
+        recipe, replacement = session_enrol._live_recipe(name, str(tmp_path), argv, "host-a")
+        assert recipe["session_name"] == name
+        assert "run_agent gemini" not in replacement
 
 
 def wait_for(check, timeout=30):

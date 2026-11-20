@@ -209,6 +209,7 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
 def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict, str]:
     """Validate launch evidence and render its current replacement without executing it."""
     from .main import _engine_script_from_meta
+    from .session_restart import _legacy_gemini_launches
 
     script = config.get_xdg_state_home() / "sessions" / f"{name}.sh"
     if argv != [str(script)] and not (
@@ -269,7 +270,12 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict,
 
         replacement = _engine_script_from_meta(meta)
         actual = launches(source)
-        if not actual or not actual <= launches(replacement):
+        allowed = launches(replacement)
+        if engine == "c" and meta.get("gemini_cmd") == "gemini" and not actual <= allowed:
+            # The old Claude wrapper also contained the then-current g-engine
+            # launch statements. Validate against that trusted version.
+            allowed = launches(_legacy_gemini_launches(replacement, sandbox=options["sandbox"]))
+        if not actual or not actual <= allowed:
             raise ValueError
     except (OSError, UnicodeError, ValueError, KeyError, IndexError, TypeError) as exc:
         raise ValueError("generated launch metadata, identity, directory or flags could not be validated") from exc
