@@ -358,8 +358,11 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
     try:
         cfg = config.load_config(read_only=True)
         view = session_list_view.settings(cfg)
+        narrowed = ""
         if not as_json:
-            scope = session_list_view.effective_scope(cfg.get("machine", {}), scope or view["scope"])
+            configured = scope is not None or "scope" in cfg.get("sessions_list", {})
+            scope, narrowed = session_list_view.effective_scope(cfg.get("machine", {}), scope or view["scope"])
+            narrowed = narrowed if configured else ""
         if sort_by is not None:
             view["sort_by"] = session_list_view.parse_sort(sort_by, "-s/--sort-by")
     except session_list_view.ViewError as exc:
@@ -394,13 +397,14 @@ def list_sessions(as_json=False, show_all=None, scope=None, group_by=None, sort_
         )
         for r in records
     ]
-    notes = []
+    notes = [narrowed] if narrowed else []
     if scope != "host":
         published_local = cfg.get("session_relaunch", {}).get("publish", {}).get("host") or local
         # None means fleet scope. An empty group needs no snapshot fetch.
-        wanted, notes = (
+        wanted, group_notes = (
             _group_hosts(cfg, view["group_host"], local, published_local) if scope == "group" else (None, [])
         )
+        notes += group_notes
         if wanted is None or wanted:
             snapshots = session_state_publish.read_snapshots()
             if snapshots.problem:
