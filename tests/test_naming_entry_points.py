@@ -28,6 +28,12 @@ def fresh_host(real_alias_lookup, host_tools, monkeypatch):  # noqa: F811
     configure('printf "AI_HOST_FRESH=new-host\\n"', "exit 1")
     monkeypatch.setenv("AI_HOST", "old-host")
     monkeypatch.setattr(host_env, "resolve_host_env", _REAL_RESOLVE_HOST_ENV)
+    # The default five-second probe limit is exceeded by a fake /bin/sh on a loaded host,
+    # which silently falls back to the stale inherited host these tests exist to replace.
+    real_limits = host_env.read_relaunch_config
+    monkeypatch.setattr(
+        host_env, "read_relaunch_config", lambda config: {**real_limits(config), "host_refresh_timeout_seconds": 60}
+    )
     _write_aliases(real_alias_lookup["environment"], '[aliases]\nnew-host = "box"\n')
     monkeypatch.setattr("ai_cli.session._tmux_session_names", list)
     return real_alias_lookup, configure
