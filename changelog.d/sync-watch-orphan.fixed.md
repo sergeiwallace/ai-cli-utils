@@ -1,0 +1,1 @@
+- `ai sync watch` and `ai memory watch` stop on their own once their PID file is removed or names another process, so a watcher started by a session no longer runs on after the home it was started for is deleted.
