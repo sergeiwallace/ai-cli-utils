@@ -17,6 +17,8 @@ the standard library cannot create.
 from __future__ import annotations
 
 import os
+import secrets
+import stat
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -24,6 +26,8 @@ from pathlib import Path
 
 #: How many outside links a chain is followed through before it is treated as a loop.
 _MAX_HOPS = 40
+#: How many fresh temporary names a rewrite tries before it gives up on a crowded directory.
+_TEMP_ATTEMPTS = 8
 _WINDOWS_PREFIXES = ("\\\\?\\UNC\\", "\\\\?\\", "\\??\\")
 
 
@@ -36,11 +40,21 @@ class StaleLink:
     #: What the link is rewritten to; None when it cannot be rewritten here.
     new_target: str | None
     reason: str = ""
+    #: Whether the link itself is a directory link, read when it was planned. Windows keeps file
+    #: and directory links apart, and the new target may not exist until later in the run.
+    is_dir: bool = False
 
 
 def _is_junction(path: Path) -> bool:
     check = getattr(os.path, "isjunction", None)  # Python 3.12+
     return bool(check and check(path))
+
+
+def _link_is_dir(path: Path) -> bool:
+    """Whether the link at ``path`` is a directory link, read from the link where the OS records it."""
+    if sys.platform == "win32":  # Windows: a directory link carries the directory attribute itself
+        return bool(os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
+    return path.is_dir()  # POSIX has one link type; this is its target, which exists at planning
 
 
 def _readlink(path: Path) -> str:
@@ -150,7 +164,7 @@ def scan(trees: list[tuple[Path, Path]], pairs: list[tuple[Path, Path]]) -> list
                     except ValueError:  # on another Windows drive: no relative form exists
                         new_target = str(renamed)
                 if new_target != raw:
-                    found.append(StaleLink(after, raw, new_target))
+                    found.append(StaleLink(after, raw, new_target, is_dir=_link_is_dir(link)))
                 continue
             absolute = link.parent / raw
             if _inside(absolute, now):
@@ -168,21 +182,41 @@ def scan(trees: list[tuple[Path, Path]], pairs: list[tuple[Path, Path]]) -> list
     return found
 
 
-def _relink(path: Path, target: str, new_target: str) -> None:
-    """Repoint the link at ``path`` from ``target`` to ``new_target``, atomically where the platform allows."""
+def _new_link(path: Path, new_target: str, is_dir: bool) -> Path:
+    """A link to ``new_target`` beside ``path`` under a name nothing else holds, created here."""
+    for _attempt in range(_TEMP_ATTEMPTS):
+        temporary = path.with_name(f".{path.name}.relink-{secrets.token_hex(6)}")
+        try:
+            temporary.symlink_to(new_target, target_is_directory=is_dir)
+        except FileExistsError:
+            continue
+        return temporary
+    raise FileExistsError(f"no free temporary name beside {path} after {_TEMP_ATTEMPTS} tries")
+
+
+def _relink(path: Path, target: str, new_target: str, is_dir: bool) -> None:
+    """Repoint the link at ``path`` from ``target`` to ``new_target``, atomically where the platform allows.
+
+    Only the temporary link this call created is ever removed. A failed rewrite leaves the
+    original link naming ``target``.
+    """
     if _readlink(path) != target:
         return  # rewritten since it was planned
-    is_dir = (path.parent / new_target).is_dir()
-    temporary = path.with_name(f".{path.name}.relink")
-    if temporary.is_symlink():
-        temporary.unlink()
-    temporary.symlink_to(new_target, target_is_directory=is_dir)
+    temporary = _new_link(path, new_target, is_dir)
     try:
-        temporary.replace(path)
-    except OSError:
-        # Windows refuses to replace a directory link in place: drop it, then move the new one in.
-        path.unlink()
-        temporary.replace(path)
+        try:
+            temporary.replace(path)
+        except OSError:
+            if not (sys.platform == "win32" and is_dir):
+                raise
+            # Windows refuses to replace a directory link in place: drop it, then move the new
+            # one in, and put the original back if that move fails too.
+            path.unlink()
+            try:
+                temporary.replace(path)
+            except OSError:
+                path.symlink_to(target, target_is_directory=is_dir)
+                raise
     finally:
         if temporary.is_symlink():
             temporary.unlink()
@@ -205,7 +239,7 @@ def apply(links: list[StaleLink]) -> list[str]:
         if link.new_target is None:
             continue
         try:
-            _relink(link.path, link.target, link.new_target)
+            _relink(link.path, link.target, link.new_target, link.is_dir)
         except OSError as exc:
             warnings.append(f"stale link {link.path} FAILED to name {link.new_target}: {exc}")
     return warnings
