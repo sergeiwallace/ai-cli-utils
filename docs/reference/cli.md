@@ -42,6 +42,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout list`](#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
@@ -734,6 +735,18 @@ Check a layout file against the layout schema without applying it
 Arguments:
 
 - `NAME`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai list-capabilities
+
+```text
+ai list-capabilities [OPTIONS]
+```
+
+Print the optional behaviours this launcher has enabled, one per line
 
 | Short | Long | Value | Description |
 |---|---|---|---|

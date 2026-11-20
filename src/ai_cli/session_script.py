@@ -1628,6 +1628,10 @@ with open(path, 'w') as f:
         _resolve_cc_transcript() {{
           matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name" ${{_cc_restart:+"$_cc_restart"}})
           resolve_status=$?
+    # BEGIN TRANSCRIPT RESTORE restart
+          # 74 is a failed transcript restore; it is stopped below, with its output kept on screen.
+          if [[ $resolve_status -eq 74 ]]; then return 0; fi
+    # END TRANSCRIPT RESTORE
           if [[ -n "$_cc_restart" && $resolve_status -ne 0 && $resolve_status -ne 2 ]]; then
             _ai_persist_exit unknown '{{"reason":"restart transcript resolution refused"}}'
             exit 77
@@ -1695,6 +1699,15 @@ with open(path, 'w') as f:
         fi
       fi
     # END BACKGROUND ATTACH
+    # BEGIN TRANSCRIPT RESTORE resolve-failed
+      # 74: the [resume_restore] command failed for an archived transcript. Resuming
+      # or starting fresh would both lose the conversation, so stop here.
+      if [[ "$engine" == "c" && $resolve_status -eq 74 ]]; then
+        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+        _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
+        break
+      fi
+    # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH parked
       if $_bg_gave_up; then
         _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' or type 'exit 78' here to try again."
@@ -1709,6 +1722,18 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN TRANSCRIPT RESTORE session
+      # Every resume path below takes $matched_file. Restore the session's transcripts
+      # (its sub-agents' included) first; a failed restore stops before claude starts.
+      if [[ "$engine" == "c" && -z "$bg_target" && $resolve_status -eq 0 && -n "$matched_file" ]]; then
+        _restore_id="${{matched_file##*/}}"
+        if ! ai internal restore-transcript "${{_restore_id%.jsonl}}"; then
+          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+          _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
+          break
+        fi
+      fi
+    # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.

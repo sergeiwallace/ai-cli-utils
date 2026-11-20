@@ -86,6 +86,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `session_audit.py` | Surveys titled Claude Code sessions and identifies sessions that cannot be resumed by `ai c` |
 | `stale_session_reaper.py` | Fail-closed stale tmux session evaluation and explicit reaping |
 | `suspended_session.py` | Launcher-side resume of a session Ctrl+Z left stopped: continues a pane foreground group before re-attach, and tells a process suspended in its own terminal (resumed) from AI-CLI-2139's abandoned one (reclaimed) |
+| `transcript_restore.py` | Runs the configured `[resume_restore] command` before every Claude Code resume, so a transcript a deployment archived (for example `<session-id>.jsonl.zst`) is back in place first; a failure stops the resume ([resume-restore-hook.md](resume-restore-hook.md)) |
 | `trust.py` | Claude Code workspace-trust registration and backfill |
 | `workspace.py` | Workspace-wide git pull/rebase operations across repositories and worktrees |
 | `data/statusline-command.sh` | Shell script deployed by `ai update`; called by the iTerm2 statusline |
@@ -105,6 +106,7 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai migrate-transcript DEST` — move a Claude Code transcript to another project root
 - `ai adopt-session [NAME]` — adopt a session that was started outside `ai c`
 - `ai audit-sessions` — survey titled sessions and identify sessions that cannot be resumed
+- `ai list-capabilities` — print the optional behaviours enabled here, one token per line (`transcript-restore`)
 
 ### Historical Gemini Spend
 - `ai spend gemini` — report historical Gemini CLI run logs and optional BigQuery billing data; it does not invoke Gemini

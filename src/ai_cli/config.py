@@ -673,6 +673,32 @@ def read_messaging_config(config: dict) -> dict:
     return result
 
 
+RESUME_RESTORE_PLACEHOLDER = "{session_id}"
+DEFAULT_RESUME_RESTORE_TIMEOUT = 300.0
+
+
+def read_resume_restore_config(config: dict) -> dict | None:
+    """``[resume_restore]``: the command run before a Claude Code resume, or ``None`` when unset.
+
+    Raises ``ValueError`` for a setting that is present but unusable, so a mistyped
+    command stops the resume instead of silently resuming without a restore.
+    """
+    section = config.get("resume_restore", {})
+    if not isinstance(section, dict):
+        raise ValueError("resume_restore must be a table")
+    command = section.get("command")
+    if command is None or command == []:
+        return None
+    if not isinstance(command, list) or not all(isinstance(word, str) and word for word in command):
+        raise ValueError("invalid resume_restore.command: use a list of non-empty strings")
+    if not any(RESUME_RESTORE_PLACEHOLDER in word for word in command):
+        raise ValueError(f"invalid resume_restore.command: no argument contains {RESUME_RESTORE_PLACEHOLDER}")
+    timeout = section.get("timeout_seconds", DEFAULT_RESUME_RESTORE_TIMEOUT)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid resume_restore.timeout_seconds: use a positive number")
+    return {"command": command, "timeout_seconds": float(timeout)}
+
+
 def read_relaunch_config(config: dict) -> dict:
     """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
     section = config.get("relaunch", {})
@@ -929,6 +955,19 @@ stale_session_timeout = 15
 ## session instead (so does `ai exit-session`). 0 restarts at once. Default 3. Read at
 ## every clean exit, so a change applies at the next one.
 # restart_stop_window_seconds = 3
+
+[resume_restore]
+## A command run before every Claude Code resume (`ai c`, its automatic restarts and the
+## bare launch), for a deployment that archives idle transcripts, for example as
+## <session-id>.jsonl.zst. Point it at your own restore tool. "{session_id}" in any
+## argument is replaced by the session's id. It runs without a shell, once for each
+## archived <session-id>.jsonl.zst in the session's project directory before the resume
+## target is chosen, then for the session being resumed. Exit 0: the resume goes ahead.
+## Any other exit, or a timeout: the resume stops and its output and exit status are
+## printed. Read on every resume. Unset: nothing runs. Guide: docs/guides/resume-restore.md.
+# command = ["restore-transcript", "--session-id", "{session_id}"]
+## Seconds the command may run before it is stopped and the resume refused. Default 300.
+# timeout_seconds = 300
 
 [tmux]
 ## The multiplexer executable every tmux call runs: the launch, attach, ls and every

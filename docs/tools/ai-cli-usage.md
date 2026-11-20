@@ -108,6 +108,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai layout list`](../reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](../reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](../reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](../reference/cli.md#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](../reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](../reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](../reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
