@@ -990,33 +990,30 @@ def _refuse_real_windows_registry_reads():
     failure from a blanket refusal. Narrowing to the keys that carry PATH leaves the
     guard total for the hazard and invisible to everything else.
 
-    Installed on every platform, for the reason the plyer guard is: the branch is
-    selected by ``sys.platform`` and tests force that value to exercise it from a Mac or
-    Linux host, so gating the guard on the host OS would leave it off exactly where the
-    branch is live. Tests that want the behaviour inject their own fake over this one
-    (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which still wins.
+    Installed only where a real ``winreg`` exists. Off Windows there is no registry to
+    read: a test that forces ``sys.platform`` to ``win32`` reaches the consumer's own
+    ``import winreg``, which fails, and it returns False without touching PATH, so the
+    hazard is already closed. A stub there would instead make ``import winreg``
+    succeed for every dependency that probes for Windows that way (``dateutil.tz``
+    then calls ``ConnectRegistry`` at import). Tests that want the Windows behaviour
+    inject their own fake (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which
+    wins on every host.
     """
     try:
         import winreg as real
     except ImportError:
-        real = None  # type: ignore[assignment]
+        yield None
+        return
 
     def _open_key(root, subkey, *args, **kwargs):
         if str(subkey).lower() in _WINDOWS_ENVIRONMENT_SUBKEYS:
             raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
-        if real is None:
-            raise OSError("no winreg on this platform")
         return vars(real)["OpenKey"](root, subkey, *args, **kwargs)
 
     stub = types.ModuleType("winreg")
-    if real is None:
-        # Enough surface for the Windows branch to be reachable from a POSIX host.
-        stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
-        stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
-    else:
-        for name in dir(real):
-            if not name.startswith("__"):
-                setattr(stub, name, getattr(real, name))
+    for name in dir(real):
+        if not name.startswith("__"):
+            setattr(stub, name, getattr(real, name))
     stub.OpenKey = _open_key  # type: ignore[attr-defined]
     stub.OpenKeyEx = _open_key  # type: ignore[attr-defined]
     saved = sys.modules.get("winreg", _MISSING)
