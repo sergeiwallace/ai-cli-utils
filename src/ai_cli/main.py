@@ -2896,7 +2896,7 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AIH_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
+    ``AI_CLI_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
     forwarded, empty when unset: the first relaunch after a reboot starts the tmux
     server, whose global environment then holds that reason for every later session.
     """
