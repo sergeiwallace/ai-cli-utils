@@ -54,8 +54,11 @@ def _git_state(repo, holds):
 
 
 def _assert_accepted_hold(row, anchors, heads):
-    assert SLOT in str(row) and row["time"]
-    assert all(str(value) in str(row) for value in (*anchors, *heads)), row
+    assert row["time"]
+    (hold,) = row["accepted_kept_holds"]
+    assert hold["slot"] == SLOT
+    assert (hold["old_path"], hold["new_path"]) == tuple(map(str, anchors))
+    assert (hold["old_head"], hold["new_head"]) == heads
 
 
 def test_given_windows_anchors_when_acceptance_is_read_then_both_paths_and_tips_match(tmp_path):
@@ -88,7 +91,9 @@ def test_given_two_anchors_when_finished_then_only_explicit_acceptance_completes
     assert "is partial" in out + err
     assert all(str(hold) in out + err for hold in anchors)
     assert _git_state(repo, anchors) == before
-    command = f"ai migrate-session {OLD} {NEW} --finish -r {repo} {ACCEPT} {SLOT}"
+    command = session_migrate_status.command_line(
+        ["ai", "migrate-session", OLD, NEW, "--finish", "-r", str(repo), ACCEPT, SLOT]
+    )
     assert command in out + err, out + err
 
     code, out, err = _finish(repo, "-y", ACCEPT, SLOT)
