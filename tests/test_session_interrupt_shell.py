@@ -276,7 +276,10 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("send-keys", "-t", target, "C-c").returncode == 0
 
         def exit_agent(self, command):
-            action.write_text(command)
+            # The agent treats the presence of action as a complete command.
+            pending = action.with_suffix(".tmp")
+            pending.write_text(command)
+            pending.replace(action)
 
         def type_line(self, command):
             assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
@@ -286,7 +289,8 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("has-session", "-t", self.name).returncode == 0
             # Execute a command: an alive/dead pane or an echoed keystroke is not a shell.
             proof = tmp_path / "shell-proof"
-            command = f"printf '%s' interactive > {shlex.quote(str(proof))}"
+            pending = shlex.quote(str(proof.with_suffix(".tmp")))
+            command = f"printf '%s' interactive > {pending} && mv {pending} {shlex.quote(str(proof))}"
             assert tmux("send-keys", "-t", self.name, command, "Enter").returncode == 0
             assert _wait(proof.exists), self.capture()
             assert proof.read_text() == "interactive"
@@ -303,6 +307,29 @@ def pane_session(request, tmp_path, monkeypatch):
             yield Pane()
         finally:
             tmux("kill-server")
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_waiting_agent_when_exit_command_is_written_then_only_complete_command_is_visible(
+    pane_session, tmp_path, monkeypatch
+):
+    action = tmp_path / "action"
+    early_commands = []
+    real_open = Path.open
+
+    def observe_open(path, mode="r", *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        # Schedule the reader after the real write-open, before any bytes are written.
+        if mode == "w" and path.parent == action.parent and action.exists():
+            early_commands.append(action.read_text())
+        return stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", observe_open)
+        pane_session.exit_agent("0")
+
+    assert early_commands == []
+    assert action.read_text() == "0"
 
 
 @pytest.mark.parametrize("remote", [False, True])
