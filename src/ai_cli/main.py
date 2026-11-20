@@ -3579,12 +3579,13 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
         "exec 3>&1; "
         f"{{ ( {remote_cmd} ) 3>&-; "
-        "status=$?; "
-        'if [ "$status" -ne 0 ]; then printf "%s\\n" "$status" > "$diagnostic_file.status"; fi; '
+        "remote_exit_code=$?; "
+        'if [ "$remote_exit_code" -ne 0 ]; then printf "%s\\n" "$remote_exit_code" > "$diagnostic_file.status"; fi; '
         '} 2>&1 1>&3 | ( umask 077; tee "$diagnostic_file" >&2 ); '
-        'status=0; if [ -f "$diagnostic_file.status" ]; then IFS= read -r status < "$diagnostic_file.status"; '
+        'remote_exit_code=0; if [ -f "$diagnostic_file.status" ]; '
+        'then IFS= read -r remote_exit_code < "$diagnostic_file.status"; '
         'else rm -f "$diagnostic_file"; fi; '
-        'exit "$status"'
+        'exit "$remote_exit_code"'
     )
 
 

@@ -148,6 +148,31 @@ def test_given_the_mosh_wrapper_when_the_remote_command_writes_progress_then_std
     assert "re-planning the migration" in done.stderr
 
 
+@pytest.mark.skipif(shutil.which("zsh") is None, reason="requires the remote host's zsh")
+@pytest.mark.parametrize("exit_code", [0, 78])
+def test_given_a_zsh_login_shell_when_the_mosh_wrapper_runs_then_it_preserves_stderr_and_exit_code(tmp_path, exit_code):
+    from ai_cli.main import _mosh_remote_command
+
+    wrapper = _mosh_remote_command(f"printf 'remote diagnostic\\n' >&2; exit {exit_code}", DIAGNOSTIC)
+    done = subprocess.run(
+        ["zsh", "-fc", wrapper],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        check=False,
+    )
+
+    assert done.stderr == "remote diagnostic\n"
+    assert done.returncode == exit_code
+    diagnostic = tmp_path / DIAGNOSTIC
+    if exit_code:
+        assert diagnostic.read_text() == done.stderr
+        assert diagnostic.with_suffix(".stderr.status").read_text().strip() == str(exit_code)
+    else:
+        assert not diagnostic.exists()
+        assert not diagnostic.with_suffix(".stderr.status").exists()
+
+
 def test_given_the_remote_side_refuses_over_mosh_when_dispatched_then_the_local_command_exits_with_its_status(
     tmp_path,
 ):
