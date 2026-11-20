@@ -479,11 +479,11 @@ A rename that finished but whose completion was never published completes itself
 next `ai reconcile-names` or `ai migrate-session`.
 
 The host sweep inventories, for one repository, every index-named worktree, tmux session
-and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
+and resumable record in the session stores for Claude Code, Codex, and Pi,
 including sessions whose worktree was already retired. Such a transcript-only session is
 named by retitling its client records; no worktree is made for it. A record the sweep
 cannot read stops it with the record named, so a sweep never reports a host as finished
-while something on it was skipped.
+while something on it was skipped. Antigravity’s latest-conversation cache cannot establish absence or be retitled by the launcher. Use Antigravity to locate its conversations.
 
 ## Migrating a session that already has a slot (`ai migrate-session`)
 
@@ -519,7 +519,7 @@ ai c myrepo-box-3                             # resume under the new name
 | `session-meta-<engine>-OLD.json` | fields rewritten, renamed |
 | `sessions/<engine>-OLD.sh` wrapper | regenerated from the rewritten metadata, so `--name` and the pinned `CLAUDE_CODE_TASK_LIST_ID` are NEW |
 | `cc-resume-prompt-`, `gg-*-`, `session-agent-exits-<engine>-OLD` | renamed |
-| `~/.claude/cc-sessions.json`, `gemini_sessions.json` | key OLD becomes NEW |
+| `~/.claude/cc-sessions.json` | key OLD becomes NEW |
 | iTerm2 restore registry record | name and relaunch command point at NEW |
 | `launch-logs/<name>-<stamp>-<pid>.log` for OLD and each of its tmux names (`c-OLD`, `c-r-OLD`, ...) | renamed for NEW, so NEW's 20-per-name retention prunes them; a log under the slot number alone (`3-<stamp>`) names no session and stays |
 | The chief-of-staff registration `ai cos` wrote, when it names OLD (`<chief home>/state/chief-session.json`, and `registry.json`'s `chief_of_staff_session` and `chief_routes.native_agent_name`) | rewritten for NEW, tmux target included; `vp_sessions` is left to its hook. Kept and named, exiting 1, while its tmux target is live; a file that cannot be read refuses the migration |

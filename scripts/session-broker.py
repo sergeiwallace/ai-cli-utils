@@ -127,21 +127,13 @@ def main():
     parser = argparse.ArgumentParser(description="Generate session context for AI startup")
     parser.add_argument("--project", help="Current project name")
     parser.add_argument("--config", help="Path to platform config file")
-    parser.add_argument(
-        "--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)"
-    )
-    parser.add_argument("--output", help="Output file path (default based on engine)")
+    parser.add_argument("--output", help="Output file path")
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
     content = generate_session_context(config_path, args.project)
 
-    if args.output:
-        output = Path(args.output)
-    elif args.engine == "g":
-        output = Path(".gemini/signals/session-context.md")
-    else:
-        output = Path(".claude/signals/session-context.md")
+    output = Path(args.output) if args.output else Path(".claude/signals/session-context.md")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content)

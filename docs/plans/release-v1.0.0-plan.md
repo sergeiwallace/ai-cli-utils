@@ -55,7 +55,7 @@ All of the following must be true before tagging v1.0.0:
 ```text
 0.1.1 (current)
   ↓
-0.2.0  Test quality · Process hygiene · Privacy audit · CLAUDE/GEMINI alignment · Git squash
+0.2.0  Test quality · Process hygiene · Privacy audit · Git squash
          [AI-CLI-17] [AI-CLI-28] [AI-CLI-30] [AI-CLI-31]
   ↓
 0.3.0  Handoff queue reliability + testing
@@ -78,7 +78,7 @@ All of the following must be true before tagging v1.0.0:
 ### v0.2.0 — Foundations
 **Plan:** `docs/plans/pre-release-v0.2.0-plan.md`
 
-Test quality recovery (T-00–T-07), process hygiene (`ai ps`), privacy audit (scrub all personal/proprietary references, rename `_is_managed_platform()`), CLAUDE.md/GEMINI.md alignment lint script, git history squash, PyPI publish.
+Test quality recovery (T-00–T-07), process hygiene (`ai ps`), privacy audit (scrub all personal/proprietary references, rename `_is_managed_platform()`) script, git history squash, PyPI publish.
 
 **Criteria unlocked:** C1 (partial), C5, C10 (already done)
 
@@ -141,10 +141,7 @@ The current state is "it mostly works in happy-path testing." That's not v1.0.0 
 **3. First-run experience needs an audit before v1.0.0.**
 `ai setup` is a good start but I'd want to verify end-to-end: fresh macOS, Linux, and Windows installs from `pip install ai-cli-utils` → `ai setup` → working. Any manual steps that survive that flow are regressions against C4/C6. Add this as part of the v0.6.0 docs/polish milestone.
 
-**4. CLAUDE.md/GEMINI.md alignment (AI-CLI-31) belongs at v1.0.0, not post.**
-This is a dev-workflow task, but it's also a signal of platform maturity. A project where the two agent config files drift silently is a maintenance liability. Put it at v1.0.0 as the final gate, not post.
-
-**5. Release Drafter (AI-CLI-7) is post-1.0.**
+**4. Release Drafter (AI-CLI-7) is post-1.0.**
 It's only useful when there are regular external PRs. Not a v1.0.0 blocker.
 
 ---

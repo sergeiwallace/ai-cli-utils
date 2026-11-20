@@ -833,7 +833,7 @@ def locate_session_command(query: str, as_json: bool) -> None:
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
 
 
-CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "gemini": "gemini"}
+CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi"}
 
 
 def _most_recent_record(client):
@@ -857,7 +857,12 @@ def _probe_cases(client, scratch: Path) -> list[dict]:
 
     cases = []
     root_problem = client._root_problem()
-    record = _most_recent_record(client) if root_problem is None else None
+    record = None
+    if root_problem is None:
+        try:
+            record = _most_recent_record(client)
+        except OSError as exc:
+            root_problem = str(exc)
     if root_problem is not None:
         # A store root that exists but cannot be read is a defect to see, not an empty store.
         cases.append(
@@ -886,7 +891,19 @@ def _probe_cases(client, scratch: Path) -> list[dict]:
         cases.append(case(sc.PRESENT, sc.PRESENT, client.probe_transcript(Path(record.cwd), "")))
     worktree = scratch / "worktree"
     worktree.mkdir()
-    cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    if client.can_probe_absence:
+        cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    else:
+        cases.append(
+            {
+                "case": sc.ABSENT,
+                "expected": sc.ABSENT,
+                "actual": None,
+                "reason": f"{client.client} does not have a complete conversation index",
+                "skipped": True,
+                "ok": True,
+            }
+        )
     missing_home = scratch / "missing-home"
     cases.append(case(sc.UNKNOWN, sc.UNKNOWN, type(client)(missing_home).probe_transcript(worktree, "")))
     return cases

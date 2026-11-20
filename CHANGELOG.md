@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ai g` now launches Antigravity (`agy`). Old Gemini CLI sessions are not resumed.
+  The Gemini CLI is deprecated in favor of Antigravity.
+- Removed `ai spend gemini` and its billing configuration.
+
 - Session list configuration and scope use machine host group terminology; the old scope and host key are no longer accepted.
 
 ### Fixed

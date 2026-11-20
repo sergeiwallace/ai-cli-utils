@@ -118,13 +118,13 @@ teardown_repo "$REPO"
 REPO=$(setup_repo)
 stage_file "$REPO" "src/feature.py"
 stage_file "$REPO" "CHANGELOG.md" "## [Unreleased]"
-assert_pass "feat(scope): commit with CHANGELOG.md staged passes" "$REPO" "feat(gemini): add new feature"
+assert_pass "feat(scope): commit with CHANGELOG.md staged passes" "$REPO" "feat(agy): add new feature"
 teardown_repo "$REPO"
 
 # 4. feat(scope): without CHANGELOG.md → should fail
 REPO=$(setup_repo)
 stage_file "$REPO" "src/feature.py"
-assert_fail "feat(scope): commit missing CHANGELOG.md is blocked" "$REPO" "feat(gemini): add new feature"
+assert_fail "feat(scope): commit missing CHANGELOG.md is blocked" "$REPO" "feat(agy): add new feature"
 teardown_repo "$REPO"
 
 # 5. fix: without CHANGELOG.md → should pass (only feat: is enforced)

@@ -52,7 +52,7 @@ Requires: screen recording permission granted to iTerm2 in System Settings → P
 | 2 | `ai ls` | Show active session list | 3s |
 | 3 | `ai sync push` | Cross-machine memory sync | 3s |
 | 4 | `ai quota status` | Claude usage monitoring | 2s |
-| 5 | `ai gemini "…" -m flash` | AI query passthrough | 5s |
+| 5 | `agy --print "…"` | AI query passthrough | 5s |
 | 6 | *(end card)* | GitHub URL | 2s |
 
 Total target: ~20 seconds.

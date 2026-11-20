@@ -14,7 +14,6 @@ first (highest priority at top), completed below.
 
 **References (project references):**
 - Zero-slop anchor design: `docs/research/zero-slop-anchor-design.md`
-- Anchor procedure: `docs/procedures/gemini-deep-think-anchor.md`
 
 ## Guidelines & The "Zero-Slop" Anchor
 
@@ -32,13 +31,6 @@ for that research task.
 - **`opus researcher`** — **default for all research.** Empirically tested:
   consistently more detailed, discovers additional nuance and options vs deep-think
   on identical prompts. Use unless Claude quota is tight.
-- `deep-think` — Gemini 3.1 Pro with extended thinking budget. Not a web-search
-  research tool — use for reasoning-heavy tasks over a fixed body of material
-  (architecture tradeoffs, synthesis, multi-path analysis). Uses Gemini OAuth
-  (no Claude tokens).
-- `gemini-3.1-pro-preview` — product/tech comparisons, competitive research,
-  moderate complexity
-- `gemini-3-flash-preview` — simple factual lookups, single-source verification only
 - `companion research -d thorough` — autonomous web research loop (Plan → Search → Read → Refine). Hard gate required — present prompt and wait for approval before running.
 
 **Temporal scope (required for all prompts):**
@@ -206,6 +198,8 @@ ssh attempt and terminal-inheriting child, and on SIGTERM and SIGHUP.
 
 <details>
 <summary>Prompt (R-1)</summary>
+
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`).
 
 ```text
 Research best practices for maintaining a professional open-source Python CLI

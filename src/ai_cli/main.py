@@ -25,6 +25,7 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import agy as _agy
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
 from . import compact_transport as _compact_transport
@@ -75,8 +76,6 @@ from .config import (  # noqa: F401
     _migrate_xdg_dir,
     get_current_project_name,
     get_project_aliases,
-    get_session_map,
-    get_session_map_path,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
@@ -84,7 +83,6 @@ from .config import (  # noqa: F401
     load_project_registry,
     register_project,
     resolve_project_prefix_by_name,
-    save_session_map,
     validate_registry_completeness,
 )
 from .extensions import run_launch_extensions
@@ -123,10 +121,6 @@ from .process_manager import (  # noqa: F401
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
-    _checkpoint_to_chat_uuid,
-    _convert_checkpoint_to_chat,
-    _find_latest_gemini_uuid,
-    _get_chat_last_message_timestamp,
     _resolve_is_remote,
     _sweep_stale_iterm2_profiles,
     build_session_name,
@@ -135,7 +129,6 @@ from .session import (  # noqa: F401
     detect_repo_root,
     find_next_index,
     find_recent_session,
-    get_latest_gemini_session_id,
     get_project_prefix,
     resolve_session,
 )
@@ -1107,12 +1100,13 @@ def _bare_engine_command(
     engine: str,
     ai_name: str,
     target_root: Path,
-    uuid: str | None,
-    gemini_cmd: str,
-    sandbox_flag: str,
+    agy_cmd: str,
+    sandbox: bool,
     extra_args: list[str],
     resume: bool = False,
     pi_provider: str = "openai-codex",
+    *,
+    isolated: bool = True,
 ) -> list[str]:
     """Build the argv for a bare (no-tmux) engine launch.
 
@@ -1163,12 +1157,7 @@ def _bare_engine_command(
             command += ["resume", "--last"]
         return [*command, *extra_args]
 
-    command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-    if uuid:
-        command += ["-r", uuid]
-    else:
-        command += ["-i", f"/resume load {ai_name}"]
-    return command + extra_args
+    return _agy.launch_command(agy_cmd, ai_name, sandbox=sandbox, isolated=isolated, extra_args=extra_args)
 
 
 def _is_root() -> bool:
@@ -1188,7 +1177,7 @@ def _is_root() -> bool:
 
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
-    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+    return {"c": "Claude Code", "g": "Antigravity (agy)", "p": "Pi", "cx": "Codex"}[engine]
 
 
 def _launch_mode_label(*, remote: bool, bare: bool) -> str:
@@ -1685,6 +1674,9 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
     fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
     """
     _session_naming.validate_script_metadata(meta, expected_session=expected_session)
+    agy_cmd = meta.get("agy_cmd", "agy")
+    if meta["engine"] == "g" and "agy_cmd" not in meta:
+        agy_cmd = _config.load_config().get("agy", {}).get("command", "agy")
     # Resolve through the session_script module (not the name imported into main) so
     # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
     return _session_script.get_engine_script(
@@ -1693,7 +1685,6 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
         session=meta["session"],
         prefix=meta["prefix"],
         project_prefix=meta["project_prefix"],
-        session_id_uuid=meta.get("session_id_uuid") or None,
         sandbox=meta.get("sandbox", False),
         worktree_dir=meta.get("worktree_dir") or None,
         notify=meta.get("notify", False),
@@ -1701,7 +1692,9 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
         project_name=meta.get("project_name", ""),
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
-        gemini_cmd=meta.get("gemini_cmd", "gemini"),
+        agy_cmd=agy_cmd,
+        agy_isolated=meta.get("agy_isolated", bool(meta.get("worktree_dir"))),
+        agy_args=meta.get("agy_args"),
         pi_provider=meta.get("pi_provider", "openai-codex"),
         launch_log_path=meta.get("launch_log_path") or None,
     )
@@ -2244,13 +2237,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
-    if action == "get-latest-gemini-id":
-        _ai_name_arg = argv[1] if len(argv) > 1 else None
-        res = _session.get_latest_gemini_session_id(_ai_name_arg)
-        if res:
-            _out.raw(Untagged.INTERNAL_REPLY, str(res))
-        sys.exit(0)
-    elif action == "finish-migrations":
+    if action == "finish-migrations":
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
@@ -2392,17 +2379,6 @@ def _handle_internal(argv: list[str]) -> None:
                     _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(title, pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
-        sys.exit(0)
-    elif action == "update-session-map":
-        if len(argv) < 4:
-            _out.emit(
-                Tag.INTERNAL, "usage", "Usage: ai internal update-session-map <engine> <ai_name> <uuid>", err=True
-            )
-            sys.exit(1)
-        engine, ai_name, uuid = argv[1], argv[2], argv[3]
-        d = _config.get_session_map(engine)
-        d[ai_name] = uuid
-        _config.save_session_map(d, engine)
         sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
@@ -5275,8 +5251,7 @@ def _do_session_launch(
             reporter.detail("compact", compact_transport.detail)
 
     use_sandbox = sandbox
-    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
+    agy_cmd = config.get("agy", {}).get("command", "agy")
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
@@ -5472,6 +5447,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
+        if engine == "g" and extra_args:
+            remote_cmd += f" -- {shlex.join(extra_args)}"
         remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
         mosh_remote_cmd = _mosh_remote_command(remote_cmd, remote_diagnostic_file)
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
@@ -5672,7 +5649,7 @@ def _do_session_launch(
                 os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
-        # git worktrees and Gemini chats directories resolve relative to the correct root.
+        # git worktrees resolve relative to the correct root.
         # Mirrors the is_remote path above, refusal included -- an absent directory
         # strands the session in the wrong root identically either way, and only the
         # remote half of that is reachable without passing -p.
@@ -6132,17 +6109,7 @@ def _do_session_launch(
                     )
                 _sync_phase.outcome("ready")
 
-    # For Gemini, always check the chats directory for the latest session — the
-    # session map may be stale if the user exited and restarted directly via gemini CLI.
-    uuid = None
-    if engine == "g":
-        d = _config.get_session_map(engine)
-        uuid = d.get(ai_name)
-        latest = _session._find_latest_gemini_uuid(ai_name)
-        if latest and latest != uuid:
-            uuid = latest
-            d[ai_name] = uuid
-            _config.save_session_map(d, engine)
+    agy_isolated = worktree_path is not None and not no_worktree
 
     def _register_run_state(*, new_start):
         try:
@@ -6194,12 +6161,12 @@ def _do_session_launch(
                 engine,
                 ai_name,
                 target_root,
-                uuid,
-                gemini_cmd,
-                sandbox_flag,
+                agy_cmd,
+                use_sandbox,
                 extra_args,
                 resume=resume,
                 pi_provider=pi_provider,
+                isolated=agy_isolated,
             )
         except _LiveClaudeSessionError as exc:
             # tmux can reattach only when it already owns the live process. A
@@ -6261,30 +6228,28 @@ def _do_session_launch(
         _direnv = _direnv_prefix(target_root)
         if not is_remote and not detached and not probe:
             _track_launch(reporter, kind="local", name=name, session_name=session_id)
-        if replay_bare and replay_recipe is not None:
+        if engine == "g":
+            command = _agy.launch_command(
+                agy_cmd, ai_name, sandbox=use_sandbox, isolated=agy_isolated, extra_args=extra_args
+            )
+        elif replay_bare and replay_recipe is not None:
             command = replay_recipe["command"]
         elif replay_recipe is not None:
             command = _bare_engine_command(
                 engine,
                 ai_name,
                 target_root,
-                uuid,
-                gemini_cmd,
-                sandbox_flag,
+                agy_cmd,
+                use_sandbox,
                 extra_args,
                 pi_provider=pi_provider,
+                isolated=agy_isolated,
             )
         elif engine == "c":
             command = ["claude"]
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
-        elif engine == "g":
-            command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-            if uuid:
-                command += ["-r", uuid]
-            else:
-                command += ["-i", f"/resume load {ai_name}"]
         elif engine == "p":
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
@@ -6299,7 +6264,7 @@ def _do_session_launch(
             "-c",
             cd_prefix
             + _session_launch_state.single_run_shell(
-                session_id, command if replay_bare else [*_direnv, *command], launch_log_path
+                session_id, command if replay_bare and engine != "g" else [*_direnv, *command], launch_log_path
             ),
         )
         if detached:
@@ -6363,7 +6328,6 @@ def _do_session_launch(
         session_id,
         f"{script_family}{script_prefix}-",
         project_prefix,
-        uuid,
         use_sandbox,
         str(worktree_path) if worktree_path else None,
         notify=notify,
@@ -6371,7 +6335,9 @@ def _do_session_launch(
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
-        gemini_cmd=gemini_cmd,
+        agy_cmd=agy_cmd,
+        agy_isolated=agy_isolated,
+        agy_args=extra_args,
         pi_provider=pi_provider,
         launch_log_path=launch_log_path,
     )
@@ -6906,7 +6872,7 @@ class _ChiefAliasGroup(RootHelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+    """Unified AI CLI for Claude, Antigravity, Pi, and Codex.
 
     Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
     prints a command's full help."""
@@ -7614,7 +7580,7 @@ def cmd_c(ctx, **options):
     _dispatch_session("c", ctx, options)
 
 
-@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
+@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch an Antigravity (agy) session")
 @_session_options
 def cmd_g(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
@@ -7982,19 +7948,7 @@ def cmd_telemetry_writer():
     sys.exit(telemetry_writer())
 
 
-# --- spend, cc-usage, copier-update, layout, color ---
-
-
-@_cli_group.group("spend", help="Usage-cost reports")
-def cmd_spend_group():
-    pass
-
-
-@cmd_spend_group.command("gemini", help="Report historical Gemini CLI spend from local logs")
-def cmd_spend_gemini_cli():
-    from .spend import cmd_spend_gemini
-
-    sys.exit(cmd_spend_gemini(_config.load_config()))
+# --- cc-usage, copier-update, layout, color ---
 
 
 @_cli_group.group("cc-usage", help="Claude Code CLI per-call token usage")

@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from test_session_clients import CLIENTS, TITLE, make_root, seed
 
 from ai_cli import session_clients as sc
+from ai_cli.agy import conversation_cache
 from ai_cli.main import _cli_group
 
 
@@ -65,6 +66,9 @@ def test_given_every_client_with_a_record_when_probed_then_each_case_passes_and_
     assert result.exit_code == 0, result.output
     for client in CLIENTS:
         for state in (sc.PRESENT, sc.ABSENT, sc.UNKNOWN):
+            if client == "agy" and state == sc.ABSENT:
+                assert "agy absent skipped: agy does not have a complete conversation index" in result.output
+                continue
             assert f"{client} {state}: expected {state}, got {state} (ok)" in result.output
 
 
@@ -81,6 +85,9 @@ def test_given_every_client_with_a_record_when_probed_as_json_then_the_object_na
         assert [case["case"] for case in entry["cases"]] == [sc.PRESENT, sc.ABSENT, sc.UNKNOWN]
         for case in entry["cases"]:
             assert set(case) == {"case", "expected", "actual", "reason", "skipped", "ok"}
+            if entry["client"] == "agy" and case["case"] == sc.ABSENT:
+                assert case["actual"] is None and case["skipped"] is True and case["ok"] is True
+                continue
             assert case["actual"] == case["expected"] and case["ok"] is True and case["reason"]
             assert case["skipped"] is False
     [unknown] = [case for case in report["clients"][0]["cases"] if case["case"] == sc.UNKNOWN]
@@ -158,17 +165,17 @@ def test_given_an_empty_store_when_probed_as_json_then_present_is_a_passing_skip
 def test_given_a_store_root_that_cannot_be_read_when_probed_then_present_fails_naming_the_problem_and_it_exits_1(
     home, on_path
 ):
-    make_root("gemini", home)
-    (home / ".gemini" / "projects.json").write_text("not json")
+    make_root("agy", home)
+    conversation_cache(home).write_text("not json")
 
     code, report = _json()
 
-    [gemini] = [entry for entry in report["clients"] if entry["client"] == "gemini"]
-    [present] = [case for case in gemini["cases"] if case["case"] == sc.PRESENT]
+    [agy] = [entry for entry in report["clients"] if entry["client"] == "agy"]
+    [present] = [case for case in agy["cases"] if case["case"] == sc.PRESENT]
     assert code == 1 and report["ok"] is False
     assert present["ok"] is False and present["skipped"] is False
-    assert "gemini project registry" in present["reason"] and "is not readable" in present["reason"]
-    assert "gemini present: gemini project registry" in _run().output
+    assert present["reason"] == "Antigravity conversation cache is unavailable"
+    assert "agy present: Antigravity conversation cache is unavailable" in _run().output
 
 
 def test_given_a_store_with_an_unreadable_record_when_probed_then_absent_fails_with_the_probe_reason(

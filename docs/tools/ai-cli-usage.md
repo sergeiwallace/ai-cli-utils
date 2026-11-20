@@ -32,8 +32,6 @@ there, not here.
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
-  - [Removed ai gemini command](#removed-ai-gemini-command)
-  - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
@@ -60,7 +58,7 @@ started.
 | Command | What it does |
 |---|---|
 | `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
-| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai g NAME` | Start or resume Antigravity (`agy`). Use `ai p NAME` for Pi and `ai cx NAME` for Codex. |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
@@ -99,7 +97,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](../reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](../reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](../reference/cli.md#ai-g) | Launch an Antigravity (agy) session |
 | [`ai import-names`](../reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](../reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](../reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -166,8 +164,6 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai set-name-verdict`](../reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](../reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](../reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](../reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](../reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](../reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](../reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](../reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -195,7 +191,7 @@ section of the [CLI reference](../reference/cli.md).
 
 ## Overview
 
-`ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
+`ai` is the unified CLI for Claude Code, Antigravity, Pi, and Codex sessions. Entry point: `src/ai_cli/main.py:cli()`.
 
 ```bash
 ai --version   # print installed version
@@ -216,7 +212,7 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | Module | Purpose |
 |--------|---------|
 | `ai_cli.config` | XDG paths, `load_config`, session map, project registry |
-| `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
+| `ai_cli.session` | session naming and worktree operations |
 | `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
@@ -505,11 +501,23 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```
 
-Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
+Launch or resume Antigravity in the named session's worktree. The default executable is `agy`.
+Install and sign in to Antigravity separately. Set `[agy] command` in the ai config to override the executable.
 
-**Session resume:** on each launch or restart, `ai g` checks `~/.gemini/tmp/{name}/chats/` for the most recent session file. If a `checkpoint-{name}.json` exists and is newer than the latest chat file (or no chat files exist), it is automatically converted to a chat session file and resumed via `gemini -r {uuid}`. No manual `/resume load` required.
+```toml
+[agy]
+command = "agy"
+```
 
-**Checkpoint conversion:** the conversion is idempotent — the same checkpoint always produces the same UUID. Once converted, Gemini auto-saves all future messages to the chat file natively. The original checkpoint is never deleted and remains as a fallback.
+Quote paths that contain spaces. Pass Antigravity options after `--`, for example
+`ai g research -- --effort high`. The launcher's `-s/--sandbox` option enables
+Antigravity's sandbox. The launcher makes the session name available through
+`AI_CLI_SESSION_NAME`.
+
+On launch or restart, the launcher uses Antigravity's last conversation ID for the exact
+worktree path and passes it to `agy --conversation`. A worktree without an entry starts a
+new conversation. Without a dedicated worktree, or after moving a worktree, pass an explicit
+ID with `ai g NAME -- --conversation ID`.
 
 ### ai cos
 
@@ -784,38 +792,6 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 ### Copier update environments
 
 In an isolated update, Git submodules are initialized recursively before dependencies are installed. A Python project at the root with `pyproject.toml` and `uv.lock` is prepared with `uv sync --frozen --all-extras --dev`, and when the root has one, directories below it are not synced (a nested directory such as a template tree may name a path dependency that only exists after an export). Without a root Python project, each directory one level below that has both files is prepared the same way; when there is exactly one, its environment is created at the worktree root so root-level hooks can find it. JavaScript projects at the root or one directory below with `package.json` and a supported lockfile receive their corresponding frozen install. After dependency installs, the same package manager runs any declared `e2e:install` script once in its package directory. This covers the project package and workspaces declared by literal paths or `dir/*` patterns. A failed script stops the update before commit or push. Projects with other layouts or additional tool requirements must provide those separately.
-
-### Removed ai gemini command
-
-`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
-
-The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
-
-### ai spend gemini
-
-```bash
-ai spend gemini
-```
-
-Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
-
-**BigQuery setup** (one-time, optional historical billing data):
-
-1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
-2. Add to `~/.config/ai-cli/config.toml`:
-
-```toml
-[gemini_billing]
-gcp_project_id = "your-gcp-project"
-billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
-```
-
-3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
-
-When BigQuery is not configured, `ai spend gemini` reports the local historical logs that are available.
-
-**State files:**
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical per-run log, if retained from a version before v0.7.0
 
 ### ai cc-usage
 

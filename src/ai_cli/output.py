@@ -123,7 +123,6 @@ class Tag(StrEnum):
     SESSION = "session"  # the generated session script (session_script.py) prints this one
     SESSIONS = "sessions"
     SETUP = "setup"
-    SPEND = "spend"
     SYNC = "sync"
     SYNC_WATCH = "sync-watch"
     TELEMETRY = "telemetry"

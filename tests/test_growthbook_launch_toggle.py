@@ -120,7 +120,7 @@ def test_given_existing_settings_local_json_when_launch_runs_then_other_keys_are
     assert data["hooks"] == {"foo": "bar"}
 
 
-def test_given_gemini_engine_when_launch_runs_then_no_write_happens(tmp_path, toggle_block):
+def test_given_agy_engine_when_launch_runs_then_no_write_happens(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
 
     result = _run_toggle_block(tmp_path, "g", toggle_block)

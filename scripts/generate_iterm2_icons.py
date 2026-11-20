@@ -2,7 +2,7 @@
 """Generate iTerm2 tab icon PNGs for ai-cli-utils profiles.
 
 Reads color configuration from iterm2.toml and generates tinted PNG variants
-for all ClaudeCode-{Color} and GeminiCLI-{Color} Dynamic Profile entries.
+for ClaudeCode-{Color} Dynamic Profile entries.
 
 Usage:
     python scripts/generate_iterm2_icons.py
@@ -43,12 +43,6 @@ ICON_COLORS = {
     "cyan": (6, 182, 212),  # cyan-500
     "teal": (20, 184, 166),  # teal-500
     "green": (34, 197, 94),  # green-500
-}
-
-GEMINI_ICON_COLORS = {
-    "white": (255, 255, 255),
-    "navy": (26, 26, 46),
-    "gold": (245, 158, 11),
 }
 
 
@@ -158,7 +152,6 @@ def main() -> None:
     # Load source images
     icons_dir = Path.home() / ".config" / "iterm2" / "icons"
     claude_svg = icons_dir / "claude-logo.svg"
-    gemini_png = icons_dir / "gemini-logo.png"
 
     print(f"Generating {args.size}x{args.size} icons → {out_dir}")
     print(f"Outline: {'yes' if args.outline else 'no'}")
@@ -177,13 +170,6 @@ def main() -> None:
         print(f"Loading Claude source (PNG fallback): {fallback}")
         claude_source = load_png_as_image(fallback, args.size)
 
-    # Load Gemini source
-    if not gemini_png.exists():
-        print(f"Error: Gemini source not found at {gemini_png}", file=sys.stderr)
-        sys.exit(1)
-    print(f"Loading Gemini source: {gemini_png}")
-    gemini_source = load_png_as_image(gemini_png, args.size)
-
     print()
     print("Claude icons:")
     for name, rgb in ICON_COLORS.items():
@@ -195,17 +181,7 @@ def main() -> None:
             shutil.copy2(out_path, repo_path)
 
     print()
-    print("Gemini icons:")
-    for name, rgb in GEMINI_ICON_COLORS.items():
-        out_path = out_dir / f"gemini-icon-{name}.png"
-        generate_icon(gemini_source, name, rgb, out_path, with_outline=args.outline)
-        if repo_dir:
-            repo_path = repo_dir / f"gemini-icon-{name}.png"
-            repo_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(out_path, repo_path)
-
-    print()
-    print(f"Done. {len(ICON_COLORS) + len(GEMINI_ICON_COLORS)} icons generated.")
+    print(f"Done. {len(ICON_COLORS)} icons generated.")
     if repo_dir:
         print(f"Copied to repo: {repo_dir}")
 

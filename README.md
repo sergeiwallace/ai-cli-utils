@@ -7,17 +7,17 @@
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils) <!-- public-hygiene: allow -->
 
-Unified AI session manager and automation toolkit for Claude Code, Gemini CLI, pi, and Codex.
+Unified AI session manager and automation toolkit for Claude Code, Antigravity (`agy`), pi, and Codex.
 
 <video src="demo/demo-20260420-053045-1cdf560.mp4" autoplay loop muted playsinline width="100%"></video>
 
-*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls` and checking token quota with `ai quota status`.*
+*Recorded terminal demo of the session launcher and quota display. For current commands, see Quick Start below.*
 
 Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
 ## What it does
 
-`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
+`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Antigravity](https://antigravity.google/) (`agy`), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
 
 ## Features
 
@@ -142,7 +142,7 @@ ai c 1
 # Launch a second session in parallel (isolated worktree)
 ai c 2
 
-# Launch Gemini CLI session
+# Launch an Antigravity session
 ai g research
 
 # Launch pi or Codex session
@@ -171,7 +171,7 @@ session is already running, `ai c NAME` attaches to it, so `ai attach` is not ne
 | Command | What it does |
 |---|---|
 | `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
-| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai g NAME` | Start or resume Antigravity (`agy`). Use `ai p NAME` for Pi and `ai cx NAME` for Codex. |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
@@ -212,7 +212,7 @@ after changing a command's help, never edit it by hand.
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](docs/reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](docs/reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](docs/reference/cli.md#ai-g) | Launch an Antigravity (agy) session |
 | [`ai import-names`](docs/reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](docs/reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](docs/reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -279,8 +279,6 @@ after changing a command's help, never edit it by hand.
 | [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](docs/reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](docs/reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](docs/reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](docs/reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -308,7 +306,7 @@ after changing a command's help, never edit it by hand.
 
 ```bash
 ai c <name>            # Start/resume Claude Code session
-ai g <name>            # Start/resume Gemini CLI session
+ai g <name>            # Start/resume Antigravity session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
@@ -1720,7 +1718,7 @@ iTerm2 visual identity settings live in `~/.config/ai-cli-utils/iterm2.toml` (cr
 [iterm2.base_profiles]
 # Base Dynamic Profile each session type inherits from
 cc         = "ClaudeCode"
-gemini     = "GeminiCLI"
+agy        = "Default"
 shell      = "ShellUtility"
 
 [iterm2.project_colors]
@@ -1743,7 +1741,7 @@ The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. E
   and the shipped source is byte-compiled on 3.11 in CI so the wider claim stays falsifiable.
 - [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`, unless psmux is installed, which answers to `tmux`. Where more than one build answers to `tmux`, `[tmux] binary` names the one every call runs. Native Windows also has no pty API, so there the harness cannot drive compaction (the engine's own auto-compact still runs); a launch says so only under `-v`, and `ai doctor` reports it as its `compact` row)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Antigravity](https://antigravity.google/) (`agy`), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)

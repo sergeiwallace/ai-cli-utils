@@ -856,7 +856,7 @@ def test_given_the_publish_job_when_routed_then_hosted_uses_the_pypi_action_and_
 HOSTED_PARITY = {
     ("ci.yml", "lint"): {
         "uses": ["actions/checkout", "astral-sh/setup-uv"],
-        "run": ["python scripts/lint_doc_alignment.py", "compileall"],
+        "run": ["compileall"],
     },
     ("ci.yml", "test"): {
         "uses": ["actions/checkout", "astral-sh/setup-uv", "codecov/codecov-action"],

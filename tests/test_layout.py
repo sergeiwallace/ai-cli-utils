@@ -248,7 +248,7 @@ class TestGenerateLayoutProfiles:
             name="multi",
             tabs=[
                 Tab(name="a", session_type="cc", root=Pane(dir="~")),
-                Tab(name="b", session_type="gemini", root=Pane(dir="~")),
+                Tab(name="b", session_type="agy", root=Pane(dir="~")),
                 Tab(name="c", session_type="shell", root=Pane(dir="~")),
             ],
         )
@@ -535,7 +535,7 @@ class TestGenerateLayoutProfilesExtended:
 
     def test_every_session_type_parents_to_default(self, tmp_path):
         # Named per-type profiles retired — every layout profile parents to Default.
-        for stype in ("cc", "gemini", "shell", "chrome", "caffeinate", "ssh"):
+        for stype in ("cc", "agy", "shell", "chrome", "caffeinate", "ssh"):
             profile, _ = self._run(stype, tmp_path)
             assert profile["Dynamic Profile Parent Name"] == "Default", stype
 
@@ -621,7 +621,7 @@ class TestWriteLaunchScript:
             "name": "multi",
             "tabs": [
                 {"name": "tab-a", "session_type": "cc", "root": {"dir": "~"}},
-                {"name": "tab-b", "session_type": "gemini", "root": {"dir": "~"}},
+                {"name": "tab-b", "session_type": "agy", "root": {"dir": "~"}},
             ],
         }
         layout = Layout(**multi_tab)

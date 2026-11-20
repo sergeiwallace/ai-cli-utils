@@ -1000,6 +1000,76 @@ def _compatible(source: str, expected: str) -> bool:
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
         return True
+    # Certify Claude wrappers created before the g engine switched clients.
+    # Reconstruct those exact old lines from the trusted template so arbitrary
+    # edits to a running wrapper still fail the full program comparison.
+    if re.search(r"(?m)^    engine=c$", expected) and "-m ai_cli.agy " in expected:
+        legacy = re.sub(
+            r'(?m)^          run_agent .* -m ai_cli\.agy .*?( --prompt-interactive "\$resume_msg")?$',
+            lambda match: (
+                ('          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n' if match[1] else "")
+                + '      if [[ -n "$uuid" ]]; then run_agent gemini -y --no-sandbox -r "$uuid"\n'
+                + '      else run_agent gemini -y --no-sandbox -i "/resume load $ai_name"\n'
+                + "          fi"
+            ),
+            expected,
+        )
+        legacy = (
+            legacy.replace("    project_prefix=", "    uuid=''\n    project_prefix=", 1)
+            .replace(
+                ', "sandbox": false, "worktree_dir": ', ', "session_id_uuid": "", "sandbox": false, "worktree_dir": ', 1
+            )
+            .replace(', "pi_provider": ', ', "gemini_cmd": "gemini", "pi_provider": ', 1)
+            .replace('"$stype" == "agy"', '"$stype" == "gemini"')
+            .replace('_session_type="agy"', '_session_type="gemini"')
+            .replace(
+                '      prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"',
+                '      reload_file="$_ai_state_dir/gg-reload-$tmux_session"\n'
+                '      restart_file="$_ai_state_dir/gg-restart-$tmux_session"\n'
+                '      prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"',
+            )
+            .replace(
+                "        # One tick per second",
+                '        if [[ "$engine" == "g" && -f "$reload_file" ]]; then\n'
+                '          rm -f "$reload_file"\n'
+                '          tmux send-keys -t "$tmux_session" Escape\n'
+                "          sleep 0.2\n"
+                '          tmux send-keys -t "$tmux_session" C-u\n'
+                '          tmux send-keys -t "$tmux_session" "/memory reload" C-m\n'
+                "        fi\n"
+                '        if [[ "$engine" == "g" && -f "$restart_file" ]]; then\n'
+                '          rm -f "$restart_file"\n'
+                '          tmux send-keys -t "$tmux_session" Escape\n'
+                "          sleep 0.2\n"
+                '          tmux send-keys -t "$tmux_session" C-u\n'
+                '          tmux send-keys -t "$tmux_session" "R"\n'
+                "        fi\n"
+                "        # One tick per second",
+            )
+            .replace('"$engine" == "c" && -f "scripts/session-broker.py"', '-f "scripts/session-broker.py"')
+            .replace("python3 scripts/session-broker.py &", 'python3 scripts/session-broker.py --engine "$engine" &')
+            .replace("Run 'ai $engine $ai_name' to retry.", "Run 'ai c' to retry.")
+            .replace(
+                "      # The Antigravity adapter already reported the executable failure.\n"
+                '      if [[ "$engine" == "g" ]] && $agent_attempted && (( agent_exit_code == 126 )); then\n'
+                "        exit 126\n"
+                "      fi\n",
+                "",
+            )
+            .replace(
+                "      first_run=false\n      # Mark session as started",
+                '      if [[ "$engine" == "g" ]]; then\n'
+                '        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)\n'
+                '        if [[ -n "$new_uuid" ]]; then\n'
+                '          uuid="$new_uuid"\n'
+                '          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null\n'
+                "        fi\n"
+                "      fi\n"
+                "      first_run=false\n      # Mark session as started",
+            )
+        )
+        if "-m ai_cli.agy " not in legacy and _compatible(source, legacy):
+            return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.
     previous_resolver = re.sub(

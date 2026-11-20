@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import subprocess
@@ -15,22 +14,15 @@ from process_ownership import OWNED_PROCESS_LIFETIME, reap, spawn_owned_sleeper
 
 import ai_cli.session as _session_module
 from ai_cli import process_probe
+from ai_cli.config import get_session_map, get_session_map_path, save_session_map
 from ai_cli.main import (
-    _checkpoint_to_chat_uuid,
-    _convert_checkpoint_to_chat,
-    _find_latest_gemini_uuid,
-    _get_chat_last_message_timestamp,
     build_session_name,
     cleanup_stale_sessions,
     create_worktree,
     detect_repo_root,
     find_next_index,
     find_recent_session,
-    get_latest_gemini_session_id,
-    get_session_map,
-    get_session_map_path,
     resolve_session,
-    save_session_map,
 )
 from ai_cli.session import _prefix_from_session_name, get_project_prefix, is_current_project_resolved
 
@@ -67,7 +59,7 @@ def test_given_codex_engine_when_building_session_name_then_uses_codex_prefix():
     assert ai_name == "myproject-1"
 
 
-def test_build_session_name_gemini_when_no_name_then_uses_g_prefix():
+def test_build_session_name_agy_when_no_name_then_uses_g_prefix():
     with patch("subprocess.run") as mock_run:
         mock_res = MagicMock()
         mock_res.returncode = 1
@@ -386,10 +378,10 @@ def test_cleanup_when_non_ai_session_then_ignores_it():
     assert killed == []
 
 
-def test_given_unrelated_gemini_session_when_cleanup_runs_then_it_never_kills_the_session():
+def test_given_unrelated_agy_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("g-session-1", now - timeout_seconds - 1, "gemini"))
+    panes = _make_list_panes_output(("g-session-1", now - timeout_seconds - 1, "agy"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
@@ -653,17 +645,12 @@ def test_given_procfs_live_pid_with_different_proc_start_when_cleanup_runs_then_
 
 
 class TestSessionMap:
-    def test_get_session_map_path_when_gemini_then_returns_gemini_path(self, tmp_path):
-        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-            result = get_session_map_path(engine="g")
-        assert "gemini_sessions.json" in str(result)
-
     def test_get_session_map_when_invalid_json_then_returns_empty(self, tmp_path):
         with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-            path = tmp_path / "gemini_sessions.json"
+            path = tmp_path / "cc-sessions.json"
             path.write_text("not json {{{")
             with patch("ai_cli.config.get_session_map_path", return_value=path):
-                result = get_session_map(engine="g")
+                result = get_session_map(engine="c")
         assert result == {}
 
     def test_save_session_map_when_called_then_writes_json(self, tmp_path):
@@ -686,376 +673,6 @@ class TestSessionMapEdgeCases:
         with patch("ai_cli.config.get_session_map_path", return_value=path):
             result = get_session_map(engine="c")
         assert result == {}
-
-
-# --- _find_latest_gemini_uuid ---
-
-
-class TestFindLatestGeminiUuid:
-    def test_when_chats_dir_has_session_then_returns_session_id(self, tmp_path):
-        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
-        chats.mkdir(parents=True)
-        (chats / "session-2026-01-01T00-00-abc.json").write_text('{"sessionId": "abc-full-uuid-here"}')
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result == "abc-full-uuid-here"
-
-    def test_when_multiple_files_then_returns_most_recent(self, tmp_path):
-        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
-        chats.mkdir(parents=True)
-        old_file = chats / "session-old.json"
-        new_file = chats / "session-new.json"
-        old_file.write_text('{"sessionId": "old-uuid"}')
-        new_file.write_text('{"sessionId": "new-uuid"}')
-        # Set explicit mtimes to avoid sleep: old=1000, new=2000
-        import os as _os
-
-        _os.utime(old_file, (1000.0, 1000.0))
-        _os.utime(new_file, (2000.0, 2000.0))
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result == "new-uuid"
-
-    def test_when_no_chats_dir_then_returns_none(self, tmp_path):
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result is None
-
-    def test_when_file_has_no_session_id_then_skips_it(self, tmp_path):
-        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
-        chats.mkdir(parents=True)
-        (chats / "session-bad.json").write_text('{"otherKey": "value"}')
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result is None
-
-    def test_when_file_is_invalid_json_then_skips_it(self, tmp_path):
-        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
-        chats.mkdir(parents=True)
-        (chats / "session-corrupt.json").write_text("not json {{{")
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result is None
-
-    def test_when_checkpoint_newer_than_chat_then_converts_and_returns_uuid(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        chats = gemini_tmp / "chats"
-        chats.mkdir(parents=True)
-        # Chat file with last message at t=1000
-        old_chat = chats / "session-old.json"
-        old_chat.write_text(
-            json.dumps(
-                {
-                    "sessionId": "old-uuid",
-                    "messages": [{"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": [{"text": "hi"}]}],
-                }
-            )
-        )
-        os.utime(old_chat, (1000.0, 1000.0))
-        # Checkpoint saved at t=2000 (newer than last message)
-        checkpoint = gemini_tmp / "checkpoint-art-1.json"
-        history = [{"role": "user", "parts": [{"text": "hello"}]}]
-        checkpoint.write_text(json.dumps({"history": history, "authType": "oauth"}))
-        os.utime(checkpoint, (2000.0, 2000.0))
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result is not None
-        assert result != "old-uuid"  # converted checkpoint UUID, not the old chat
-
-    def test_when_chat_last_message_newer_than_checkpoint_then_uses_existing_chat(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        chats = gemini_tmp / "chats"
-        chats.mkdir(parents=True)
-        # Chat file with last message at t=2000, but frozen mtime at t=500
-        # (simulates gemini-cli not updating mtime on auto-save writes)
-        chat = chats / "session-new.json"
-        chat.write_text(
-            json.dumps(
-                {
-                    "sessionId": "new-uuid",
-                    "messages": [
-                        {"timestamp": "1970-01-01T00:33:20Z", "type": "user", "content": [{"text": "later message"}]}
-                    ],
-                }
-            )
-        )
-        os.utime(chat, (500.0, 500.0))
-        # Checkpoint saved at t=1000 (older than last message in chat)
-        checkpoint = gemini_tmp / "checkpoint-art-1.json"
-        checkpoint.write_text(json.dumps({"history": [{"role": "user", "parts": [{"text": "hi"}]}]}))
-        os.utime(checkpoint, (1000.0, 1000.0))
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result == "new-uuid"
-
-    def test_when_resume_save_mid_session_then_uses_chat_with_later_messages(self, tmp_path):
-        # Regression: /resume save at t=1500 mid-session; auto-save continued to t=2000.
-        # Chat file mtime is frozen at t=500 (gemini-cli does not update mtime on writes).
-        # Must use chat file (last message t=2000), not reconvert checkpoint (t=1500).
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        chats = gemini_tmp / "chats"
-        chats.mkdir(parents=True)
-        chat = chats / "session-active.json"
-        chat.write_text(
-            json.dumps(
-                {
-                    "sessionId": "active-uuid",
-                    "messages": [
-                        {"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": [{"text": "early msg"}]},
-                        {
-                            "timestamp": "1970-01-01T00:33:20Z",
-                            "type": "gemini",
-                            "content": [{"text": "later msg auto-saved after /resume save"}],
-                        },
-                    ],
-                }
-            )
-        )
-        os.utime(chat, (500.0, 500.0))  # mtime frozen — does not reflect actual writes
-        checkpoint = gemini_tmp / "checkpoint-art-1.json"
-        checkpoint.write_text(json.dumps({"history": [{"role": "user", "parts": [{"text": "hi"}]}]}))
-        os.utime(checkpoint, (1500.0, 1500.0))  # /resume save at t=1500
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        # chat last message ts=2000 > checkpoint mtime=1500 → use chat, not checkpoint
-        assert result == "active-uuid"
-
-    def test_when_no_checkpoint_and_no_chats_then_returns_none(self, tmp_path):
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = _find_latest_gemini_uuid("art-1")
-        assert result is None
-
-
-# --- _get_chat_last_message_timestamp ---
-
-
-class TestGetChatLastMessageTimestamp:
-    def test_when_messages_exist_then_returns_last_timestamp(self, tmp_path):
-        chat = tmp_path / "session.json"
-        chat.write_text(
-            json.dumps(
-                {
-                    "messages": [
-                        {"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": []},
-                        {"timestamp": "1970-01-01T00:33:20Z", "type": "gemini", "content": []},
-                    ]
-                }
-            )
-        )
-        result = _get_chat_last_message_timestamp(chat)
-        assert result == 2000.0
-
-    def test_when_empty_messages_then_returns_zero(self, tmp_path):
-        chat = tmp_path / "session.json"
-        chat.write_text(json.dumps({"messages": []}))
-        result = _get_chat_last_message_timestamp(chat)
-        assert result == 0.0
-
-    def test_when_invalid_json_then_returns_zero(self, tmp_path):
-        chat = tmp_path / "session.json"
-        chat.write_text("not json {{{")
-        result = _get_chat_last_message_timestamp(chat)
-        assert result == 0.0
-
-    def test_when_file_missing_then_returns_zero(self, tmp_path):
-        result = _get_chat_last_message_timestamp(tmp_path / "nonexistent.json")
-        assert result == 0.0
-
-    def test_when_timestamp_missing_from_last_message_then_returns_zero(self, tmp_path):
-        chat = tmp_path / "session.json"
-        chat.write_text(json.dumps({"messages": [{"type": "user", "content": []}]}))
-        result = _get_chat_last_message_timestamp(chat)
-        assert result == 0.0
-
-
-# --- _convert_checkpoint_to_chat ---
-
-
-class TestConvertCheckpointToChat:
-    def _make_checkpoint(self, gemini_tmp: Path, ai_name: str, history: list, mtime: float = 1000.0) -> Path:
-        gemini_tmp.mkdir(parents=True, exist_ok=True)
-        path = gemini_tmp / f"checkpoint-{ai_name}.json"
-        path.write_text(json.dumps({"history": history, "authType": "oauth"}))
-        os.utime(path, (mtime, mtime))
-        return path
-
-    def test_when_checkpoint_exists_then_creates_chat_file(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        history = [
-            {"role": "user", "parts": [{"text": "hello"}]},
-            {"role": "model", "parts": [{"text": "hi there"}]},
-        ]
-        self._make_checkpoint(gemini_tmp, "art-1", history)
-        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        assert result is not None
-        chats_dir = gemini_tmp / "chats"
-        chat_files = list(chats_dir.glob("session-*.json"))
-        assert len(chat_files) == 1
-
-    def test_when_called_twice_then_idempotent(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        history = [{"role": "user", "parts": [{"text": "hello"}]}]
-        self._make_checkpoint(gemini_tmp, "art-1", history)
-        uuid1 = _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        uuid2 = _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        assert uuid1 == uuid2
-        assert len(list((gemini_tmp / "chats").glob("session-*.json"))) == 1
-
-    def test_maps_model_role_to_gemini_type(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        history = [
-            {"role": "user", "parts": [{"text": "question"}]},
-            {"role": "model", "parts": [{"text": "answer"}]},
-        ]
-        self._make_checkpoint(gemini_tmp, "art-1", history)
-        _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
-        data = json.loads(chat_file.read_text())
-        types = [m["type"] for m in data["messages"]]
-        assert types == ["user", "gemini"]
-
-    def test_project_hash_matches_sha256_of_project_root(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        project_root = "/home/user/projects/myproject/.worktrees/art-1"
-        (gemini_tmp).mkdir(parents=True, exist_ok=True)
-        (gemini_tmp / ".project_root").write_text(project_root)
-        history = [{"role": "user", "parts": [{"text": "hi"}]}]
-        self._make_checkpoint(gemini_tmp, "art-1", history)
-        _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
-        data = json.loads(chat_file.read_text())
-        expected_hash = hashlib.sha256(project_root.encode()).hexdigest()
-        assert data["projectHash"] == expected_hash
-
-    def test_chat_file_mtime_matches_checkpoint_mtime(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        history = [{"role": "user", "parts": [{"text": "hi"}]}]
-        self._make_checkpoint(gemini_tmp, "art-1", history, mtime=1234567890.0)
-        _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
-        assert abs(chat_file.stat().st_mtime - 1234567890.0) < 1.0
-
-    def test_when_no_checkpoint_then_returns_none(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        gemini_tmp.mkdir(parents=True)
-        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        assert result is None
-
-    def test_when_checkpoint_empty_history_then_returns_none(self, tmp_path):
-        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
-        gemini_tmp.mkdir(parents=True)
-        (gemini_tmp / "checkpoint-art-1.json").write_text(json.dumps({"history": [], "authType": "oauth"}))
-        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
-        assert result is None
-
-    def test_uuid_is_stable_across_calls(self, tmp_path):
-        raw = b'{"history": [{"role": "user", "parts": [{"text": "test"}]}]}'
-        uuid1 = _checkpoint_to_chat_uuid(raw)
-        uuid2 = _checkpoint_to_chat_uuid(raw)
-        assert uuid1 == uuid2
-
-    def test_uuid_has_valid_format(self, tmp_path):
-        raw = b'{"history": [{"role": "user", "parts": [{"text": "test"}]}]}'
-        uuid = _checkpoint_to_chat_uuid(raw)
-        parts = uuid.split("-")
-        assert len(parts) == 5
-        assert len(parts[0]) == 8
-        assert parts[2].startswith("4")  # version 4
-
-
-# --- get_latest_gemini_session_id ---
-
-
-class TestGetLatestGeminiSessionId:
-    def test_latest_gemini_id_when_ai_name_provided_then_scans_chats_first(self, tmp_path):
-        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
-        chats.mkdir(parents=True)
-        (chats / "session-abc.json").write_text('{"sessionId": "chats-uuid"}')
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch("ai_cli.config._get_main_project_name", return_value=None):
-                result = get_latest_gemini_session_id("art-1")
-        assert result == "chats-uuid"
-
-    def test_latest_gemini_id_when_ai_name_provided_but_no_chats_then_returns_none(self, tmp_path):
-        # Sessions started via /resume load (checkpoint restore) don't write a chat
-        # file, so their UUID in logs.json cannot be used for -r resume.  We must
-        # return None so the caller falls back to /resume load again.
-        logs_dir = tmp_path / ".gemini" / "tmp" / "artelier"
-        logs_dir.mkdir(parents=True)
-        (logs_dir / "logs.json").write_text('{"sessionId": "logs-uuid"}')
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "artelier"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    result = get_latest_gemini_session_id("art-1")
-        assert result is None
-
-    def test_latest_gemini_id_when_logs_exist_then_returns_last(self, tmp_path):
-        logs_dir = tmp_path / ".gemini" / "tmp" / "testproject"
-        logs_dir.mkdir(parents=True)
-        logs_file = logs_dir / "logs.json"
-        logs_file.write_text('{"sessionId": "abc123"}\n{"sessionId": "def456"}\n')
-
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "testproject"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    result = get_latest_gemini_session_id()
-        assert result == "def456"
-
-    def test_latest_gemini_id_when_no_logs_then_returns_none(self, tmp_path):
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "noproject"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    result = get_latest_gemini_session_id()
-        assert result is None
-
-
-class TestGetLatestGeminiEdgeCases:
-    def test_latest_gemini_id_when_main_project_set_then_checks_both_paths(self, tmp_path):
-        main_logs = tmp_path / ".gemini" / "tmp" / "myproject" / "logs.json"
-        main_logs.parent.mkdir(parents=True)
-        main_logs.write_text('{"sessionId": "main-id-123"}\n')
-
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "otherproject"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.session._get_main_project_name", return_value="myproject"):
-                    result = get_latest_gemini_session_id()
-        assert result == "main-id-123"
-
-    def test_latest_gemini_id_when_large_file_then_seeks_tail(self, tmp_path):
-        logs_dir = tmp_path / ".gemini" / "tmp" / "bigproject"
-        logs_dir.mkdir(parents=True)
-        logs_file = logs_dir / "logs.json"
-        padding = "x" * 5000 + "\n"
-        logs_file.write_text(padding + '{"sessionId": "tail-id-456"}\n')
-
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "bigproject"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.session._get_main_project_name", return_value=None):
-                    result = get_latest_gemini_session_id()
-        assert result == "tail-id-456"
-
-
-class TestGetLatestGeminiSessionIdException:
-    def test_get_latest_gemini_session_id_when_open_raises_then_returns_none(self, tmp_path):
-        """Covers lines 241-242: exception in open() inside get_latest_gemini_session_id."""
-        log_dir = tmp_path / ".gemini" / "tmp" / "testproj"
-        log_dir.mkdir(parents=True)
-        log_file = log_dir / "logs.json"
-        log_file.write_bytes(b'{"sessionId": "abc"}')
-
-        real_path_open = Path.open
-
-        def fail_on_log(self, *args, **kwargs):
-            if str(self).endswith("logs.json"):
-                raise OSError("permission denied")
-            return real_path_open(self, *args, **kwargs)
-
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch("pathlib.Path.cwd", return_value=tmp_path / "projects" / "testproj"):
-                with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    with patch("pathlib.Path.open", new=fail_on_log):
-                        result = get_latest_gemini_session_id()
-        assert result is None
 
 
 # --- resolve_session ---
@@ -1918,24 +1535,6 @@ class TestCleanupStaleSessions:
             cleanup_stale_sessions({})
 
 
-# --- get_latest_gemini_session_id — exception branch ---
-
-
-class TestProjectRegistryExceptionBranches:
-    def test_get_latest_gemini_session_id_when_read_fails_then_returns_none(self, tmp_path):
-        """Covers lines 241-242: exception reading logs.json."""
-        logs_dir = tmp_path / ".gemini" / "tmp" / "testproj"
-        logs_dir.mkdir(parents=True)
-        logs_file = logs_dir / "logs.json"
-        logs_file.write_text("")  # empty file
-
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "testproj"):
-            with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    result = get_latest_gemini_session_id()
-        assert result is None
-
-
 # --- _prefix_from_session_name tests ---
 
 
@@ -1946,7 +1545,7 @@ class TestPrefixFromSessionName:
     def test_when_remote_cc_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("c-r-myproj-1") == "myproj"
 
-    def test_when_gemini_session_then_extracts_prefix(self):
+    def test_when_agy_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("g-myproj-3") == "myproj"
 
     def test_when_pi_session_then_extracts_prefix(self):
@@ -1955,7 +1554,7 @@ class TestPrefixFromSessionName:
     def test_when_codex_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("cx-myproj-3") == "myproj"
 
-    def test_when_remote_gemini_session_then_extracts_prefix(self):
+    def test_when_remote_agy_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("g-r-myproj-1") == "myproj"
 
     def test_when_unrecognised_format_then_returns_empty(self):

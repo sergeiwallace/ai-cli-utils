@@ -533,7 +533,7 @@ def validate_launch_input(
 
 def launch_title(value: str) -> str:
     """The title carried by a qualified engine/tmux request, or the bare input."""
-    return re.sub(r"^(?:cx|c|g|p|claude|gemini|pi|codex)(?:-r)?-", "", value)
+    return re.sub(r"^(?:cx|c|g|p|claude|agy|pi|codex)(?:-r)?-", "", value)
 
 
 def _refuse_diagnostic(label: str, title: str) -> None:

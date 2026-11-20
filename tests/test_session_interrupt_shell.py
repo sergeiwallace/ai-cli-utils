@@ -90,7 +90,7 @@ def pane_session(request, tmp_path, monkeypatch):
         "if command == 'crash': os.kill(os.getpid(), signal.SIGKILL)\n"
         "sys.exit(int(command))\n"
     )
-    for name in ("claude", "gemini", "codex"):
+    for name in ("claude", "agy", "codex"):
         (binaries / name).write_text(agent)
     (binaries / "python3").symlink_to(sys.executable)
     for binary in binaries.iterdir():

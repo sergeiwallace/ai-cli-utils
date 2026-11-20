@@ -95,7 +95,7 @@ pause 1.5
 
 # Session launches — each opens a new tab in the demo window
 open_in_new_tab "ai c 1" 20       # Claude Code session — wait for CC UI to fully render
-open_in_new_tab "ai g 1" 12       # Gemini CLI session
+open_in_new_tab "ai g 1" 12       # Antigravity session
 open_in_new_tab "ai c -R 1" 25    # Remote CC session — SSH + remote tmux + CC init
 
 # Show all active sessions
@@ -106,8 +106,8 @@ pause 1.5
 run "ai quota status"
 pause 1.5
 
-# AI passthrough query (-s 3: paid key, avoids browser OAuth in scripted context)
-run "ai gemini 'in one sentence, what does a session manager do?' -m flash -s 3"
+# Antigravity one-shot query
+run "agy --print 'in one sentence, what does a session manager do?'"
 pause 2.5
 
 # End card

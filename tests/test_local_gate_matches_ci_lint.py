@@ -8,7 +8,7 @@ been reported clean: ``uv run pyright src/`` reported
 ``main.py:3156 - error: Argument of type "Path | None" cannot be assigned to
 parameter "path" of type "Path"``, which nothing local would ever have shown.
 
-``pyright`` and ``lint_doc_alignment.py`` are now pre-commit hooks, so that specific
+``pyright`` is now a pre-commit hook, so that specific
 gap is closed. This guard is about the gap *class*: the two definitions live in two
 files that no single edit has to touch together, so the next check added to CI would
 re-open it silently and be discovered the same way -- by accident, months later.
@@ -38,7 +38,6 @@ _LOCALLY_ENFORCED: tuple[tuple[str, str], ...] = (
     (r"\bruff\s+check\b", "ruff-check"),
     (r"\bruff\s+format\b", "ruff-format"),
     (r"\bpyright\b", "pyright"),
-    (r"\bscripts/lint_doc_alignment\.py\b", "doc-alignment"),
 )
 
 # Lint-job commands that intentionally have no local counterpart. A reason is required

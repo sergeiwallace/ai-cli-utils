@@ -38,8 +38,8 @@ def test_given_a_launch_phase_when_reported_then_it_uses_prefixed_stderr_grammar
 def test_given_quiet_launch_when_reported_then_it_emits_no_progress(capsys):
     reporter = LaunchReporter(quiet=True)
 
-    reporter.start(engine="Gemini", mode="remote, bare")
-    reporter.handoff(engine="Gemini", session="g-r-myproject-1")
+    reporter.start(engine="Antigravity", mode="remote, bare")
+    reporter.handoff(engine="Antigravity", session="g-r-myproject-1")
 
     assert capsys.readouterr().err == ""
 

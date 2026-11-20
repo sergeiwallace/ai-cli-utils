@@ -222,7 +222,7 @@ def test_given_a_title_that_only_resembles_a_numbered_copy_when_searched_then_it
 
 def test_given_bare_claude_when_no_prior_session_then_passes_name_without_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", "agy", False, [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "kg-1"
@@ -233,7 +233,7 @@ def test_given_bare_claude_when_prior_session_exists_then_resumes_its_session_id
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, "agy", False, [])
 
     assert argv[-4:] == ["--resume", transcript.stem, "--name", "kg-1"]
 
@@ -244,7 +244,7 @@ def test_given_two_named_transcripts_when_bare_claude_resumes_then_uses_only_exa
     project_dir = _cc_project_dir(target)
     matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
     _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, "agy", False, [])
 
     assert argv[-4:] == ["--resume", matching.stem, "--name", "proj-1"]
 
@@ -253,7 +253,7 @@ def test_given_only_different_named_transcript_when_bare_claude_launches_then_do
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, "agy", False, [])
 
     assert "--resume" not in argv
 
@@ -363,7 +363,7 @@ def test_given_lone_mismatched_transcript_and_interactive_yes_when_bare_claude_l
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000006", "proj-1-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, "agy", False, [])
 
     assert argv[-4:] == ["--resume", transcript.stem, "--name", "proj-1"]
 
@@ -376,7 +376,7 @@ def test_given_lone_mismatched_transcript_and_interactive_no_when_bare_claude_la
     target = tmp_path / "wt"
     _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000007", "proj-1-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, "agy", False, [])
 
     assert "--resume" not in argv
 
@@ -390,7 +390,7 @@ def test_given_two_mismatched_transcripts_when_bare_claude_launches_then_does_no
     _write_transcript(project_dir, "56565656-0000-4000-8000-000000000008", "other-1")
     _write_transcript(project_dir, "56565656-0000-4000-8000-000000000009", "other-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, "agy", False, [])
 
     assert "--resume" not in argv
 
@@ -408,7 +408,7 @@ def test_given_two_eligible_transcripts_when_bare_claude_resumes_then_warns_and_
     os.utime(older, (1, 1))
     os.utime(newer, (2, 2))
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, "agy", False, [])
 
     assert argv[-4:] == ["--resume", newer.stem, "--name", "kg-1"]
     stderr = capsys.readouterr().err
@@ -426,7 +426,7 @@ def test_given_live_title_matched_session_when_bare_claude_then_refuses_duplicat
     monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, pid))
 
     with pytest.raises(_LiveClaudeSessionError) as exc_info:
-        _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+        _bare_engine_command("c", "kg-1", target, "agy", False, [])
 
     assert exc_info.value.title == "kg-1"
     assert exc_info.value.pid == pid
@@ -522,7 +522,7 @@ def test_given_stale_registry_record_when_bare_claude_then_still_resumes(tmp_pat
     os.utime(transcript, (1, 1))
     _write_session_registry(tmp_path, _reaped_pid(), session_id, proc_start=12345)
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, "agy", False, [])
 
     assert argv[-4:] == ["--resume", session_id, "--name", "kg-1"]
     assert "still running" not in capsys.readouterr().err
@@ -671,24 +671,9 @@ def test_given_unlinkable_dead_record_when_checked_then_walk_continues(tmp_path,
 
 def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", ["--model", "opus"])
+    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", "agy", False, ["--model", "opus"])
 
     assert argv[-2:] == ["--model", "opus"]
-
-
-def test_given_bare_gemini_with_uuid_when_built_then_resumes_that_uuid(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", "uuid-123", "gemini", "-s", [])
-
-    assert argv[:2] == ["gemini", "-y"]
-    assert "-r" in argv and argv[argv.index("-r") + 1] == "uuid-123"
-
-
-def test_given_bare_gemini_without_uuid_when_built_then_falls_back_to_resume_load(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", None, "gemini", "-s", [])
-
-    assert "-i" in argv and argv[argv.index("-i") + 1] == "/resume load kg-1"
 
 
 # --- index discovery without tmux ---------------------------------------------
@@ -1089,7 +1074,7 @@ def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_t
 
     monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
 
-    argv = _bare_engine_command("c", "hub-2", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "hub-2", target, "agy", False, [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "hub-2"

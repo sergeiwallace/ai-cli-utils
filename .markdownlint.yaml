@@ -45,7 +45,7 @@ MD047: false
 MD007: false
 
 # Don't enforce ordered list prefix style — some lists deliberately start at non-1
-# (e.g. CLAUDE.md/GEMINI.md session startup steps continue numbering from the global config)
+# (e.g. CLAUDE.md session startup steps continue numbering from the global config)
 MD029: false
 
 # Don't require language on fenced code blocks — many design/plan docs use plain blocks

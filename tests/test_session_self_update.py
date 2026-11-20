@@ -36,15 +36,15 @@ def _script(engine="c", **kw):
 
 def test_task_list_namespace_pin_is_guarded_to_claude_engine():
     """The CLAUDE_CODE_TASK_LIST_ID export is runtime-guarded to CC (`engine == c`)
-    so it pins the task namespace for Claude sessions but never for Gemini ones.
+    so it pins the task namespace for Claude sessions but never for Antigravity ones.
     The literal is present in both templates; the guard is what makes it CC-only."""
     guarded = '[[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"'
     cc = _script("c")
     gg = get_engine_script("g", "job-1", "g-job-1", "g-job-", "job", worktree_dir="/tmp/wt")
     assert guarded in cc and f"engine={shlex.quote('c')}" in cc
-    # Same guarded line in the Gemini template, but engine="g" makes it a no-op at runtime.
+    # Same guarded line in the Antigravity template, but engine="g" makes it a no-op at runtime.
     assert guarded in gg and f"engine={shlex.quote('g')}" in gg
-    # The export must never appear unguarded (which would set it for Gemini too).
+    # The export must never appear unguarded (which would set it for Antigravity too).
     assert "export CLAUDE_CODE_TASK_LIST_ID" not in gg.replace(guarded, "")
 
 

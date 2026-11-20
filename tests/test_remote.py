@@ -195,6 +195,20 @@ def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(ca
     assert mock_probe.called
 
 
+def test_given_an_agy_conversation_when_launched_remotely_then_ssh_passes_the_resume_flag():
+    config = {"remote": {"host": "example.com", "user": "user", "transport": "ssh"}}
+    conversation = "11111111-2222-4333-8444-555555555555"
+    runner = _run_cli_with_args(
+        ["ai", "g", "1", "--remote", "--", "--conversation", conversation],
+        config,
+        capture_ssh_runner=True,
+    )
+
+    runner.assert_called_once()
+    remote_shell = shlex.split(runner.call_args.args[0][-1])
+    assert shlex.split(remote_shell[-1])[-3:] == ["--", "--conversation", conversation]
+
+
 def test_remote_flag_when_host_configured_then_sshs_to_host():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     # Asserted against the ssh argv list rather than a joined shell string: this
@@ -848,7 +862,7 @@ class TestRemoteSessionIterm2Emit:
             ("c-r-session-2", ["ai", "internal", "cleanup-session-files", "c-r-session-2"]),
         ]
 
-    def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):
+    def test_when_remote_agy_then_emit_called_with_agy_engine(self):
         _, mock_emit, _, _ = self._run_remote(["ai", "g", "2", "--remote"])
         assert mock_emit.called
         emit_engine = mock_emit.call_args[0][1]

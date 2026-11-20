@@ -9,6 +9,7 @@ import shlex
 import shutil
 import sys
 
+from . import agy as _agy
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
 from .iterm2_restore import LAUNCH_REASON_VAR
@@ -216,7 +217,6 @@ def get_engine_script(
     session: str,
     prefix: str,
     project_prefix: str,
-    session_id_uuid: str | None = None,
     sandbox: bool = False,
     worktree_dir: str | None = None,
     notify: bool = False,
@@ -224,15 +224,17 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    gemini_cmd: str = "gemini",
+    agy_cmd: str = "agy",
+    agy_isolated: bool | None = None,
+    agy_args: list[str] | None = None,
     pi_provider: str = "openai-codex",
     launch_log_path: str | None = None,
 ) -> str:
-    # Validate UUID before interpolating into bash script (defense-in-depth)
-    if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
-        session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
-    sandbox_flag = "-s" if sandbox else "--no-sandbox"
+    agy_isolated = worktree_dir is not None if agy_isolated is None else agy_isolated
+    agy_launch = shlex.join(
+        _agy.launch_command(agy_cmd, ai_name, sandbox=sandbox, isolated=agy_isolated, extra_args=agy_args or [])
+    )
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
     shell = {
@@ -241,7 +243,6 @@ def get_engine_script(
         "engine": shlex.quote(engine),
         "prefix": shlex.quote(prefix),
         "project_prefix": shlex.quote(project_prefix),
-        "uuid": shlex.quote(session_id_uuid or ""),
         "project_name": shlex.quote(project_name),
         "launch_log_path": shlex.quote(launch_log_path or ""),
     }
@@ -307,7 +308,6 @@ def get_engine_script(
             "session": session,
             "prefix": prefix,
             "project_prefix": project_prefix,
-            "session_id_uuid": session_id_uuid or "",
             "sandbox": sandbox,
             "worktree_dir": worktree_dir or "",
             "notify": notify,
@@ -315,7 +315,7 @@ def get_engine_script(
             "project_name": project_name,
             "iterm2_slot": iterm2_slot or "",
             "iterm2_cfg": iterm2_cfg or {},
-            "gemini_cmd": gemini_cmd,
+            **({"agy_cmd": agy_cmd, "agy_isolated": agy_isolated, "agy_args": agy_args or []} if engine == "g" else {}),
             "pi_provider": pi_provider,
             "launch_log_path": launch_log_path or "",
         }
@@ -878,6 +878,12 @@ def get_engine_script(
           break
         fi
     # BEGIN RUN STATE startup-failure
+        if (( _child_status == 126 )); then
+          _ai_persist_exit unknown '{{"reason":"Antigravity executable could not start"}}'
+          # Keep the terminal open so an attaching user can read the diagnostic.
+          [[ -t 0 ]] && _supervisor_return_to_shell=true
+          break
+        fi
         if (( _child_status == 76 )); then
           _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
           break
@@ -1242,7 +1248,6 @@ def get_engine_script(
     fi
     _template_version={shlex.quote(_template_version)}
     _template_commit={shlex.quote(_template_commit)}
-    uuid={shell["uuid"]}
     project_prefix={shell["project_prefix"]}
     project_name={shell["project_name"]}
     # One mtime probe, GNU form FIRST, validated to be an integer.
@@ -1295,8 +1300,6 @@ def get_engine_script(
     if [[ "$engine" == "c" ]]; then
       prompt_file="$_ai_state_dir/cc-resume-prompt-$tmux_session"
     else
-      reload_file="$_ai_state_dir/gg-reload-$tmux_session"
-      restart_file="$_ai_state_dir/gg-restart-$tmux_session"
       prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
@@ -1318,20 +1321,6 @@ def get_engine_script(
       while true; do
         (( counter++ ))
 
-        if [[ "$engine" == "g" && -f "$reload_file" ]]; then
-          rm -f "$reload_file"
-          tmux send-keys -t "$tmux_session" Escape
-          sleep 0.2
-          tmux send-keys -t "$tmux_session" C-u
-          tmux send-keys -t "$tmux_session" "/memory reload" C-m
-        fi
-        if [[ "$engine" == "g" && -f "$restart_file" ]]; then
-          rm -f "$restart_file"
-          tmux send-keys -t "$tmux_session" Escape
-          sleep 0.2
-          tmux send-keys -t "$tmux_session" C-u
-          tmux send-keys -t "$tmux_session" "R"
-        fi
         # One tick per second — every duration in this loop is counted in ticks
         # ("counter >= 10" == 10s, "counter % 30" == every 30s). This must actually
         # block: `read -t 1 < /dev/null` does not, because /dev/null returns EOF
@@ -1399,7 +1388,7 @@ def get_engine_script(
       local type_sym="" sym=""
       [[ "$_iterm2_show_type_sym" == "1" ]] && {{
         [[ "$stype" == "cc" ]]     && type_sym="* "
-        [[ "$stype" == "gemini" ]] && type_sym="✦ "
+        [[ "$stype" == "agy" ]] && type_sym="✦ "
         [[ "$stype" == "pi" ]]     && type_sym="π "
       }}
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
@@ -1433,7 +1422,7 @@ def get_engine_script(
     # END RUN STATE
     _session_num="${{_session_num:-1}}"
     _session_type="cc"
-    [[ "$engine" == "g" ]] && _session_type="gemini"
+    [[ "$engine" == "g" ]] && _session_type="agy"
     [[ "$engine" == "p" ]] && _session_type="pi"
 
     # Export for CC Notification hook to use
@@ -1550,10 +1539,10 @@ def get_engine_script(
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
-      if [[ -f "scripts/session-broker.py" ]] && $first_run; then
+      if [[ "$engine" == "c" && -f "scripts/session-broker.py" ]] && $first_run; then
         # Run async so CC launches immediately. Context file written in background;
         # available by the time the first real prompt is processed.
-        timeout 20 python3 scripts/session-broker.py --engine "$engine" &>/dev/null &
+        timeout 20 python3 scripts/session-broker.py &>/dev/null &
       fi
 
       # Pre-launch settings override. Some Claude Code feature checks resolve
@@ -1721,10 +1710,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
         elif [[ "$engine" == "g" ]]; then
-          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          run_agent {agy_launch} --prompt-interactive "$resume_msg"
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -1751,9 +1737,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         elif [[ "$engine" == "g" ]]; then
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          run_agent {agy_launch}
         elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -1767,6 +1751,11 @@ with open(path, 'w') as f:
     # BEGIN BACKGROUND ATTACH prompted-end
       fi
     # END BACKGROUND ATTACH
+
+      # The Antigravity adapter already reported the executable failure.
+      if [[ "$engine" == "g" ]] && $agent_attempted && (( agent_exit_code == 126 )); then
+        exit 126
+      fi
 
     # BEGIN SHELL RETURN interrupt-exit
       # Status 130 is a deliberate stop. So is a clean exit inside the startup
@@ -1841,7 +1830,7 @@ with open(path, 'w') as f:
         agent_exit_count=$((agent_exit_count + 1))
         printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
         if (( agent_exit_count >= 3 )); then
-          _ai_emit info exit "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+          _ai_emit info exit "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai $engine $ai_name' to retry."
     # BEGIN RUN STATE consecutive-failures
           _ai_persist_exit unknown '{{"reason":"three consecutive agent exits"}}'
     # END RUN STATE
@@ -1861,20 +1850,12 @@ with open(path, 'w') as f:
 
       {notify_cmd}
 
-      if [[ "$engine" == "g" ]]; then
-        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
-        if [[ -n "$new_uuid" ]]; then
-          uuid="$new_uuid"
-          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
-        fi
-      fi
-
       first_run=false
       # Mark session as started so hot-reload exec skips first-run-only setup blocks.
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        _ai_emit info exit "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+        _ai_emit info exit "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai $engine $ai_name' to retry."
     # BEGIN RUN STATE quick-failure
         _ai_persist_exit unknown '{{"reason":"agent exited too quickly"}}'
     # END RUN STATE

@@ -4,7 +4,6 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 - ``refresh-template`` internal handler (316-356) + unknown action (449-450)
 - ``_cli_group`` no-subcommand (1397-1398)
 - ``cmd_quota_statusline_part`` / ``cmd_quota_sync`` (1554-1563)
-- ``cmd_spend_gemini_cli`` (1616-1618)
 - ``cmd_cc_usage_push`` + ``cmd_cc_usage_status`` (1629-1653)
 - ``cmd_watch_vpn`` / ``cmd_ps`` (1793-1796, 1806-1808)
 - ``sync repair-worktree`` / ``cleanup`` / unknown (1846-1887)
@@ -106,7 +105,6 @@ class TestInternalRefreshTemplate:
             "session": session,
             "prefix": "c-myproject-",
             "project_prefix": "myproject",
-            "session_id_uuid": "",
             "sandbox": False,
             "worktree_dir": "",
             "notify": False,
@@ -114,7 +112,6 @@ class TestInternalRefreshTemplate:
             "project_name": "myproject",
             "iterm2_slot": "",
             "iterm2_cfg": {},
-            "gemini_cmd": "gemini",
         }
 
     def test_given_no_session_arg_when_refresh_template_then_exits_1(self):
@@ -223,17 +220,6 @@ class TestCmdQuotaMiscDispatch:
     def test_given_quota_sync_when_invoked_then_dispatches(self):
         with patch("ai_cli.quota.quota_sync_from_remote", return_value=0) as mock_fn:
             exit_code, _, _ = run_cli(["ai", "quota", "sync"])
-        assert exit_code == 0
-        mock_fn.assert_called_once()
-
-
-# --- `ai spend gemini` ---
-
-
-class TestCmdSpendGemini:
-    def test_given_spend_gemini_when_invoked_then_dispatches(self):
-        with patch("ai_cli.spend.cmd_spend_gemini", return_value=0) as mock_fn:
-            exit_code, _, _ = run_cli(["ai", "spend", "gemini"])
         assert exit_code == 0
         mock_fn.assert_called_once()
 

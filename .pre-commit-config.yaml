@@ -246,15 +246,6 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-      # doc-alignment (AI-CLI-ckzk): the other check CI's lint job ran and the local
-      # gate did not. 0.26s measured, so unlike pyright it is cheap enough to run on
-      # every commit rather than only before a push.
-      - id: doc-alignment
-        name: doc alignment (shared CLAUDE.md/GEMINI.md sections match)
-        entry: python3 scripts/lint_doc_alignment.py
-        language: system
-        pass_filenames: false
-        always_run: true
       # The CLI reference and the README command index are generated from the command
       # declarations. A changed help string, command or option leaves them stale; the
       # check writes nothing and prints the diff and the command that regenerates them.

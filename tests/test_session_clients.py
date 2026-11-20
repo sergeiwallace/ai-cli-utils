@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from ai_cli import session_clients as sc
+from ai_cli.agy import conversation_cache
 from ai_cli.cc_migrate import cc_project_dir
 
 TITLE = "myrepo-box-3"
@@ -55,22 +56,21 @@ def seed(client: str, home: Path, worktree: Path) -> Path:
             {"type": "session", "id": "p1", "cwd": str(worktree)},
             {"type": "session_info", "id": "x", "name": TITLE},
         )
-    project_id = "myrepo-box-3"
-    (home / ".gemini").mkdir(parents=True, exist_ok=True)
-    (home / ".gemini" / "projects.json").write_text(json.dumps({"projects": {str(worktree): project_id}}))
-    (home / ".gemini" / "tmp" / project_id).mkdir(parents=True, exist_ok=True)
-    (home / ".gemini" / "tmp" / project_id / ".project_root").write_text(f"{worktree}\n")
-    return _jsonl(home / ".gemini" / "tmp" / project_id / "chats" / "session-1.jsonl", {"sessionId": "g1"})
+    cache = conversation_cache(home)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({str(worktree): "11111111-2222-4333-8444-555555555555"}))
+    return cache
 
 
 def make_root(client: str, home: Path) -> None:
     root = sc.adapter(client, home).store_root()
     root.mkdir(parents=True, exist_ok=True)
-    if client == "gemini":
-        (home / ".gemini" / "projects.json").write_text(json.dumps({"projects": {}}))
+    if client == "agy":
+        conversation_cache(home).write_text("{}")
 
 
 CLIENTS = list(sc.ADAPTERS)
+FULL_STORE_CLIENTS = [client for client in CLIENTS if client != "agy"]
 
 
 @pytest.mark.parametrize("client", CLIENTS)
@@ -80,7 +80,7 @@ def test_given_a_record_for_the_worktree_when_probed_then_it_is_present(client, 
     assert sc.adapter(client, home).probe_transcript(worktree, TITLE).state == sc.PRESENT
 
 
-@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("client", FULL_STORE_CLIENTS)
 def test_given_an_accessible_store_with_no_record_when_probed_then_it_is_absent(client, home, worktree):
     make_root(client, home)
 
@@ -115,11 +115,10 @@ def test_given_a_record_that_does_not_parse_when_probed_then_it_is_unknown(clien
     assert sc.adapter(client, home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
 
 
-def test_given_an_unreadable_gemini_registry_when_probed_then_the_mapping_is_invalid_and_unknown(home, worktree):
-    seed("gemini", home, worktree)
-    (home / ".gemini" / "projects.json").write_text("{not json")
+def test_given_an_unreadable_agy_cache_when_probed_then_the_mapping_is_invalid_and_unknown(home, worktree):
+    seed("agy", home, worktree).write_text("{not json")
 
-    assert sc.adapter("gemini", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
+    assert sc.adapter("agy", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
 
 
 def test_given_a_session_without_a_worktree_when_probed_then_its_title_finds_the_transcript(home, worktree):
@@ -129,7 +128,7 @@ def test_given_a_session_without_a_worktree_when_probed_then_its_title_finds_the
     assert sc.adapter("claude-code", home).probe_transcript(None, NEW_TITLE).state == sc.ABSENT
 
 
-@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("client", FULL_STORE_CLIENTS)
 def test_given_a_record_when_renamed_then_only_the_title_and_path_fields_change_and_the_id_stays(
     client, home, worktree, tmp_path
 ):
@@ -146,7 +145,7 @@ def test_given_a_record_when_renamed_then_only_the_title_and_path_fields_change_
     assert result.changed
 
 
-@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("client", FULL_STORE_CLIENTS)
 def test_given_a_rename_when_rolled_back_then_every_record_is_byte_for_byte_as_before(client, home, worktree):
     path = seed(client, home, worktree)
     adapter = sc.adapter(client, home)
@@ -298,18 +297,18 @@ def test_given_an_unreadable_pi_session_in_another_directory_when_probed_then_it
     assert sc.adapter("pi", home).probe_transcript(worktree, TITLE).state == sc.ABSENT
 
 
-def test_given_many_gemini_projects_when_a_worktree_is_looked_up_then_only_its_project_chats_are_read(
-    home, worktree, reads
-):
-    own = seed("gemini", home, worktree)
-    projects = {str(worktree): own.parent.parent.name}
-    for index, other in enumerate(_other_worktrees(worktree)):
-        _jsonl(home / ".gemini" / "tmp" / f"p{index}" / "chats" / "session-1.jsonl", {"sessionId": f"g{index}"})
-        projects[str(other)] = f"p{index}"
-    (home / ".gemini" / "projects.json").write_text(json.dumps({"projects": projects}))
-    reads.clear()
+def test_given_omitted_agy_workspace_when_probed_then_absence_cannot_be_proven(home, worktree):
+    make_root("agy", home)
 
-    records = sc.adapter("gemini", home).records_for(worktree)
+    assert sc.adapter("agy", home).probe_transcript(worktree, TITLE).state == sc.UNKNOWN
 
-    assert [record.path for record in records] == [own]
-    assert {path for _, path in reads if path.suffix == ".jsonl"} == {own}
+
+def test_given_agy_cache_when_renamed_then_antigravity_data_is_preserved(home, worktree):
+    path = seed("agy", home, worktree)
+    before = path.read_bytes()
+    adapter = sc.adapter("agy", home)
+    [record] = adapter.records_for(worktree)
+
+    with pytest.raises(ValueError, match="rename the Antigravity conversation"):
+        adapter.rename(record, TITLE, NEW_TITLE, worktree.parent / NEW_TITLE)
+    assert path.read_bytes() == before

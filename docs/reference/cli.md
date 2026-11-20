@@ -33,7 +33,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](#ai-g) | Launch an Antigravity (agy) session |
 | [`ai import-names`](#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -100,8 +100,6 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai set-name-verdict`](#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -130,7 +128,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 ai [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-Unified AI CLI for Claude, Gemini, Pi, and Codex.
+Unified AI CLI for Claude, Antigravity, Pi, and Codex.
 
 Every command and subcommand is listed below with its one-line use; `ai COMMAND -h` prints a command's full help.
 
@@ -587,7 +585,7 @@ Session names: find pool names by status, verdict scope, holder and hold state, 
 ai g [OPTIONS] [NAME]
 ```
 
-Launch a Gemini CLI session
+Launch an Antigravity (agy) session
 
 Arguments:
 
@@ -1643,30 +1641,6 @@ ai show-name-config [OPTIONS]
 ```
 
 Session names: print each naming setting, its value and the layer that set it
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend
-
-```text
-ai spend [OPTIONS] COMMAND [ARGS]...
-```
-
-Usage-cost reports
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend gemini
-
-```text
-ai spend gemini [OPTIONS]
-```
-
-Report historical Gemini CLI spend from local logs
 
 | Short | Long | Value | Description |
 |---|---|---|---|

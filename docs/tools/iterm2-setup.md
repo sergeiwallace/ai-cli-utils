@@ -172,7 +172,7 @@ type parents to iTerm2's built-in `Default` profile, which is guaranteed to exis
 generator supplies the name, tab color, icon, key mappings and Semantic History itself. So a
 fresh machine needs no iTerm2 profile setup at all — launch a session and the profile appears.
 
-The named per-type profiles (`ClaudeCode`, `GeminiCLI`, `ShellUtility`, `Caffeinate`,
+The named per-type profiles (`ClaudeCode`, `ShellUtility`, `Caffeinate`,
 `ChromeDebug`, `SSHForward`) were **retired 2026-07-05**: the generator became the single
 source of truth for session profiles, which removed a whole class of "works on my machine"
 setup drift. `_BASE_PROFILES` in `src/ai_cli/icon_generator.py` is where a type's parent is

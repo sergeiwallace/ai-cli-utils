@@ -99,12 +99,6 @@ jobs:
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright src/
-      - if: runner.environment == 'github-hosted'
-        run: python scripts/lint_doc_alignment.py
-      # A self-hosted runner need not put an unversioned `python` on PATH, so the
-      # standard-library script runs on the project interpreter there.
-      - if: runner.environment == 'self-hosted'
-        run: uv run python scripts/lint_doc_alignment.py
       # The published package declares `requires-python = ">=3.11"` while this repo
       # develops and tests on 3.14 alone (AI-CLI-dgbd). Those are different claims,
       # but the wider one still has to be falsifiable or it is just an assertion --

@@ -817,16 +817,9 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"
 
-[gemini]
-## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["session"]
-## Set true only after AI-CLI-43 confirms billing credit status.
-## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
-# paid_fallback_enabled = false
-## Command used to launch gemini-cli. Override if the binary is not on PATH
-## (e.g. "npx @google/gemini-cli" for npx-only installs).
-# command = "gemini"
+[agy]
+## Command used to launch Antigravity. Quote paths containing spaces.
+# command = "agy"
 
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
@@ -1178,16 +1171,6 @@ boot = false
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
 ## Port `ai cdp start` opens when -p/--port is not given.
-# port = 9222
-
-[gemini_billing]
-## GCP project that holds the BigQuery billing export dataset.
-## Required for `ai spend gemini` to show actual billed amounts.
-# gcp_project_id = "my-gcp-project"
-## Fully-qualified BigQuery table ID for the GCP detailed billing export.
-## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
-# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
-## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 
 [workspace]
@@ -1846,7 +1829,7 @@ def get_session_map_path(engine="c"):
     state_dir.mkdir(parents=True, exist_ok=True)
     if engine == "c":
         return Path.home() / ".claude" / "cc-sessions.json"
-    return state_dir / "gemini_sessions.json"
+    raise ValueError(f"no session map for engine {engine!r}")
 
 
 def get_session_map(engine="c"):

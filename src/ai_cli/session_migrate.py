@@ -413,9 +413,9 @@ def _watcher_holder(lock: Path) -> str | None:
     return f"its pid {pid} is running" if _config._pid_alive(pid) else None
 
 
-def _plan_session_maps(old: str, new: str, home: Path, state: Path) -> list[PlannedMove]:
+def _plan_session_maps(old: str, new: str, home: Path) -> list[PlannedMove]:
     moves: list[PlannedMove] = []
-    for path in (home / "cc-sessions.json", state / "gemini_sessions.json"):
+    for path in (home / "cc-sessions.json",):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -2116,7 +2116,7 @@ def _start_session(
 
     state_moves = _plan_state(old, new, state)
     moves += state_moves
-    map_moves = _plan_session_maps(old, new, home, state)
+    map_moves = _plan_session_maps(old, new, home)
     moves += map_moves
     iterm2_moves = _plan_iterm2(old, new, old_wt)
     moves += iterm2_moves
@@ -2448,7 +2448,7 @@ def finish_session(
         )
     moves += [PlannedMove(*line) for line in _agents.describe(agent_plan)]
     state_moves = _plan_state(old, new, state)
-    map_moves = _plan_session_maps(old, new, home, state)
+    map_moves = _plan_session_maps(old, new, home)
     old_pd, new_pd = cc_project_dir(old_wt, home), cc_project_dir(new_wt, home)
     moved = _moved_paths(
         old, new, old_wt.resolve(strict=False), new_wt, agent_plan, _agents._repos(projects, repo_root)

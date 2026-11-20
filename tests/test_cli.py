@@ -134,34 +134,6 @@ def test_given_invalid_utf8_tmux_stderr_when_decoded_then_diagnostic_is_preserve
 
 
 class TestCliDispatch:
-    def test_cli_when_internal_get_latest_gemini_id_then_calls_function(self):
-        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id"]):
-            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="abc123") as mock_fn:
-                with patch("ai_cli.config.load_config", return_value={}):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_fn.assert_called_once_with(None)
-
-    def test_cli_when_internal_get_latest_gemini_id_with_ai_name_then_passes_it(self):
-        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id", "art-1"]):
-            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="uuid") as mock_fn:
-                with patch("ai_cli.config.load_config", return_value={}):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_fn.assert_called_once_with("art-1")
-
-    def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
-        with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "session-1", "uuid123"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.config.get_session_map", return_value={}):
-                    with patch("ai_cli.config.save_session_map") as mock_save:
-                        with pytest.raises(SystemExit) as exc:
-                            cli()
-                        assert exc.value.code == 0
-                        mock_save.assert_called_once()
-
     def test_cli_when_internal_notify_then_calls_notification_manager(self):
         with patch("sys.argv", ["ai", "internal", "notify", "session1", "hello"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -238,13 +210,6 @@ class TestCliDispatch:
 
     def test_cli_when_telemetry_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "telemetry"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
-    def test_cli_when_internal_update_session_map_missing_args_then_exits_1(self):
-        with patch("sys.argv", ["ai", "internal", "update-session-map"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
@@ -568,9 +533,7 @@ class TestCliSessionSetupBranches:
         assert command[:3] == ["direnv", "exec", str(tmp_path)]
         assert command[3] == "claude"
 
-    def test_given_project_without_envrc_when_bare_gemini_starts_then_execs_engine_directly(
-        self, tmp_path, monkeypatch
-    ):
+    def test_given_project_without_envrc_when_bare_agy_starts_then_execs_engine_directly(self, tmp_path, monkeypatch):
         """With no .envrc there is nothing to load, so don't route through direnv.
 
         Requiring direnv here made the launch depend on a tool that has no work to
@@ -596,11 +559,11 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "gemini"
-        assert command[0] == "gemini"
+        assert executable == sys.executable
+        assert command[:4] == [sys.executable, "-m", "ai_cli.agy", "agy"]
 
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self, tmp_path, monkeypatch):
-        """Gemini must be launched with --no-sandbox unless -s is passed.
+        """Antigravity uses its default settings unless sandboxing is requested.
 
         ``create_worktree`` is stubbed out: without it this test created a real
         ``.worktrees/session-tst-1`` worktree (and branch) inside the developer's own
@@ -623,8 +586,7 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "--no-sandbox" in command
-        assert "-s" not in command
+        assert "--sandbox" not in command
 
     def test_cli_when_sandbox_flag_then_sandbox_true(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -644,8 +606,7 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "-s" in command
-        assert "--no-sandbox" not in command
+        assert "--sandbox" in command
 
     def test_given_owned_session_when_sandbox_launch_runs_then_kills_and_recreates(self, tmp_path):
         killed = []
@@ -1145,38 +1106,9 @@ class TestCliOncePath:
                                                     assert "direnv exec" in bash_cmd
                                                     assert "--dangerously-skip-permissions" not in bash_cmd
 
-    def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
+    def test_given_configured_agy_command_when_launched_once_then_runs_in_the_worktree(self, tmp_path):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch(
-                                "ai_cli.session.build_session_name",
-                                return_value=("g-session-research", "session-research"),
-                            ):
-                                with patch(
-                                    "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
-                                ):
-                                    with patch(
-                                        "ai_cli.config.get_session_map", return_value={"session-research": "uuid123"}
-                                    ):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
-                                                bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert "direnv exec" in bash_cmd
-                                                assert "uuid123" in bash_cmd
-
-    def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
-        with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={"agy": {"command": "agy-wrapper"}}):
                 with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
@@ -1199,7 +1131,7 @@ class TestCliOncePath:
                                                         cli()
                                                 bash_cmd = mock_exec.call_args[0][1][-1]
                                                 assert "direnv exec" in bash_cmd
-                                                assert "resume load" in bash_cmd
+                                                assert "-m ai_cli.agy agy-wrapper session-research worktree" in bash_cmd
 
 
 class TestConfigureTmuxForIterm2:
@@ -2103,9 +2035,9 @@ class TestGetEngineScript:
         assert "ai_name=session-tst-1" in script
         assert "CC_TMUX_SESSION" in script
 
-    def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
+    def test_get_engine_script_when_agy_then_contains_agy_commands(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session")
-        assert "gemini" in script
+        assert "-m ai_cli.agy agy session-tst-1 shared" in script
         assert "engine=g" in script
         assert "GG_TMUX_SESSION" in script
 
@@ -2144,27 +2076,13 @@ class TestGetEngineScript:
         script = get_engine_script("c", "session-tst-1", "c-session-tst-1", "c-session-", "session", notify=False)
         assert "ai internal notify" not in script
 
-    def test_get_engine_script_when_sandbox_then_has_s_flag(self):
+    def test_get_engine_script_when_sandbox_then_has_sandbox_flag(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session", sandbox=True)
-        assert "-s" in script
+        assert "-m ai_cli.agy agy session-tst-1 shared --sandbox" in script
 
-    def test_get_engine_script_when_no_sandbox_then_explicit_no_sandbox_flag(self):
+    def test_get_engine_script_when_no_sandbox_then_uses_the_client_default(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session", sandbox=False)
-        assert "--no-sandbox" in script
-        assert "gemini -y --no-sandbox" in script
-
-    def test_get_engine_script_when_valid_uuid_then_includes_it(self):
-        valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        script = get_engine_script(
-            "c", "session-tst-1", "c-session-tst-1", "c-session-", "session", session_id_uuid=valid_uuid
-        )
-        assert f"uuid={valid_uuid}" in script
-
-    def test_get_engine_script_when_invalid_uuid_then_clears_it(self):
-        script = get_engine_script(
-            "c", "session-tst-1", "c-session-tst-1", "c-session-", "session", session_id_uuid="../../evil; rm -rf /"
-        )
-        assert "uuid=''" in script
+        assert "--sandbox" not in script
 
     def test_get_engine_script_uses_xdg_state_dir_not_tmp(self):
         script = get_engine_script("c", "session-tst-1", "c-session-tst-1", "c-session-", "session")
@@ -3215,7 +3133,6 @@ class TestLocalProjectChdir:
                 return_value=("g-pytest-leak-guard-myproject-1", "pytest-leak-guard-myproject-1"),
             ),
             patch("ai_cli.config.get_session_map", return_value={}),
-            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch(
                 "ai_cli.session.create_worktree",
                 return_value=_successful_worktree(tmp_path, "pytest-leak-guard-myproject-1"),
@@ -3245,7 +3162,6 @@ class TestLocalProjectChdir:
                 return_value=("g-pytest-leak-guard-session-tst-1", "pytest-leak-guard-session-tst-1"),
             ),
             patch("ai_cli.config.get_session_map", return_value={}),
-            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch(
                 "ai_cli.session.create_worktree",
                 return_value=_successful_worktree(tmp_path, "pytest-leak-guard-session-tst-1"),

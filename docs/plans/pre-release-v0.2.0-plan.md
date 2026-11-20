@@ -30,6 +30,8 @@
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
+> The Gemini CLI is deprecated in favor of Antigravity (`agy`). This plan records pre-release work from 2026.
+
 ## Overview
 
 Full pre-release sequence for the next version bump and PyPI publish. Covers test quality recovery, process hygiene, privacy scrub, git history cleanup, and publish. Each phase has a hard gate before moving to the next. Phases 1–3 can partially overlap but Phase 4 (squash) must come last before Phase 5 (publish).
@@ -291,7 +293,7 @@ After Phase 4b (squash), do a full final review before version bump. Split into 
 - Feature list — reflects what's actually in v0.2.0?
 - Any screenshots or examples referencing private paths/names?
 - `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE` — nothing outdated
-- `docs/tools/ai-cli-usage.md` — current with all commands (`ai ps`, `ai gemini`, `ai layout`, etc.)?
+- `docs/tools/ai-cli-usage.md` — current with all commands (`ai ps`, `ai g`, `ai layout`, etc.)?
 - `docs/tools/iterm2-setup.md` — accurate for external users?
 - `setup.sh` — any hardcoded personal paths?
 
@@ -302,7 +304,7 @@ uv build
 pip install dist/ai_cli_utils-0.2.0-*.whl --force-reinstall
 ai --version         # expect: 0.2.0
 ai --help            # commands render correctly
-ai gemini --help
+ai g --help
 ai layout --help     # shows usage (not treated as layout name)
 ai ps                # shows process health list
 ```

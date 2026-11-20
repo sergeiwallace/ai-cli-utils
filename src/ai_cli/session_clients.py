@@ -11,7 +11,7 @@ Client     Store                                                 Working directo
 claude     ``~/.claude/projects/<slug>/*.jsonl``                 the slug; ``sessionId``; ``customTitle``
 codex      ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``      first record ``payload.cwd``, ``payload.id``
 pi         ``~/.pi/agent/sessions/--<cwd>--/*.jsonl``            first record ``cwd``, ``id``; ``session_info.name``
-gemini     ``~/.gemini/tmp/<project id>/chats/*``                ``~/.gemini/projects.json`` maps path to id
+agy        Antigravity workspace conversation cache             workspace path and conversation ID
 ========== ===================================================== ===================================
 
 ``probe_transcript`` answers ``present``, ``absent`` or ``unknown``. ``absent`` is
@@ -22,13 +22,13 @@ mapping that cannot be made, is ``unknown``, which holds the name.
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .agy import conversation_cache, read_conversations
 from .cc_migrate import RECORD_NAME_KEYS, cc_project_dir
 
 PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
@@ -131,6 +131,7 @@ def rollback(changes: Iterable[Changed]) -> list[str]:
 
 class Adapter:
     client = ""
+    can_probe_absence = True
 
     def __init__(self, home: Path | None = None) -> None:
         self.home = home if home is not None else Path.home()
@@ -393,98 +394,52 @@ class Pi(Adapter):
         return result
 
 
-class Gemini(Adapter):
-    """Gemini CLI: ``projects.json`` maps a project path to its id; chats live under that id."""
+class Antigravity(Adapter):
+    """Read Antigravity's last conversation for each workspace."""
 
-    client = "gemini"
+    client = "agy"
+    can_probe_absence = False
 
     def store_root(self) -> Path:
-        return self.home / ".gemini" / "tmp"
-
-    def registry(self) -> Path:
-        return self.home / ".gemini" / "projects.json"
-
-    def _projects(self) -> dict[str, str] | None:
-        try:
-            data = json.loads(self.registry().read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError):
-            return None
-        projects = data.get("projects") if isinstance(data, dict) else None
-        return projects if isinstance(projects, dict) else None
+        return conversation_cache(self.home).parent
 
     def _root_problem(self) -> str | None:
         problem = super()._root_problem()
         if problem:
             return problem
-        if self._projects() is None:
-            return f"gemini project registry {self.registry()} is not readable"
+        try:
+            read_conversations(conversation_cache(self.home))
+        except (OSError, ValueError):
+            return "Antigravity conversation cache is unavailable"
         return None
 
-    def _chats(self, pattern: str) -> list[Record]:
-        projects = self._projects() or {}
-        by_id = {project_id: path for path, project_id in projects.items()}
-        records: list[Record] = []
-        for chat in sorted(self.store_root().glob(pattern)):
-            if chat.suffix not in (".json", ".jsonl"):
-                continue
-            project_id = chat.parent.parent.name
-            first = _read_first_json(chat)
-            session_id = first.get("sessionId") if first else None
-            records.append(Record(self.client, chat, by_id.get(project_id), session_id, None))
-        return records
-
     def all_records(self) -> list[Record]:
-        return self._chats("*/chats/*")
+        cache = conversation_cache(self.home)
+        try:
+            conversations = read_conversations(cache)
+        except (OSError, ValueError) as exc:
+            # An inaccessible or malformed cache cannot prove a conversation is gone.
+            raise OSError(f"Antigravity conversation cache {cache} is unavailable") from exc
+        return [Record(self.client, cache, cwd, session_id, None) for cwd, session_id in conversations.items()]
 
-    def records_for(self, worktree: Path) -> list[Record]:
-        """Only the chats under the project ids ``projects.json`` maps to ``worktree``."""
-        target = str(worktree)
-        projects = self._projects() or {}
-        by_id = {project_id: path for path, project_id in projects.items()}
-        records: list[Record] = []
-        for project_id in sorted(pid for pid, path in by_id.items() if path == target):
-            # A chat's project id is its directory's name, so an id that is not one name has no chats.
-            if (
-                isinstance(project_id, str)
-                and project_id not in ("", ".", "..")
-                and Path(project_id).name == project_id
-            ):
-                records.extend(self._chats(f"{glob.escape(project_id)}/chats/*"))
-        return records
-
-    def records_titled(self, title: str) -> list[Record]:
-        # A chat carries no title, so no record can match one.
-        return []
+    def probe_transcript(self, worktree: Path | None, title: str) -> Probe:
+        if worktree is None:
+            return Probe(UNKNOWN, "Antigravity's cache identifies conversations by worktree path")
+        probe = super().probe_transcript(worktree, title)
+        # The cache remembers the last conversation, and can omit other saved ones.
+        if probe.state == ABSENT:
+            return Probe(UNKNOWN, "Antigravity's cache has no entry for this worktree")
+        return probe
 
     def rename(self, record: Record, old_title: str, new_title: str, new_worktree: Path | None) -> RenameResult:
-        result = RenameResult()
-        if new_worktree is None or record.cwd is None:
-            return result
-        registry = self.registry()
-        before = registry.read_bytes()
-        data = json.loads(before)
-        projects = data["projects"]
-        project_id = projects.pop(record.cwd, None)
-        if project_id is None:
-            return result
-        projects[str(new_worktree)] = project_id
-        _write_atomic(registry, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
-        result.changed.append(Changed(registry, before, note="projects.json path"))
-        marker = self.store_root() / project_id / ".project_root"
-        if marker.is_file() and marker.read_text(encoding="utf-8").strip() == record.cwd:
-            marker_before = marker.read_bytes()
-            _write_atomic(marker, f"{new_worktree}\n".encode())
-            result.changed.append(Changed(marker, marker_before, note=".project_root"))
-        return result
+        raise ValueError("rename the Antigravity conversation from Antigravity")
 
 
 ADAPTERS: dict[str, type[Adapter]] = {
     "claude-code": ClaudeCode,
     "codex": Codex,
     "pi": Pi,
-    "gemini": Gemini,
+    "agy": Antigravity,
 }
 
 

@@ -349,7 +349,7 @@ def test_given_stopped_session_when_bare_claude_launches_then_it_resumes_exact_t
     _stop(pid)
     _write_registry(tmp_path, pid, session_id, proc_start=_proc_start(pid), name="myproject-3")
 
-    argv = _bare_engine_command("c", "myproject-3", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "myproject-3", target, "agy", False, [])
 
     assert argv[argv.index("--resume") + 1] == session_id
     assert "--continue" not in argv

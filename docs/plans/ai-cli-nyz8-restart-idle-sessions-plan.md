@@ -374,7 +374,7 @@ worker.py` child, and its descendants, passed as the server while doing work.
 **Follow-up ruling (2026-10-18, after the command shipped).** A live check of every other session
 on the host refused all of them as running background work. Two causes were measured. The two MCP
 servers every session registers do not start in the configured form: the Agent Mail notifier is a
-bash wrapper whose live process is its exec target, and `npx -y gemini-mcp-tool` runs with a
+bash wrapper whose live process is its exec target, and a Node-based MCP server runs with a
 rewritten process title and a `node` child. And the transcript reader refuses any transcript over
 8 MiB, while long-lived sessions have transcripts of hundreds of megabytes, so no old session can
 be proved free of background launches. The host's chief-of-staff session (an AI decider, not the
