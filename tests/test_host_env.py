@@ -9,11 +9,14 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_cli.config import read_relaunch_config
+from ai_cli.config import get_xdg_config_home, read_relaunch_config
 from ai_cli.main import _handle_internal
 from ai_cli.session_script import get_engine_script
 
 _POSIX_SHELL_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="fake shell scripts are POSIX-only")
+# The default five-second probe limit is exceeded by a fake /bin/sh on a loaded host, which
+# turns an answering probe into a silent fallback; only the timeout test asks for a short one.
+_GENEROUS_PROBE_LIMIT = {"relaunch": {"host_refresh_timeout_seconds": 60}}
 
 
 @pytest.fixture
@@ -48,7 +51,10 @@ def host_tools(tmp_path, monkeypatch):
 
 
 def _resolve(capsys, config=None):
-    with patch("ai_cli.config.load_config", return_value=config or {}), pytest.raises(SystemExit) as exited:
+    with (
+        patch("ai_cli.config.load_config", return_value=config or _GENEROUS_PROBE_LIMIT),
+        pytest.raises(SystemExit) as exited,
+    ):
         _handle_internal(["resolve-host-env"])
     assert exited.value.code == 0
     captured = capsys.readouterr()
@@ -157,6 +163,10 @@ def test_given_stale_wrapper_host_when_each_agent_launches_then_host_is_refreshe
         encoding="utf-8",
     )
     ai.chmod(0o700)
+    get_xdg_config_home().mkdir(parents=True, exist_ok=True)
+    (get_xdg_config_home() / "config.toml").write_text(
+        "[relaunch]\nhost_refresh_timeout_seconds = 60\n", encoding="utf-8"
+    )
     observed = tmp_path / "agent-hosts"
     agent = bin_dir / "agent"
     agent.write_text(f'#!/bin/sh\nprintf "%s\\n" "$AI_HOST" >> {shlex.quote(str(observed))}\n', encoding="utf-8")
@@ -177,7 +187,7 @@ def test_given_stale_wrapper_host_when_each_agent_launches_then_host_is_refreshe
         + f"printf second-host > {shlex.quote(str(host_file))}\ndone\n",
         encoding="utf-8",
     )
-    completed = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    completed = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=120, check=False)
     assert completed.returncode == 0, completed.stderr
     expected = ["first-host", "second-host"] if source in ("login-shell", "tmux") else ["stale-host"] * 2
     assert observed.read_text(encoding="utf-8").splitlines() == expected
