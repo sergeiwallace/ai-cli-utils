@@ -74,15 +74,20 @@ def remote_host_allocation(tmp_path, monkeypatch, register_repo):
                 with patch("ai_cli.session._tmux_session_names", return_value=[]):
                     code, out, err = run_cli(["ai", *remote_tokens[ai + 1 :]], config=config or {})
                 return MagicMock(returncode=code, stdout=out, stderr=err)
-            if command[0] == str(login_shell):
-                probes.append("login-shell")
-                return MagicMock(**login_result)
             if command[0] == "tmux":
                 probes.append("tmux")
                 return MagicMock(**tmux_result)
             raise AssertionError(f"unexpected subprocess: {command!r}")
 
-        with patch("ai_cli.main.subprocess.run", side_effect=run):
+        def login_probe(command, _env, _timeout):
+            assert command[0] == str(login_shell)
+            probes.append("login-shell")
+            return login_result["returncode"], login_result["stdout"]
+
+        with (
+            patch("ai_cli.main.subprocess.run", side_effect=run),
+            patch("ai_cli.host_env._run_login_probe", side_effect=login_probe),
+        ):
             result = _request_remote_session_allocation(
                 ["ssh", "user@example.com"],
                 "c",

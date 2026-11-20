@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from unittest.mock import patch
 
 import pytest
@@ -198,3 +199,97 @@ def test_given_stale_wrapper_host_when_each_agent_launches_then_host_is_refreshe
         assert ("login shell" if source == "login-shell" else "tmux") in completed.stderr
     else:
         assert "inherited" in completed.stderr and "stale-host" in completed.stderr
+
+
+_PROBE_CALLER = """
+import sys
+from ai_cli import host_env, tmux_binary
+
+def no_tmux(*_args):
+    raise tmux_binary.TmuxBinaryMissing("no tmux in this test")
+
+host_env.tmux_binary.argv = no_tmux
+print(host_env.resolve_host_env({"relaunch": {"host_refresh_timeout_seconds": float(sys.argv[1])}}), flush=True)
+"""
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_until(predicate, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+@pytest.fixture
+def stalled_login_shell(tmp_path):
+    """A login shell that records the pid of a process it leaves stalled, and reaps it after."""
+    if sys.platform == "win32":
+        pytest.skip("fake shell scripts are POSIX-only")
+    pid_file = tmp_path / "stalled-pid"
+    shell = tmp_path / "login-shell"
+    recorded = []
+
+    def configure(body):
+        shell.write_text("#!/bin/sh\n" + body.replace("PID_FILE", shlex.quote(str(pid_file))) + "\n", encoding="utf-8")
+        shell.chmod(0o700)
+        env = {**os.environ, "SHELL": str(shell)}
+        env.pop("AI_HOST", None)
+        return env
+
+    def stalled_pid(seconds=30):
+        if not _wait_until(lambda: pid_file.is_file() and pid_file.read_text(encoding="utf-8").strip(), seconds):
+            return None
+        recorded.append(int(pid_file.read_text(encoding="utf-8")))
+        return recorded[-1]
+
+    yield configure, stalled_pid
+    for pid in recorded:
+        if _alive(pid):
+            os.kill(pid, 9)
+
+
+def test_given_a_stalled_login_shell_when_the_caller_is_killed_mid_probe_then_no_shell_survives(stalled_login_shell):
+    configure, stalled_pid = stalled_login_shell
+    env = configure("echo $$ > PID_FILE\nexec sleep 60")
+    caller = subprocess.Popen([sys.executable, "-c", _PROBE_CALLER, "60"], env=env, stdout=subprocess.DEVNULL)
+    try:
+        shell_pid = stalled_pid()
+        assert shell_pid is not None, "the login shell never started"
+        caller.kill()
+        caller.wait(timeout=10)
+        assert _wait_until(lambda: not _alive(shell_pid), 5), "the login shell outlived its killed caller"
+    finally:
+        if caller.poll() is None:
+            caller.kill()
+            caller.wait()
+
+
+def test_given_a_login_shell_whose_child_holds_its_output_when_the_probe_times_out_then_it_returns_and_kills_both(
+    stalled_login_shell,
+):
+    configure, stalled_pid = stalled_login_shell
+    env = configure("sleep 60 &\necho $! > PID_FILE\nwait")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _PROBE_CALLER, "20"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    finally:
+        child_pid = stalled_pid(seconds=0)
+    assert child_pid is not None, "the login shell never started its child"
+    assert completed.stdout == "('inherited', '')\n", completed.stderr
+    assert _wait_until(lambda: not _alive(child_pid), 5), "the login shell's child outlived the timed-out probe"
