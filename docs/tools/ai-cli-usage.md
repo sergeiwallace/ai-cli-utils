@@ -612,7 +612,9 @@ on both hosts to list the group in both directions. These are publication host I
 entry or the default remote machine uses an SSH alias, set its `[remote.machines.<alias>] host_id`
 to the ID used to publish its snapshot. Personal profiles default to `group` and can restrict the
 scope to `host` or explicitly permit `fleet` with `[machine] sessions_list_scope`. Work, client,
-and unclassified profiles always use `host`.
+and unclassified profiles always use `host`. When the profile narrows a scope set by `-S/--scope` or
+`[sessions_list] scope`, the list ends with one line naming the reason and the key to set. The
+retired `pair_host` key is refused with a message naming its replacement, `group_host`.
 
 [docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
 each key.
