@@ -8,6 +8,8 @@
     ":automergePatch"
   ],
   "labels": ["dependencies"],
+  "rebaseWhen": "conflicted",
+  "pre-commit": { "enabled": true },
   "packageRules": [
     {
       "description": "Automerge minor and patch updates for stable dependencies",
@@ -25,6 +27,22 @@
       "matchManagers": ["github-actions"],
       "groupName": "GitHub Actions",
       "automerge": true
+    },
+    {
+      "description": "ruff is pinned twice, in pyproject.toml and as the ruff-pre-commit hook, and scripts/check_ruff_version_sync.py fails when they differ, so both move in one pull request",
+      "matchPackageNames": ["ruff", "astral-sh/ruff-pre-commit"],
+      "groupName": "ruff"
+    },
+    {
+      "description": "The pre-commit manager is on for ruff's hook only; every other hook keeps its pinned rev",
+      "matchManagers": ["pre-commit"],
+      "matchPackageNames": ["!astral-sh/ruff-pre-commit"],
+      "enabled": false
+    },
+    {
+      "description": "The interpreter version is set in several files that scripts/check_python_version_sync.py keeps equal, so a .python-version bump alone always fails; moving it is a deliberate change",
+      "matchManagers": ["pyenv"],
+      "enabled": false
     }
   ],
   "lockFileMaintenance": {
