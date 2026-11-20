@@ -97,7 +97,6 @@ import json
 import mmap
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -1652,7 +1651,7 @@ def _plan_kept_holds(
     plan: _agents.AgentPlan, result: MigrationResult, repo: Path, state: Path, requested: tuple[str, ...]
 ) -> tuple[list[dict] | None, dict[str, str]]:
     """Account for current ledger matches, and validate every newly requested slot before writing."""
-    from .session_migrate_status import finish_command
+    from .session_migrate_status import command_line, finish_command
 
     collisions = {
         e.worktree: e
@@ -1683,7 +1682,7 @@ def _plan_kept_holds(
                 snapshot = _hold_snapshot(source, dest)
             name = str(source) if sum(path.name == source.name for path in collisions) > 1 else source.name
             command = finish_command(result.old, result.new, repo)
-            commands[str(source)] = f"{command} --accept-kept-hold {shlex.quote(name)}"
+            commands[str(source)] = f"{command} --accept-kept-hold {command_line([name])}"
         if source in selected and snapshot is None:
             raise MigrationError(
                 f"cannot accept {source} -> {dest}; need two readable registered worktrees and no live old hold"

@@ -9,6 +9,8 @@ question of the disk.
 from __future__ import annotations
 
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -188,8 +190,13 @@ def left_after(result: m.MigrationResult) -> dict[str, str]:
     return left or {UNPLANNED: f"failed: {m._one_line('; '.join([*result.kept, *result.warnings])) or 'not finished'}"}
 
 
+def command_line(args: list[str]) -> str:
+    """Render a recovery hint using the current platform's command-line quoting."""
+    return subprocess.list2cmdline(args) if sys.platform == "win32" else shlex.join(args)
+
+
 def finish_command(old: str, new: str, repo: Path) -> str:
-    return shlex.join(["ai", "migrate-session", old, new, "--finish", "-r", str(repo)])
+    return command_line(["ai", "migrate-session", old, new, "--finish", "-r", str(repo)])
 
 
 def deferred_only(left: dict[str, str]) -> bool:
