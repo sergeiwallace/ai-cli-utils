@@ -1,6 +1,7 @@
 """Boot decisions and detached replay use isolated state and a fake tmux."""
 
 import json
+import shlex
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -16,6 +17,7 @@ from ai_cli import main, session_commands
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+from ai_cli.session_script import get_engine_script
 
 #: The launch guard itself, captured before any fixture replaces it.
 _REAL_FINISH = main._finish_recorded_migrations
@@ -290,6 +292,7 @@ def test_given_recipe_without_terminal_when_replayed_then_ac_2_10_exact_detached
     detached_launch, boot_record, mode
 ):
     calls, script = detached_launch
+    script.side_effect = get_engine_script
     recipe = boot_record["boot_recipe"]
     if mode.endswith("reattach"):
         boot_record["relaunch_argv"] = ["ai", "c", "-r", "1" if mode.startswith("indexed") else "review"]
@@ -309,8 +312,10 @@ def test_given_recipe_without_terminal_when_replayed_then_ac_2_10_exact_detached
         assert "example-agent --option 'value with spaces'" in created[0][-1]
         assert str(Path(recipe["cwd"])) in created[0][-1]
     if mode not in ("once", "bare"):
-        assert script.call_args.args[1] == "myproject-host-1"
-        assert Path(script.call_args.args[7]) == Path(recipe["cwd"])
+        wrapper = main._config.get_xdg_state_home() / "sessions" / f"{boot_record['name']}.sh"
+        source = wrapper.read_text(encoding="utf-8")
+        assert "    ai_name=myproject-host-1\n" in source
+        assert f"cd -- {shlex.quote(recipe['cwd'])}\n" in source
 
 
 def test_given_detached_boot_launch_when_attach_used_later_then_ac_2_5_existing_attach_still_works(
