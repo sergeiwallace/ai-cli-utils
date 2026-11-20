@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
+
 import pytest
 import test_session_migrate
 from test_session_migrate import NEW, OLD, _finish, _git, _migrate
 from test_session_migrate_on_launch import _launch, _ledger, _legacy_finished_row
 
-from ai_cli import session_migrate_status
+from ai_cli import session_migrate, session_migrate_status
 
 SLOT = "review-slot"
 ACCEPT = "--accept-kept-hold"
@@ -51,6 +53,28 @@ def _git_state(repo, holds):
     )
 
 
+def _assert_accepted_hold(row, anchors, heads):
+    assert SLOT in str(row) and row["time"]
+    assert all(str(value) in str(row) for value in (*anchors, *heads)), row
+
+
+def test_given_windows_anchors_when_acceptance_is_read_then_both_paths_and_tips_match(tmp_path):
+    repo = PureWindowsPath(r"D:\my projects\myrepo")
+    anchors = tuple(repo / ".worktrees" / f"{owner}-agents" / SLOT for owner in (OLD, NEW))
+    heads = ("a" * 40, "b" * 40)
+    record = {
+        "slot": SLOT,
+        "old_path": str(anchors[0]),
+        "new_path": str(anchors[1]),
+        "old_head": heads[0],
+        "new_head": heads[1],
+    }
+    session_migrate._append_ledger(tmp_path, OLD, NEW, repo, accepted_kept_holds=[record])
+
+    (row,) = _ledger({"state": tmp_path})
+    _assert_accepted_hold(row, anchors, heads)
+
+
 def test_given_two_anchors_when_finished_then_only_explicit_acceptance_completes_the_migration(migrated, anchors):
     repo = migrated["repo"]
     before = _git_state(repo, anchors)
@@ -80,8 +104,7 @@ def test_given_two_anchors_when_finished_then_only_explicit_acceptance_completes
 
     rows = _ledger(migrated)
     assert rows[-1]["verified"] is True
-    assert SLOT in str(rows[-2]) and rows[-2]["time"]
-    assert all(str(value) in str(rows[-2]) for value in (*anchors, *before[2]))
+    _assert_accepted_hold(rows[-2], anchors, before[2])
     code, out, err = _finish(repo, "-y", ACCEPT, SLOT)
     assert code == 0, out + err
     assert _ledger(migrated) == rows
