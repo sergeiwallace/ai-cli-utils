@@ -963,6 +963,14 @@ _PREVIOUS_INTERRUPT_EXIT = (
 )
 
 
+#: The terminal restore as programs rendered it before it emptied the kitty keyboard
+#: stack on both screens (AI-CLI-ftxh6): one pop, on the current screen only.
+_PREVIOUS_TERMINAL_RESET = (
+    "'\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1005l\\033[?1006l\\033[?1015l\\033[?1004l"
+    "\\033[?2004l\\033[?1049l\\033[?7h\\033[?25h\\033[>4;0m\\033[<u\\033[0m'"
+)
+
+
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
@@ -999,6 +1007,13 @@ def _compatible(source: str, expected: str) -> bool:
 
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
+        return True
+    # The terminal restore is printf data with no control flow, so a program that
+    # sends the retired bytes is the same program. Rebuilt in our trusted template.
+    from .session_script import rendered_terminal_reset
+
+    previous_reset = expected.replace(rendered_terminal_reset(), _PREVIOUS_TERMINAL_RESET)
+    if previous_reset != expected and _compatible(source, previous_reset):
         return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.
