@@ -2,6 +2,7 @@ import io
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -870,20 +871,31 @@ class TestRemoteSessionIterm2Emit:
 # another machine failed with "invalid identity" instead of attaching.
 
 
-def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None):
+def _run_remote_named_launch(
+    argv, live_remote_sessions, allocator_reply=None, allocator_failures=(), calls=None, negative_is_signal=True
+):
     """Drive `ai c <name> -R` through cli() with SSH stubbed.
 
     The allocation reply comes from the real remote allocator code
     (`build_session_name(..., is_remote=True)`) over the given live tmux names,
-    unless ``allocator_reply`` overrides it with a raw JSON body.
+    unless ``allocator_reply`` overrides it with a raw JSON body. Each of
+    ``allocator_failures`` (a ``returncode`` with no output) answers one allocation
+    call first, in order; ``calls`` collects every allocation command sent.
+    ``negative_is_signal`` pins the POSIX (True) or Windows (False) meaning of a
+    negative status, so both run on every OS.
     """
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "ssh"}}
+    failures = list(allocator_failures)
 
     def remote_ssh(command, **_kwargs):
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return MagicMock(returncode=0, stdout="zsh\n", stderr="")
         if "ai update" in command[-1]:
             return MagicMock(returncode=0, stdout="current", stderr="")
+        if calls is not None:
+            calls.append(command[-1])
+        if failures:
+            return MagicMock(returncode=failures.pop(0), stdout="", stderr="")
         if allocator_reply is not None:
             return MagicMock(returncode=0, stdout=allocator_reply, stderr="")
         tokens = shlex.split(shlex.split(command[-1])[-1])
@@ -906,6 +918,8 @@ def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None):
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.main.subprocess.run", side_effect=remote_ssh),
         patch("ai_cli.transport.run_ssh_with_reconnect", handoff),
+        patch("ai_cli.main.time.sleep"),
+        patch("ai_cli.main._NEGATIVE_STATUS_IS_SIGNAL", negative_is_signal),
         patch("sys.stderr", stderr),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -954,3 +968,102 @@ def test_given_malformed_allocator_identity_when_remote_launched_then_errors_bef
     assert code == 1
     assert "remote session-name allocation returned" in stderr
     handoff.assert_not_called()
+
+
+# --- a remote allocation that ends with no output (AI-CLI-9zm2e) ---
+#
+# Root cause: the allocator's ssh call exited non-zero with empty stdout and stderr,
+# and the error kept only the output, so "remote session-name allocation failed"
+# said nothing about why. The remote host logged nothing for the call, which fits a
+# killed process: a signal-killed call leaves exactly this empty, non-zero result.
+
+
+def test_given_allocator_exits_nonzero_silently_when_remote_launched_then_error_names_exit_code():
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"], live_remote_sessions=[], allocator_failures=[1], calls=calls
+    )
+
+    assert code == 1
+    assert "remote session-name allocation failed (exit 1): no output" in stderr
+    assert len(calls) == 1
+    handoff.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "cause"),
+    [
+        (-9, "the local ssh client was killed by SIGKILL"),
+        (137, "exit 137: the remote command was killed by SIGKILL"),
+        (-15, "the local ssh client was killed by SIGTERM"),
+    ],
+)
+def test_given_allocation_killed_once_when_remote_launched_then_retries_and_attaches(returncode, cause):
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"], live_remote_sessions=[], allocator_failures=[returncode], calls=calls
+    )
+
+    assert code in (0, None), stderr
+    assert len(calls) == 2
+    assert f"remote session-name allocation was cut off ({cause}); retrying once" in stderr
+    assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
+
+
+def test_given_allocation_killed_twice_when_remote_launched_then_error_names_signal():
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"], live_remote_sessions=[], allocator_failures=[-9, -9], calls=calls
+    )
+
+    assert code == 1
+    assert len(calls) == 2
+    assert "remote session-name allocation failed (the local ssh client was killed by SIGKILL): no output" in stderr
+    handoff.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "cause"),
+    [(-2, "the local ssh client was killed by SIGINT"), (255, "exit 255: ssh could not reach the remote host")],
+)
+def test_given_allocation_interrupted_or_unreachable_when_remote_launched_then_fails_without_retry(returncode, cause):
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"], live_remote_sessions=[], allocator_failures=[returncode], calls=calls
+    )
+
+    assert code == 1
+    assert len(calls) == 1
+    assert f"remote session-name allocation failed ({cause}): no output" in stderr
+    handoff.assert_not_called()
+
+
+def test_given_windows_negative_status_when_remote_launched_then_fails_naming_exit_without_retry():
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"],
+        live_remote_sessions=[],
+        allocator_failures=[-1073741510],
+        calls=calls,
+        negative_is_signal=False,
+    )
+
+    assert code == 1
+    assert len(calls) == 1
+    assert "remote session-name allocation failed (exit -1073741510): no output" in stderr
+    handoff.assert_not_called()
+
+
+def test_given_signal_module_without_posix_only_names_when_main_imported_then_import_succeeds():
+    # Windows' signal module lacks these; deleting them here catches a module-level
+    # reference to one on any OS, before Windows CI does.
+    script = (
+        "import signal\n"
+        "for name in ('SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGPIPE', 'SIGALRM', 'SIGUSR1', 'SIGUSR2', 'SIGCHLD'):\n"
+        "    if hasattr(signal, name):\n"
+        "        delattr(signal, name)\n"
+        "import ai_cli.main\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300, check=False)
+
+    assert result.returncode == 0, result.stderr
