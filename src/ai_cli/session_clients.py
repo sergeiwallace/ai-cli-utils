@@ -134,6 +134,28 @@ class Adapter:
 
     def __init__(self, home: Path | None = None) -> None:
         self.home = home if home is not None else Path.home()
+        self._read: dict[Path, tuple[tuple[int, int, int, int], Record]] = {}
+
+    def _read_once(self, path: Path, read) -> Record:
+        """``read()`` of ``path``, kept and handed back until the file changes.
+
+        One reconcile probes every row it holds against the same store, so a transcript
+        is read in full once per adapter, not once per row. A file is unchanged while its
+        device, inode, size and modification time are; a rewrite through ``_write_atomic``
+        replaces the inode, so a renamed record is read again.
+        """
+        try:
+            stat = path.stat()
+        except OSError:
+            return read()
+        key = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        kept = self._read.get(path)
+        if kept is not None and kept[0] == key:
+            return kept[1]
+        record = read()
+        if record.problem is None:
+            self._read[path] = (key, record)
+        return record
 
     def store_root(self) -> Path:
         raise NotImplementedError
@@ -196,25 +218,30 @@ class ClaudeCode(Adapter):
         return self.home / ".claude" / "projects"
 
     def _record(self, path: Path) -> Record:
+        return self._read_once(path, lambda: self._read_record(path))
+
+    def _read_record(self, path: Path) -> Record:
         """One transcript: the first working directory it names and its last custom title.
 
         Only a line read while no working directory is known yet, or one that contains
-        ``customTitle``, can change either, so every other line is skipped unparsed.
+        ``customTitle``, can change either, so every other line is skipped unparsed. The
+        transcript is read a line at a time: one can be larger than a gigabyte.
         """
         title, cwd = None, None
         try:
-            for raw in path.read_bytes().splitlines():
-                if cwd and b"customTitle" not in raw:
-                    continue
-                try:
-                    entry = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                cwd = cwd or entry.get("cwd")
-                if entry.get("type") == "custom-title" or "customTitle" in entry:
-                    title = entry.get("customTitle") or title
+            with path.open("rb") as handle:
+                for raw in handle:
+                    if cwd and b"customTitle" not in raw:
+                        continue
+                    try:
+                        entry = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    cwd = cwd or entry.get("cwd")
+                    if entry.get("type") == "custom-title" or "customTitle" in entry:
+                        title = entry.get("customTitle") or title
         except OSError as exc:
             return Record(self.client, path, cwd, path.stem, title, str(exc))
         return Record(self.client, path, cwd, path.stem, title)
@@ -328,18 +355,22 @@ class Pi(Adapter):
         return first
 
     def _record(self, path: Path, first: dict) -> Record:
-        """The session under ``first``, named by its last ``session_info`` line."""
+        return self._read_once(path, lambda: self._read_record(path, first))
+
+    def _read_record(self, path: Path, first: dict) -> Record:
+        """The session under ``first``, named by its last ``session_info`` line, read a line at a time."""
         title = None
         try:
-            for raw in path.read_bytes().splitlines():
-                if b"session_info" not in raw:
-                    continue
-                try:
-                    entry = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(entry, dict) and entry.get("type") == "session_info":
-                    title = entry.get("name", title)
+            with path.open("rb") as handle:
+                for raw in handle:
+                    if b"session_info" not in raw:
+                        continue
+                    try:
+                        entry = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict) and entry.get("type") == "session_info":
+                        title = entry.get("name", title)
         except OSError as exc:
             return Record(self.client, path, first.get("cwd"), first.get("id"), None, str(exc))
         return Record(self.client, path, first.get("cwd"), first.get("id"), title)
