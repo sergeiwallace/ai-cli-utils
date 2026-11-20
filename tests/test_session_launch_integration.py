@@ -372,7 +372,6 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     assert after["c-myproject-tst-2"] in before_ids
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pty")
 def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_modes_are_cleared_before_tmux_attaches(
     patched_subprocess, monkeypatch
 ):
@@ -384,7 +383,7 @@ def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_mod
     that crashed) still had extended-key and mouse reporting on, and tmux never clears a kitty
     keyboard flag, so keys reached the session as escape-sequence text (AI-CLI-ftxh6).
     """
-    # Local: the pty module does not exist on Windows, where this test is skipped.
+    # Local: the pty module does not exist on Windows, where this module is skipped.
     import pty
     import select
 
@@ -397,6 +396,7 @@ def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_mod
     monkeypatch.setattr(sys, "stdout", terminal)
     try:
         with (
+            _tmux_versions_agreeing(),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
