@@ -313,8 +313,10 @@ launches, `ai cos`, remote allocation, migration, audit labels and name commands
 The single source order is:
 a fresh login shell run without inherited `AI_HOST`, then the global tmux environment, then
 the inherited `AI_HOST` only when neither fresh source answers. Each fresh probe is bounded
-by `[relaunch] host_refresh_timeout_seconds`. If the remaining identity has no host alias,
-`[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
+by `[relaunch] host_refresh_timeout_seconds`. On Linux and macOS the login shell runs in a
+session of its own with no controlling terminal, and its whole process group is killed on
+timeout or as soon as the `ai` process that started it exits, however it exits. If the
+remaining identity has no host alias, `[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
 a refusal names the host id it tried and, when replaced, the inherited id.
 
 The user config file (`$XDG_CONFIG_HOME/ai-cli-utils/config.toml`, defaulting to
