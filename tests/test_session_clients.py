@@ -286,7 +286,10 @@ def test_given_many_pi_sessions_when_a_worktree_is_looked_up_then_only_its_sessi
     records = sc.adapter("pi", home).records_for(worktree)
 
     assert [(record.path, record.title) for record in records] == [(own, TITLE)]
-    assert {path for kind, path in reads if kind == "read_bytes"} == {own}
+    # Every session's header is opened once; only its own is opened again to be read in full.
+    opened = [path for _, path in reads]
+    assert {path for path in opened if opened.count(path) > 1} == {own}
+    assert opened.count(own) == 2
 
 
 def test_given_an_unreadable_pi_session_in_another_directory_when_probed_then_it_does_not_hold_the_worktree(
