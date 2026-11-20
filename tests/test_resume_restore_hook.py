@@ -350,11 +350,11 @@ sys.exit(130)
     }
     env.pop("BASH_ENV", None)
 
-    def run() -> tuple[int, list[dict], str]:
+    def run(**extra_env: str) -> tuple[int, list[dict], str]:
         log = root / "wrapper.log"
         with (
             log.open("w", encoding="utf-8") as diagnostics,
-            bounded_supervisor(script, diagnostics, default_lifetime=240, env=env) as process,
+            bounded_supervisor(script, diagnostics, default_lifetime=240, env={**env, **extra_env}) as process,
         ):
             status = process.wait(timeout=180)
         launch_log = root / "launch.log"
@@ -404,15 +404,19 @@ def test_given_archived_subagent_transcripts_when_the_supervisor_resumes_the_ses
     assert [call["session_id"] for call in _calls(hook["log"])] == [SESSION_ID]
 
 
-def test_given_a_failing_restore_command_when_the_supervisor_resumes_then_claude_never_starts(wrapper, tmp_path):
+@pytest.mark.parametrize("start", ["first", "restart"])
+def test_given_a_failing_restore_command_when_the_supervisor_resumes_then_claude_never_starts(wrapper, tmp_path, start):
     project = wrapper["project"]
     _archive(_write_transcript(project, SESSION_ID, TITLE))
     hook = _hook(tmp_path, project, mode="fail")
     _write_config(hook["resume_restore"])
 
-    _status, launches, output = wrapper["run"]()
+    _status, launches, output = wrapper["run"](
+        **({main._LAUNCH_REASON_VAR: "host_reboot"} if start == "restart" else {})
+    )
 
     assert launches == [], output
+    assert f"Resume of {TITLE} stopped: the transcript restore failed" in output
     assert "exit 3" in output
     assert f"restore failed: archive for {SESSION_ID} does not verify; it is kept" in output
     assert (project / f"{SESSION_ID}.jsonl.zst").is_file()
