@@ -423,6 +423,60 @@ def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_mod
     assert _TERMINAL_RESTORE.encode() in received, f"the terminal reached tmux attach uncleared: {received!r}"
 
 
+def test_given_no_remote_session_when_relaunched_by_hand_on_a_terminal_then_its_input_modes_are_cleared_before_tmux_attaches(
+    patched_subprocess, monkeypatch
+):
+    """A hand relaunch of an exited session (`ai c <n> -R`) creates a fresh remote session and attaches it.
+
+    The terminal is the one the user typed into, and it still holds whatever keyboard mode its
+    last program left. tmux does not parse kitty "report all keys" sequences, so a terminal left
+    in that mode turns every typed letter into an Alt+[ key and literal digits in the pane, and
+    the session cannot be typed into (AI-CLI-d6kjf). This create-then-attach path must clear the
+    modes as the reattach path does.
+    """
+    # Local: the pty module does not exist on Windows, where this module is skipped.
+    import pty
+    import select
+
+    from ai_cli.transport import _TERMINAL_RESTORE
+
+    server = patched_subprocess
+    kwargs = _base_launch_kwargs(name="2")
+    kwargs.update(is_remote=True)
+    leader, follower = pty.openpty()
+    terminal = os.fdopen(os.dup(follower), "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", terminal)
+    try:
+        with (
+            _tmux_versions_agreeing(),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.main._resolve_remote_project", return_value=("", "")),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+            patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**kwargs)
+        terminal.flush()
+        received = b""
+        while select.select([leader], [], [], 0.2)[0]:
+            received += os.read(leader, 65536)
+    finally:
+        terminal.close()
+        os.close(follower)
+        os.close(leader)
+
+    assert [s.name for s in server.sessions] == ["c-r-myproject-tst-2"]
+    assert [args[1:3] for _file, args in server._execvp_calls] == [["attach-session", "-d"]]
+    assert _TERMINAL_RESTORE.encode() in received, f"the terminal reached tmux attach uncleared: {received!r}"
+
+
 @pytest.mark.parametrize("sandbox", [False, True])
 def test_given_slot_10_live_when_free_slot_1_is_launched_then_slot_1_is_created_and_slot_10_untouched(
     patched_subprocess, capsys, sandbox
