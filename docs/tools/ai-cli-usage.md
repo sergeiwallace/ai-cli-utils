@@ -375,7 +375,8 @@ if it still cannot be used the launch continues in bare mode with a notice namin
 was lost. A missing tmux is not by itself fatal — tmux is an enhancement, and a missing
 enhancement must not block a launch — but the launch still has to come away with *some*
 way to submit the auto-compact prompt; see "The submission transport is required" below.
-Windows skips the recovery because no native tmux exists there. The
+Windows skips the recovery because nothing installs a tmux there unattended; psmux,
+the native one, is installed by hand and used when present. The
 decision is made **after argument validation and before any worktree is created**, so a
 launch that has to fall back does not leave a worktree behind first.
 

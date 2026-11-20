@@ -96,7 +96,7 @@ For a terminal-backed child, the Python exec wrapper creates a separate child pr
 
 Before an eligible `reap` candidate receives its final gate pass, the reaper attempts to acquire that same generation-bound lease exclusively and non-blockingly. If the lease is held, cannot be acquired, or cannot be verified, the candidate is preserved for this cycle and is not retried during the same pass. The reaper holds its lease through the final gate pass and the `tmux kill-session` attempt, then releases it whether the kill succeeds or fails.
 
-Session creation and resume never call `run`, the evaluator, or a tmux termination path in-process. A local `ai c` launch only schedules the independent `start` lifecycle command and immediately continues; failures produce one warning with the manual command. `ai p`, `ai g`, and `ai cx` do not start the watcher. Native Windows performs no startup because it has no native tmux runtime.
+Session creation and resume never call `run`, the evaluator, or a tmux termination path in-process. A local `ai c` launch only schedules the independent `start` lifecycle command and immediately continues; failures produce one warning with the manual command. `ai p`, `ai g`, and `ai cx` do not start the watcher. Native Windows performs no startup: the watcher and its tmux termination path are built for POSIX hosts, and a Windows host with psmux, which answers to `tmux`, is not supported by the reaper.
 
 ### Candidate evaluation and reap protocol
 

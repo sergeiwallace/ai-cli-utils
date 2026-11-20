@@ -1751,7 +1751,7 @@ class TestDoSessionLaunchTmuxGuard:
         assert install.call_count == 1
 
     def test_when_win32_and_tmux_missing_then_no_install_is_attempted(self):
-        """Windows has no native tmux, so an install attempt there is pure noise."""
+        """Nothing installs a tmux on Windows unattended, so an install attempt there is pure noise."""
         from ai_cli.main import _do_session_launch
 
         with (
