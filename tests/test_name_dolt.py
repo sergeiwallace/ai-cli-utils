@@ -100,7 +100,8 @@ class Databases:
         self.dolt_dir = tmp / "schema.dolt"
         self.dolt_dir.mkdir()
         self.root = tmp / "schema-root"
-        (self.root / ".dolt").mkdir(parents=True)
+        # exist_ok: a reused temporary directory can still hold the previous case's root.
+        (self.root / ".dolt").mkdir(parents=True, exist_ok=True)
         (self.root / ".dolt" / "config_global.json").write_text(
             json.dumps({**name_dolt.ROOT_CONFIG, "user.name": "t", "user.email": "t@example.com"})
         )
@@ -192,6 +193,17 @@ def test_given_empty_databases_when_the_schema_is_applied_then_both_hold_the_six
     expected = {"meta", "policy_snapshot", "names", "verdicts", "holds", "migrations"}
     assert dolt_tables == expected
     assert sqlite_tables == expected
+
+
+def test_given_a_reused_temporary_directory_holding_an_old_schema_root_when_built_then_both_backends_work(tmp_path):
+    """A passing test's directory is deleted with errors ignored and its name is reused next.
+
+    On macOS a partial delete left ``schema-root/.dolt`` behind, and the next parametrized
+    case failed at set-up with ``FileExistsError`` before any assertion ran.
+    """
+    (tmp_path / "schema-root" / ".dolt").mkdir(parents=True)
+
+    assert Databases(tmp_path).both("names", {"name": "ada", "origin": "generated"}) == (True, True)
 
 
 @pytest.mark.parametrize("token", ["Abc", "abc2", "ab-c", ""])
