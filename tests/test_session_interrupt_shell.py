@@ -305,6 +305,29 @@ def pane_session(request, tmp_path, monkeypatch):
             tmux("kill-server")
 
 
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_waiting_agent_when_exit_command_is_written_then_only_complete_command_is_visible(
+    pane_session, tmp_path, monkeypatch
+):
+    action = tmp_path / "action"
+    early_commands = []
+    real_open = Path.open
+
+    def observe_open(path, mode="r", *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        # Schedule the reader after the real write-open, before any bytes are written.
+        if mode == "w" and path.parent == action.parent and action.exists():
+            early_commands.append(action.read_text())
+        return stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", observe_open)
+        pane_session.exit_agent("0")
+
+    assert early_commands == []
+    assert action.read_text() == "0"
+
+
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("engine", ["c", "cx"])
 def test_given_attached_launcher_when_interrupted_then_original_shell_survives(pane_session, engine, remote):
