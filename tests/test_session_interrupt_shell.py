@@ -276,7 +276,10 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("send-keys", "-t", target, "C-c").returncode == 0
 
         def exit_agent(self, command):
-            action.write_text(command)
+            # The agent treats the presence of action as a complete command.
+            pending = action.with_suffix(".tmp")
+            pending.write_text(command)
+            pending.replace(action)
 
         def type_line(self, command):
             assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
@@ -286,7 +289,8 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("has-session", "-t", self.name).returncode == 0
             # Execute a command: an alive/dead pane or an echoed keystroke is not a shell.
             proof = tmp_path / "shell-proof"
-            command = f"printf '%s' interactive > {shlex.quote(str(proof))}"
+            pending = shlex.quote(str(proof.with_suffix(".tmp")))
+            command = f"printf '%s' interactive > {pending} && mv {pending} {shlex.quote(str(proof))}"
             assert tmux("send-keys", "-t", self.name, command, "Enter").returncode == 0
             assert _wait(proof.exists), self.capture()
             assert proof.read_text() == "interactive"
