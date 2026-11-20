@@ -231,6 +231,8 @@ def get_engine_script(
     launch_log_path: str | None = None,
 ) -> str:
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
+    if engine != "g":
+        agy_cmd, agy_isolated, agy_args = "agy", None, None
     agy_isolated = worktree_dir is not None if agy_isolated is None else agy_isolated
     agy_launch = shlex.join(
         _agy.launch_command(agy_cmd, ai_name, sandbox=sandbox, isolated=agy_isolated, extra_args=agy_args or [])

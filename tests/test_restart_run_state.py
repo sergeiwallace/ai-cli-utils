@@ -25,10 +25,12 @@ from ai_cli.session_script import get_engine_script
 
 
 @pytest.fixture
-def programs(tmp_path, monkeypatch):
+def programs(tmp_path, monkeypatch, request):
     legacy = (Path(__file__).parent / "fixtures/session_restart_legacy.txt").read_text(encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n')
     legacy = legacy.replace("__PROJECT_DIR__", tmp_path.as_posix())
+    if getattr(request, "param", False):
+        legacy = legacy.replace('"sandbox": false', '"sandbox": true').replace(" -y --no-sandbox ", " -y -s ")
     metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     metadata = json.loads(shlex.split(metadata_line)[2])
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
@@ -42,6 +44,7 @@ def promotion_environment(shell_environment):
     return shell, {key: value for key, value in environment.items() if key in allowed}, name, root
 
 
+@pytest.mark.parametrize("programs", [False, True], indirect=True, ids=["default", "sandbox"])
 def test_given_pre_feature_program_when_ac_i_1_compared_then_lifecycle_insertions_are_compatible(programs):
     legacy, current = programs
     assert session_restart._compatible(legacy, current)

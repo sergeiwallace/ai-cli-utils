@@ -1004,21 +1004,25 @@ def _compatible(source: str, expected: str) -> bool:
     # Reconstruct those exact old lines from the trusted template so arbitrary
     # edits to a running wrapper still fail the full program comparison.
     if re.search(r"(?m)^    engine=c$", expected) and "-m ai_cli.agy " in expected:
+        sandbox_flag = "-s" if ', "sandbox": true, "worktree_dir": ' in expected else "--no-sandbox"
         legacy = re.sub(
             r'(?m)^          run_agent .* -m ai_cli\.agy .*?( --prompt-interactive "\$resume_msg")?$',
             lambda match: (
                 ('          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n' if match[1] else "")
-                + '      if [[ -n "$uuid" ]]; then run_agent gemini -y --no-sandbox -r "$uuid"\n'
-                + '      else run_agent gemini -y --no-sandbox -i "/resume load $ai_name"\n'
+                + f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                + f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
                 + "          fi"
             ),
             expected,
         )
+        legacy = re.sub(
+            r', "sandbox": (true|false), "worktree_dir": ',
+            r', "session_id_uuid": "", "sandbox": \1, "worktree_dir": ',
+            legacy,
+            count=1,
+        )
         legacy = (
             legacy.replace("    project_prefix=", "    uuid=''\n    project_prefix=", 1)
-            .replace(
-                ', "sandbox": false, "worktree_dir": ', ', "session_id_uuid": "", "sandbox": false, "worktree_dir": ', 1
-            )
             .replace(', "pi_provider": ', ', "gemini_cmd": "gemini", "pi_provider": ', 1)
             .replace('"$stype" == "agy"', '"$stype" == "gemini"')
             .replace('_session_type="agy"', '_session_type="gemini"')

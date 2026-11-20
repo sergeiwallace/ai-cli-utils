@@ -111,3 +111,13 @@ def test_given_an_agy_override_when_generating_a_managed_session_then_it_uses_th
     assert f"cd -- {shlex.quote(str(workspace))}" in script
     assert f"run_agent {shlex.join(expected)}" in script
     assert f'run_agent {shlex.join(expected)} --prompt-interactive "$resume_msg"' in script
+
+
+def test_given_an_agy_override_when_generating_a_claude_session_then_its_script_is_unchanged(workspace):
+    args = ("c", SESSION, f"c-{SESSION}", "c-myproject-", "myproject")
+    default = get_engine_script(*args, worktree_dir=str(workspace))
+    configured = get_engine_script(
+        *args, worktree_dir=str(workspace), agy_cmd="agy-wrapper", agy_isolated=False, agy_args=["--effort", "high"]
+    )
+
+    assert configured == default

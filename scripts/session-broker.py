@@ -127,6 +127,8 @@ def main():
     parser = argparse.ArgumentParser(description="Generate session context for AI startup")
     parser.add_argument("--project", help="Current project name")
     parser.add_argument("--config", help="Path to platform config file")
+    # Existing Claude wrappers supply this internal argument.
+    parser.add_argument("--engine", choices=["c"], help=argparse.SUPPRESS)
     parser.add_argument("--output", help="Output file path")
     args = parser.parse_args()
 
