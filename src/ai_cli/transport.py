@@ -53,11 +53,15 @@ _TERMINAL_RESTORE = (
     "\x1b[?1015l"  # mouse: urxvt coordinate encoding
     "\x1b[?1004l"  # focus in/out reporting
     "\x1b[?2004l"  # bracketed paste
+    # The kitty keyboard protocol keeps one flag stack per screen, and every agent that
+    # died without popping leaves an entry: a pop larger than the stack empties it and
+    # resets its flags, so it runs on the alternate screen and again on the main one.
+    "\x1b[<99u"  # empty the alternate screen's kitty keyboard stack
     "\x1b[?1049l"  # leave the alternate screen
+    "\x1b[<99u"  # empty the main screen's kitty keyboard stack
     "\x1b[?7h"  # re-enable autowrap
     "\x1b[?25h"  # show the cursor
     "\x1b[>4;0m"  # xterm modifyOtherKeys off
-    "\x1b[<u"  # pop the kitty keyboard-protocol stack
     "\x1b[0m"  # reset colour and attribute state
 )
 
