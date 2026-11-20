@@ -332,6 +332,139 @@ def test_given_no_tmux_binary_setting_when_the_shell_prelude_is_built_then_it_is
 
 
 # --------------------------------------------------------------------------
+# The statusline script, which the agent runs as a child of the session script
+# --------------------------------------------------------------------------
+
+STATUSLINE = SRC / "data" / "statusline-command.sh"
+STATUSLINE_INPUT = '{"model":"claude-sonnet-4-6","workspace":{"project_dir":"/tmp"}}'
+
+posix_bash_with_jq = pytest.mark.skipif(
+    sys.platform == "win32" or __import__("shutil").which("jq") is None,
+    reason="statusline-command.sh needs a POSIX bash and jq",
+)
+
+
+def _recording_tmux(directory: Path, name: str, log: Path) -> Path:
+    """A fake multiplexer that logs each call and answers display-message for ``session-1``."""
+    path = directory / name
+    path.write_text(
+        f'#!/bin/sh\necho "$0 $*" >> "{log}"\nif [ "$1" = "display-message" ]; then echo "session-1|\\$1"; fi\n',
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def _run_statusline_in_session(tmp_path: Path, inherited: dict[str, str] | None = None):
+    """Run the statusline as a session would: the session script's prelude, then the agent's child."""
+    import subprocess
+
+    home, scratch, bin_dir = tmp_path / "home", tmp_path / "tmp", tmp_path / "bin"
+    for directory in (home, scratch, bin_dir):
+        directory.mkdir(exist_ok=True)
+    (bin_dir / "ai").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "ai").chmod(0o755)
+    path_log = tmp_path / "path-tmux.log"
+    _recording_tmux(bin_dir, "tmux", path_log)
+    session_script = tmp_path / "session.sh"
+    session_script.write_text(f"{tmux_binary.shell_prelude()}exec bash {STATUSLINE.as_posix()}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        **(inherited or {}),
+        "HOME": str(home),
+        "TMPDIR": str(scratch),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "TMUX": "/tmp/tmux-1000/default,1,0",
+        "COLUMNS": "200",
+        "GIT_BRANCH_CACHE": "main",
+        "CC_BILLING_MODE": "subscription",
+    }
+    result = subprocess.run(
+        ["bash", str(session_script)],
+        input=STATUSLINE_INPUT,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    return result, path_log
+
+
+@posix_bash_with_jq
+def test_given_a_global_tmux_binary_when_the_statusline_runs_in_a_session_then_it_queries_that_binary(
+    tmp_path,
+) -> None:
+    configured_log = tmp_path / "configured.log"
+    psmux = _recording_tmux(tmp_path, "psmux", configured_log)
+    _write_config(f"[tmux]\nbinary = {_toml_path(psmux)}\n")
+
+    result, path_log = _run_statusline_in_session(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "display-message" in configured_log.read_text(encoding="utf-8")
+    assert "session-1" in result.stdout
+    assert not path_log.exists(), "the statusline ran the tmux on PATH instead of [tmux] binary"
+
+
+@posix_bash_with_jq
+def test_given_no_tmux_binary_setting_when_the_statusline_runs_then_the_tmux_on_path_answers(tmp_path) -> None:
+    """An outer session's exported binary must not outlive a config that no longer sets one."""
+    stale_log = tmp_path / "stale.log"
+    stale = _recording_tmux(tmp_path, "old-psmux", stale_log)
+    _write_config("")
+
+    result, path_log = _run_statusline_in_session(tmp_path, inherited={tmux_binary.ENV_VAR: str(stale)})
+
+    assert result.returncode == 0, result.stderr
+    assert "display-message" in path_log.read_text(encoding="utf-8")
+    assert "session-1" in result.stdout
+    assert not stale_log.exists()
+
+
+# --------------------------------------------------------------------------
+# Remote commands: the tmux there is the other host's, never this host's setting
+# --------------------------------------------------------------------------
+
+
+def test_given_a_local_tmux_binary_when_reconnect_lists_remote_sessions_then_ssh_runs_bare_tmux_there(
+    tmp_path,
+) -> None:
+    from ai_cli import main as _main
+
+    psmux = _executable(tmp_path, "psmux")
+    _write_config(f"[tmux]\nbinary = {_toml_path(psmux)}\n")
+
+    with (
+        patch.object(_main.subprocess, "run", return_value=MagicMock(returncode=0, stdout="")) as run,
+        pytest.raises(SystemExit),
+    ):
+        _main._do_reconnect(None, {"remote": {"host": "192.0.2.10", "user": "user"}})
+
+    argv = run.call_args.args[0]
+    assert argv[:3] == ["ssh", "user@192.0.2.10", "tmux"]
+    assert not any(str(psmux) in part for part in argv)
+
+
+def test_given_a_local_tmux_binary_when_a_remote_session_is_probed_then_ssh_runs_bare_tmux_there(
+    tmp_path,
+) -> None:
+    from ai_cli import session_registry
+
+    psmux = _executable(tmp_path, "psmux")
+    _write_config(f"[tmux]\nbinary = {_toml_path(psmux)}\n")
+    record = {"remote": {"alias": "", "session": "c-myproject-1"}}
+
+    with patch.object(session_registry.subprocess, "run", return_value=MagicMock(returncode=1)) as run:
+        alive = session_registry._remote_session_alive(record, {"remote": {"host": "192.0.2.10", "user": "user"}})
+
+    assert alive is False
+    remote_command = run.call_args.args[0][-1]
+    assert remote_command.startswith("tmux has-session ")
+    assert str(psmux) not in remote_command
+
+
+# --------------------------------------------------------------------------
 # The guard: no module chooses tmux's argv[0] itself
 # --------------------------------------------------------------------------
 
