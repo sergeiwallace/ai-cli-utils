@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The statusline script queries the multiplexer named by `[tmux] binary`, which each session now
+  exports as `AI_CLI_TMUX_BINARY`, instead of whatever `tmux` is first on PATH.
+- On Windows, `ai doctor` and the launch no longer say there is no native tmux: psmux is one. A
+  host where tmux runs but `use_tmux = false` is reported as not hosting sessions.
 - A failed remote session-name allocation (`ai c NAME -R`) now names its exit code and the signal
   that ended it, instead of failing with no detail when the call printed nothing. A call cut off by
   SIGKILL or SIGTERM before it answered is retried once.

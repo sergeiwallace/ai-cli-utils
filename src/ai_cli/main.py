@@ -1283,6 +1283,9 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             dst.chmod(dst.stat().st_mode | 0o755)
 
 
+#: Why a Windows host has no tmux to host a session: none runs, and none installs unattended.
+_WINDOWS_NO_TMUX = "no tmux runs here (on Windows: install psmux, or a tmux under WSL/MSYS2/Cygwin)"
+
 _PEER_UPDATE_WAIT_SECONDS = 90.0
 _PEER_UPDATE_POLL_SECONDS = 0.25
 
@@ -3323,8 +3326,9 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         _out.error(Tag.REMOTE, "reconnect", "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
         sys.exit(1)
 
+    # The remote host's tmux, found by its own PATH: this host's [tmux] binary does not apply there.
     probe = subprocess.run(
-        ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
+        ["ssh", f"{user}@{host}", tmux_binary.REMOTE, "list-sessions", "-F", "#{session_name}"],
         capture_output=True,
         text=True,
         check=False,
@@ -5097,12 +5101,13 @@ def _do_session_launch(
     if not bare and not remote and not _tmux_setup.tmux_runs():
         if detached:
             raise RuntimeError("detached replay requires a working tmux executable")
-        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
-        # so fall straight through to bare without a notice; every other platform
-        # gets a repair-then-install attempt and then the same fallback, loudly.
+        # No package manager installs a tmux on Windows unattended (psmux, the native
+        # one, and a WSL/MSYS2/Cygwin tmux are installed by hand), so fall straight
+        # through to bare without a notice; every other platform gets a
+        # repair-then-install attempt and then the same fallback, loudly.
         if sys.platform == "win32":
             bare = True
-            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+            tmux_reason = _WINDOWS_NO_TMUX
         else:
             _tmux_present_before = _tmux_setup.tmux_present()
             _tmux_install = _tmux_setup.ensure_tmux(auto_install=not dry_run)
@@ -7776,8 +7781,8 @@ def cmd_doctor(dry_run):
     tmux_hosts = tmux_ok and not _tmux_setup.config_opts_out(config)
     if tmux_hosts:
         tmux_detail = "tmux runs here"
-    elif sys.platform == "win32":
-        tmux_detail = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+    elif sys.platform == "win32" and not tmux_ok:
+        tmux_detail = _WINDOWS_NO_TMUX
     else:
         tmux_detail = "tmux does not host sessions here"
     compact = _compact_transport.resolve(tmux_usable=tmux_hosts, tmux_detail=tmux_detail, config=config)

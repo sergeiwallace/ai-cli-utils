@@ -344,8 +344,9 @@ def get_engine_script(
         }
     )
 
-    # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
-    # so PATH decides as before); baked in at generation like the session shell above.
+    # The script's bare `tmux` calls run the configured `[tmux] binary` (no function when
+    # unset, so PATH decides as before), and the binary is exported for the statusline;
+    # baked in at generation like the session shell above.
     return f"""{shell_prelude()}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new

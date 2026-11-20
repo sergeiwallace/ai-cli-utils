@@ -294,10 +294,13 @@ if [[ -n "$_main_repo_dir" ]]; then
 fi
 
 # --- Tmux session (single call for both name and session_id) ---
+# AI_CLI_TMUX_BINARY is the [tmux] binary the session launcher exported: the build whose
+# server hosts this session. Unset (no setting, or a session the launcher did not start),
+# the tmux on PATH answers.
 tmux_part=""
 _telem_session="unknown"
 if [ -n "$TMUX" ]; then
-  _tmux_info=$(tmux display-message -p '#{session_name}|#{session_id}' 2>/dev/null)
+  _tmux_info=$("${AI_CLI_TMUX_BINARY:-tmux}" display-message -p '#{session_name}|#{session_id}' 2>/dev/null)
   tmux_session="${_tmux_info%|*}"
   _telem_session="${_tmux_info#*|}"
   [ -n "$tmux_session" ] && tmux_part="\033[35m${tmux_session}\033[0m"

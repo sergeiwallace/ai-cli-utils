@@ -20,6 +20,14 @@ that named it; it is never replaced by whatever ``tmux`` PATH finds.
 This module is the only place a tmux argv[0] is chosen;
 ``tests/test_tmux_binary.py`` fails if any other module in the package builds an
 argv starting with the literal ``"tmux"``.
+
+Two kinds of call do not take their argv[0] from here. The statusline script runs
+outside Python, as a child of the agent inside a session, so the session script
+exports the resolved binary as :data:`ENV_VAR` and the statusline reads that. A
+command sent over ssh (``ai reconnect``, the remote liveness probe) runs on the
+other host, where this host's setting means nothing, so it names :data:`REMOTE`
+and the remote login's PATH decides; ``docs/research/psmux-compatibility.md``
+records why.
 """
 
 from __future__ import annotations
@@ -36,6 +44,15 @@ from . import config as _config
 
 #: argv[0] when nothing is configured: the PATH lookup the launcher always did.
 DEFAULT = "tmux"
+
+#: The program an ssh command runs on the remote host. Bare on purpose: the remote
+#: login's shell may be POSIX, cmd or PowerShell, and only a plain program name runs
+#: in all of them without the remote ``ai`` being on that login's PATH.
+REMOTE = "tmux"
+
+#: The resolved binary, exported into each session for scripts outside Python (the
+#: statusline). Unset in a session when nothing is configured.
+ENV_VAR = "AI_CLI_TMUX_BINARY"
 
 
 class TmuxBinaryMissing(FileNotFoundError):
@@ -167,14 +184,21 @@ def which(config: dict | None = None) -> str | None:
 def shell_prelude(config: dict | None = None) -> str:
     """A shell function routing a script's bare ``tmux`` calls to the configured binary.
 
-    Empty when nothing is configured, or the configured binary is missing, so the
-    script's ``tmux`` calls keep using PATH exactly as before (a missing binary has
-    already been refused by the launch that writes the script).
+    It also exports the binary as :data:`ENV_VAR`, which is how the statusline script,
+    run by the agent this script starts, finds the same executable. The value is the
+    launch's resolution on purpose: this session's server was started by that binary,
+    so it is the client that can reach it even if the setting changes mid-session.
+
+    With nothing configured, or a missing configured binary, the script's ``tmux``
+    calls keep using PATH exactly as before (a missing binary has already been refused
+    by the launch that writes the script), and :data:`ENV_VAR` is unset so a value
+    inherited from an outer session cannot point this one at another build.
     """
     resolution = resolve(config)
     if resolution.configured is None or resolution.path is None:
-        return ""
-    return f'tmux() {{ {shlex.quote(Path(resolution.path).as_posix())} "$@"; }}\n'
+        return f"unset {ENV_VAR}\n"
+    quoted = shlex.quote(Path(resolution.path).as_posix())
+    return f'tmux() {{ {quoted} "$@"; }}\nexport {ENV_VAR}={quoted}\n'
 
 
 def server_process_names(config: dict | None = None) -> frozenset[str]:
