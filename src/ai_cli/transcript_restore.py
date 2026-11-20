@@ -3,8 +3,9 @@
 A deployment may archive an idle transcript, for example as ``<session-id>.jsonl.zst``
 beside where it was, and remove the original. ``claude --resume`` cannot read the
 archive, and the launcher cannot even see the session to pick it. The configured
-command restores a session's transcripts; the launcher runs it before choosing what to
-resume and again for the session it resumes, and refuses the resume when it fails.
+command restores a session's transcripts; the launcher runs it for the archives when no
+live transcript is the one to resume, and again for the session it resumes, and refuses
+the resume when it fails.
 """
 
 from __future__ import annotations
@@ -101,8 +102,8 @@ def _archived_session_ids(project_dir: Path) -> list[tuple[str, Path]]:
 def restore_archived(project_dir: Path) -> set[str]:
     """Restore every archived session transcript in ``project_dir``; return the ids restored.
 
-    Runs before the resume target is chosen, which reads each transcript's title and
-    mtime. The restored file keeps the archive's mtime when the command gave it a newer
+    Runs when no live transcript is the resume target, then the target is chosen again
+    from titles and mtimes. The restored file keeps the archive's mtime when the command gave it a newer
     one, so restoring an old conversation never makes it look the most recently active.
     """
     settings = _settings()

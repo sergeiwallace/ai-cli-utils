@@ -60,8 +60,8 @@ Call sites:
 
 | Path | Before choosing | Before `claude --resume` |
 |---|---|---|
-| tmux session script (first start, auto-restart, pinned restart) | `ai internal resolve-continue-target` calls `restore_archived`; failure exits 74; `_resolve_cc_transcript` passes 74 through on a restart (`TRANSCRIPT RESTORE restart`) and the script stops (`TRANSCRIPT RESTORE resolve-failed`) | the script runs `ai internal restore-transcript <id>`; failure stops it (`TRANSCRIPT RESTORE session`) |
-| bare launch (`_bare_engine_command`) | `restore_archived` | `restore_session` for the matched id; `_do_session_launch` prints the error and exits 1 |
+| tmux session script (first start, auto-restart, pinned restart) | `ai internal resolve-continue-target` picks from the live transcripts and calls `restore_archived` only when that finds nothing (`_pick_with_archive_restore`); failure exits 74; `_resolve_cc_transcript` passes 74 through on a restart (`TRANSCRIPT RESTORE restart`) and the script stops (`TRANSCRIPT RESTORE resolve-failed`) | the script runs `ai internal restore-transcript <id>`; failure stops it (`TRANSCRIPT RESTORE session`) |
+| bare launch (`_bare_engine_command`) | `_pick_with_archive_restore`, as above | `restore_session` for the matched id; `_do_session_launch` prints the error and exits 1 |
 
 `ai list-capabilities` prints `transcript-restore` when a valid command is configured.
 
@@ -95,6 +95,7 @@ Call sites:
 | D-3 | When it runs | (a) for archives before resolving and for the resumed id, (b) for the resumed id only | (a) | (a) | No | (b) never sees an archived conversation, which is the case the hook exists for | `Resolved` |
 | D-4 | Timeout | (a) 300 s default, configurable, (b) none | (a) | (a) | No | A restart must not hang on a stuck tool | `Resolved` |
 | D-5 | How a failure stops the tmux path | (a) emit, record the exit and stop the child loop, (b) exit the session | (a) | (a) | No | The pane stays open showing the output; `exit 78` retries | `Resolved` |
+| D-7 | When the archives are restored | (a) only when no live transcript is the pick, then pick again, (b) every launch | (a) | (a) | No | (b) restores every archive on each launch and the archiver re-archives them | `Resolved` |
 | D-6 | Probe command name | (a) `ai list-capabilities`, (b) `ai capabilities` | (a) | (a) | No | The CLI names commands verb-noun | `Resolved` |
 
 ### Decision Details
@@ -170,6 +171,25 @@ than a few conversations; the archive tool archives them again once idle.
 
 **Recommendation.** (a).
 
+<a id="d-7"></a>
+
+#### D-7: When the archives are restored — ✅ Resolved by Claude Opus 5.5: (a) only when the live pick finds nothing
+
+**Context.** D-3 first restored every archive in the project directory before each pick. In a
+directory with hundreds of archived conversations that is hundreds of restore runs on every
+launch and automatic restart, and since a restored file keeps its old mtime, the archiver
+archives them all again.
+
+- **(a) Run the pick (restart or resume pick and the lone-mismatch fallback) on the live
+  transcripts; restore the archives and pick again only when it finds nothing.** Pros:
+  resuming a live session restores nothing; only resuming a long-idle one pays. A restart
+  whose recorded transcript was archived refuses on the first pick and is retried the same
+  way. Cons: a live transcript with the title wins over an archived one with the same title,
+  which is the newer of the two whenever archiving follows idleness.
+- **(b) Every launch.** Cons: the churn above.
+
+**Recommendation.** (a). This narrows D-3's first point; the second (the resumed id) stands.
+
 ## Approval Log
 
 | Date | Decision | Actor | Notes |
@@ -179,6 +199,7 @@ than a few conversations; the archive tool archives them again once idle.
 | 2026-11-20 | resume-restore-hook/D-3 | Claude Opus 5.5 | Restore before resolving and for the resumed id; fresh-authoring, high confidence. |
 | 2026-11-20 | resume-restore-hook/D-4 | Claude Opus 5.5 | 300 s default; fresh-authoring, medium confidence. |
 | 2026-11-20 | resume-restore-hook/D-5 | Claude Opus 5.5 | Stop the child loop; fresh-authoring, high confidence. |
+| 2026-11-20 | resume-restore-hook/D-7 | Claude Opus 5.5 | Restore archives only when the live pick finds nothing; launcher review, high confidence. |
 | 2026-11-20 | resume-restore-hook/D-6 | Claude Opus 5.5 | Verb-noun probe name; fresh-authoring, high confidence. |
 
 <!-- /doc:region name="overview" -->

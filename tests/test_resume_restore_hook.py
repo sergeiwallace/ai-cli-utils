@@ -31,6 +31,7 @@ from ai_cli.main import _bare_engine_command, _cc_project_dir, _do_session_launc
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 OLDER_ID = "22222222-2222-4222-8222-222222222222"
+UNRELATED_ID = "33333333-3333-4333-8333-333333333333"
 TITLE = "myproject-box-1"
 SESSION = f"c-{TITLE}"
 
@@ -117,7 +118,7 @@ def test_given_an_archived_transcript_and_a_restore_command_when_bare_claude_res
     assert [call["session_id"] for call in _calls(hook["log"])][:1] == [SESSION_ID]
 
 
-def test_given_an_older_archived_transcript_with_the_same_title_when_restored_then_the_newer_one_is_still_resumed(
+def test_given_two_archived_transcripts_with_the_same_title_when_restored_then_the_newer_one_is_resumed(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
@@ -128,12 +129,39 @@ def test_given_an_older_archived_transcript_with_the_same_title_when_restored_th
     _archive(older)
     newer = _write_transcript(project, SESSION_ID, TITLE)
     os.utime(newer, (2_000_000, 2_000_000))
+    _archive(newer)
     hook = _hook(tmp_path, project)
 
     argv = _bare(target, {"resume_restore": hook["resume_restore"]})
 
-    assert older.is_file()
+    assert older.is_file() and newer.is_file()
     assert argv[argv.index("--resume") + 1] == SESSION_ID
+
+
+@pytest.mark.parametrize("archived", [OLDER_ID, UNRELATED_ID])
+def test_given_a_live_matching_transcript_and_an_archive_when_resolving_then_the_hook_never_runs(
+    tmp_path, monkeypatch, archived
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = tmp_path / "wt"
+    project = _cc_project_dir(cwd)
+    live = _write_transcript(project, SESSION_ID, TITLE)
+    os.utime(live, (2_000_000, 2_000_000))
+    old = _write_transcript(project, archived, TITLE if archived == OLDER_ID else "myproject-box-9")
+    os.utime(old, (1_000_000, 1_000_000))
+    archive = _archive(old)
+    hook = _hook(tmp_path, project)
+
+    code, out, _err = run_cli(
+        ["ai", "internal", "resolve-continue-target", str(cwd), TITLE],
+        config={"resume_restore": hook["resume_restore"]},
+    )
+
+    assert code == 0
+    assert out.strip() == str(live)
+    assert _calls(hook["log"]) == []
+    assert archive.is_file()
+    assert not old.exists()
 
 
 def test_given_no_restore_command_when_bare_claude_launches_then_an_archived_transcript_is_left_alone(

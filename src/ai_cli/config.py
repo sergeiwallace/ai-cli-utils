@@ -960,9 +960,9 @@ stale_session_timeout = 15
 ## A command run before every Claude Code resume (`ai c`, its automatic restarts and the
 ## bare launch), for a deployment that archives idle transcripts, for example as
 ## <session-id>.jsonl.zst. Point it at your own restore tool. "{session_id}" in any
-## argument is replaced by the session's id. It runs without a shell, once for each
-## archived <session-id>.jsonl.zst in the session's project directory before the resume
-## target is chosen, then for the session being resumed. Exit 0: the resume goes ahead.
+## argument is replaced by the session's id. It runs without a shell: when no live
+## transcript is the one to resume, once for each archived <session-id>.jsonl.zst in the
+## session's project directory before choosing again; then for the session being resumed. Exit 0: the resume goes ahead.
 ## Any other exit, or a timeout: the resume stops and its output and exit status are
 ## printed. Read on every resume. Unset: nothing runs. Guide: docs/guides/resume-restore.md.
 # command = ["restore-transcript", "--session-id", "{session_id}"]

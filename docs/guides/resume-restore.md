@@ -45,8 +45,9 @@ Point `command` at whatever restores your archives. The command must:
 Before every Claude Code resume: `ai c NAME`, the automatic restart inside a tmux session,
 a pinned restart and a bare (`-b`) launch.
 
-1. Before the resume target is chosen, once for each `<session-id>.jsonl.zst` in the
-   session's project directory whose `<session-id>.jsonl` is missing. Afterwards the
+1. When no live transcript in the session's project directory is the one to resume: once
+   for each `<session-id>.jsonl.zst` there whose `<session-id>.jsonl` is missing, and then
+   the resume target is chosen again. Resuming a live session restores nothing. Afterwards the
    transcript must exist; a command that exits 0 without restoring it stops the resume. A
    restored transcript keeps the archive's modification time when the command gave it a
    newer one, so an old conversation does not become the most recently active one.

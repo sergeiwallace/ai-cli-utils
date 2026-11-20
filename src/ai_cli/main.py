@@ -883,6 +883,27 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
 _RESTORE_FAILED_STATUS = 74
 
 
+def _pick_with_archive_restore(project_dir: Path, pick: Callable[[], Path | None]) -> tuple[Path | None, set[str]]:
+    """Pick from the live transcripts; restore archived ones and pick again only when that fails.
+
+    Resuming a live session therefore runs no ``[resume_restore]`` command for the archives
+    beside it, which would otherwise be restored, and archived again, on every launch. A
+    restart whose recorded transcript was archived refuses on the first pick, so it is
+    retried the same way. Returns the pick and the session ids restored.
+    """
+    try:
+        matched = pick()
+    except _ClaudeRestartTranscriptError:
+        restored = _transcript_restore.restore_archived(project_dir)
+        if not restored:
+            raise
+        return pick(), restored
+    if matched is not None:
+        return matched, set()
+    restored = _transcript_restore.restore_archived(project_dir)
+    return (pick() if restored else None), restored
+
+
 class _LiveClaudeSessionError(RuntimeError):
     """A bare launch found a live Claude Code process it cannot reattach to."""
 
@@ -1140,13 +1161,17 @@ def _bare_engine_command(
         command = ["claude"]
         if not _is_root():
             command.append("--dangerously-skip-permissions")
-        restored = _transcript_restore.restore_archived(_cc_project_dir(target_root))
-        # Resume this session's own prior conversation by its exact transcript UUID.
-        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(target_root, ai_name)
-            if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
-                matched = lone
+
+        def pick() -> "Path | None":
+            # Resume this session's own prior conversation by its exact transcript UUID.
+            found = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(target_root, ai_name)
+                if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
+                    found = lone
+            return found
+
+        matched, restored = _pick_with_archive_restore(_cc_project_dir(target_root), pick)
         if matched is not None:
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
@@ -2383,25 +2408,27 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         cwd, title = Path(argv[1]), argv[2]
         restarting = "--restart" in argv[3:]
-        try:
-            # A transcript the deployment archived is invisible to the picks below until restored.
-            _transcript_restore.restore_archived(_cc_project_dir(cwd))
-        except _transcript_restore.TranscriptRestoreError as exc:
-            _out.error(Tag.INTERNAL, "resume", str(exc))
-            sys.exit(_RESTORE_FAILED_STATUS)
-        try:
-            matched = (
+
+        def pick() -> "Path | None":
+            found = (
                 _pick_cc_restart_transcript(cwd, title)
                 if restarting
                 else _pick_cc_resume_transcript(cwd, title, Tag.INTERNAL)
             )
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(cwd, title)
+                if lone is not None and _confirm_mismatched_title_resume(title, lone):
+                    found = lone
+            return found
+
+        try:
+            matched, _restored = _pick_with_archive_restore(_cc_project_dir(cwd), pick)
+        except _transcript_restore.TranscriptRestoreError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(_RESTORE_FAILED_STATUS)
         except _ClaudeRestartTranscriptError as exc:
             _out.error(Tag.INTERNAL, "resume", str(exc))
             sys.exit(1)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(cwd, title)
-            if lone is not None and _confirm_mismatched_title_resume(title, lone):
-                matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
