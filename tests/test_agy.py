@@ -90,6 +90,7 @@ def test_given_an_unstartable_command_when_launched_then_one_error_names_the_com
 
     assert result.returncode == 126
     [error] = result.stderr.splitlines()
+    assert "[launch] start: Error:" in error
     assert repr(command) in error
     assert "[agy] command" in error
 

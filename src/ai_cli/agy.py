@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from uuid import UUID
 
+from . import output as _out
+
 
 def conversation_cache(home: Path) -> Path:
     # Antigravity 1.5.13 stores its own workspace-to-conversation mapping here.
@@ -42,6 +44,8 @@ def launch_command(command: str, name: str, *, sandbox: bool, isolated: bool, ex
 
 
 def launch(command: str, name: str, scope: str, *extra_args: str) -> int:
+    from .main import _exec_handoff
+
     try:
         argv = shlex.split(command)
         if not argv or not argv[0]:
@@ -57,12 +61,13 @@ def launch(command: str, name: str, scope: str, *extra_args: str) -> int:
             if conversation:
                 argv += ["--conversation", conversation]
         os.environ["AI_CLI_SESSION_NAME"] = name
-        os.execvp(argv[0], [*argv, *extra_args])
+        _exec_handoff(argv[0], [*argv, *extra_args])
     except (OSError, ValueError) as exc:
-        print(
+        _out.error(
+            _out.Tag.LAUNCH,
+            "start",
             f"Could not start Antigravity using {command!r}: {exc}. "
             "Install agy and put it on PATH, or set [agy] command in your ai config.",
-            file=sys.stderr,
         )
         return 126
 
