@@ -7,7 +7,6 @@ import re
 import secrets
 import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -1953,32 +1952,44 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
 
 
 _REMOTE_ALLOCATION_RETRY_DELAY_S = 1.0
+# Platform difference: Python's ``signal`` module on Windows has no SIGKILL, SIGHUP or
+# SIGQUIT, so signal names come from this fixed POSIX table instead. It is also the
+# right table for a remote status: the remote shell numbers signals the POSIX way
+# whatever OS the launcher runs on.
+_POSIX_SIGNAL_NAMES = {1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 6: "SIGABRT", 9: "SIGKILL", 13: "SIGPIPE", 15: "SIGTERM"}
 # Signals that end a call from outside it (an external kill, a shutdown) rather than
 # from the user: a call cut off by one never ran to an answer, so asking again is safe.
-_TRANSIENT_KILL_SIGNALS = frozenset({signal.SIGKILL, signal.SIGTERM})
+_TRANSIENT_KILL_SIGNALS = frozenset({"SIGKILL", "SIGTERM"})
+# Platform difference: only on POSIX does a negative subprocess status mean a signal.
+# On Windows it is an NTSTATUS such as 0xC000013A read as a signed int.
+_NEGATIVE_STATUS_IS_SIGNAL = sys.platform != "win32"
 
 
-def _exit_signal(returncode: int) -> "signal.Signals | None":
-    """The signal behind an ssh call's exit status, or None.
+def _local_signal_status(returncode: int) -> bool:
+    return returncode < 0 and _NEGATIVE_STATUS_IS_SIGNAL
 
-    A negative status means the local ssh client itself was killed. A status above 128
-    is how the remote shell reports a command a signal ended.
+
+def _exit_signal(returncode: int) -> str | None:
+    """The POSIX name of the signal behind an ssh call's exit status, or None.
+
+    A negative status (POSIX only) means the local ssh client itself was killed. A
+    status above 128 is how the remote shell reports a command a signal ended.
     """
-    number = -returncode if returncode < 0 else returncode - 128 if returncode > 128 and returncode != 255 else 0
-    try:
-        return signal.Signals(number) if number else None
-    except ValueError:
-        return None
+    if _local_signal_status(returncode):
+        return _POSIX_SIGNAL_NAMES.get(-returncode)
+    if 128 < returncode < 255:
+        return _POSIX_SIGNAL_NAMES.get(returncode - 128)
+    return None
 
 
 def _remote_exit_text(returncode: int) -> str:
     sig = _exit_signal(returncode)
-    if returncode < 0:
-        return f"the local ssh client was killed by {sig.name if sig else f'signal {-returncode}'}"
+    if _local_signal_status(returncode):
+        return f"the local ssh client was killed by {sig or f'signal {-returncode}'}"
     if returncode == 255:
         return "exit 255: ssh could not reach the remote host"
     if sig is not None:
-        return f"exit {returncode}: the remote command was killed by {sig.name}"
+        return f"exit {returncode}: the remote command was killed by {sig}"
     return f"exit {returncode}"
 
 

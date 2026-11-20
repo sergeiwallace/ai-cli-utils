@@ -2,6 +2,7 @@ import io
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -870,7 +871,9 @@ class TestRemoteSessionIterm2Emit:
 # another machine failed with "invalid identity" instead of attaching.
 
 
-def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None, allocator_failures=(), calls=None):
+def _run_remote_named_launch(
+    argv, live_remote_sessions, allocator_reply=None, allocator_failures=(), calls=None, negative_is_signal=True
+):
     """Drive `ai c <name> -R` through cli() with SSH stubbed.
 
     The allocation reply comes from the real remote allocator code
@@ -878,6 +881,8 @@ def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None, a
     unless ``allocator_reply`` overrides it with a raw JSON body. Each of
     ``allocator_failures`` (a ``returncode`` with no output) answers one allocation
     call first, in order; ``calls`` collects every allocation command sent.
+    ``negative_is_signal`` pins the POSIX (True) or Windows (False) meaning of a
+    negative status, so both run on every OS.
     """
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "ssh"}}
     failures = list(allocator_failures)
@@ -914,6 +919,7 @@ def _run_remote_named_launch(argv, live_remote_sessions, allocator_reply=None, a
         patch("ai_cli.main.subprocess.run", side_effect=remote_ssh),
         patch("ai_cli.transport.run_ssh_with_reconnect", handoff),
         patch("ai_cli.main.time.sleep"),
+        patch("ai_cli.main._NEGATIVE_STATUS_IS_SIGNAL", negative_is_signal),
         patch("sys.stderr", stderr),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -1030,3 +1036,34 @@ def test_given_allocation_interrupted_or_unreachable_when_remote_launched_then_f
     assert len(calls) == 1
     assert f"remote session-name allocation failed ({cause}): no output" in stderr
     handoff.assert_not_called()
+
+
+def test_given_windows_negative_status_when_remote_launched_then_fails_naming_exit_without_retry():
+    calls = []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"],
+        live_remote_sessions=[],
+        allocator_failures=[-1073741510],
+        calls=calls,
+        negative_is_signal=False,
+    )
+
+    assert code == 1
+    assert len(calls) == 1
+    assert "remote session-name allocation failed (exit -1073741510): no output" in stderr
+    handoff.assert_not_called()
+
+
+def test_given_signal_module_without_posix_only_names_when_main_imported_then_import_succeeds():
+    # Windows' signal module lacks these; deleting them here catches a module-level
+    # reference to one on any OS, before Windows CI does.
+    script = (
+        "import signal\n"
+        "for name in ('SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGPIPE', 'SIGALRM', 'SIGUSR1', 'SIGUSR2', 'SIGCHLD'):\n"
+        "    if hasattr(signal, name):\n"
+        "        delattr(signal, name)\n"
+        "import ai_cli.main\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300, check=False)
+
+    assert result.returncode == 0, result.stderr
