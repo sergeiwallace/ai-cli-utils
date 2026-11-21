@@ -1,0 +1,1 @@
+- On macOS, one process whose arguments psutil cannot read (a `SystemError` from `sysctl`) no longer ends the process scans in `ai iterm2 sessions --adopt`, `ai cdp start` and bare-mode session slot allocation; that process is skipped and the scan goes on.

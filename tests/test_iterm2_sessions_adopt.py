@@ -46,14 +46,12 @@ def homes(tmp_path, monkeypatch):
 
 def _proc(pid, cmdline, *, terminal=None, name="python3.12", user=_USER, cwd="/work/dir"):
     proc = MagicMock()
-    proc.info = {
-        "pid": pid,
-        "name": name,
-        "cmdline": cmdline,
-        "terminal": terminal,
-        "username": user,
-        "create_time": 1000.0,
-    }
+    proc.info = {"pid": pid, "terminal": terminal, "username": user, "create_time": 1000.0}
+    proc.name.return_value = name
+    if cmdline is None:
+        proc.cmdline.side_effect = psutil.AccessDenied(pid)
+    else:
+        proc.cmdline.return_value = cmdline
     proc.cwd.return_value = cwd
     return proc
 
