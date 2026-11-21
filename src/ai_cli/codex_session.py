@@ -384,7 +384,13 @@ def exclusive_process_flags(codex: str = "codex", cache_dir: Path | None = None)
         pass
     try:
         shown = subprocess.run(
-            [path, "--help"], capture_output=True, text=True, timeout=_HELP_TIMEOUT_SECONDS, check=False
+            [path, "--help"],
+            # The launch runs in the session's pane: the probe must never read its keystrokes.
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_HELP_TIMEOUT_SECONDS,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
