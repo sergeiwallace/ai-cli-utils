@@ -356,16 +356,28 @@ remote host answers only with one that exists there.
 
 Numbered Codex slots (`ai cx 1`) retain the native thread ID confirmed by Codex's
 `SessionStart` hook. Restart uses `codex resume <recorded-id>`, including when a newer
-thread exists in the same directory. A live tmux pane remains attachable independently
-of saved history. A stopped slot with missing, ambiguous, ephemeral or unconfirmed
-history refuses to guess a thread. Existing directory-only slots are not adopted
-automatically. The versioned hook contract currently covers Codex 0.169.0; unsupported
-versions report unknown. The stable hook command is `ai internal codex-session-confirm`;
-launch identity travels through the child environment rather than hook arguments.
-`ai internal codex-hook-contract` prints the versioned declaration, key and expected
-hash for a policy installer to verify against Codex's `hooks/list` before approving
-that exact hook. Until installed, normal hook trust can leave confirmation pending.
-A fresh untrusted Git project still requires separate directory consent. See the [session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
+thread exists in the same directory. Version 2 slot records keep confirmed history
+separate from an in-flight launch and its process identity. Quitting before the first
+prompt no longer strands a slot: after the old writer exits, relaunch logs the abandoned
+launch and resumes confirmed history, or starts fresh if none was confirmed. A live
+writer collision or unreadable writer identity refuses. Old record schemas also refuse.
+
+A null hook transcript path leaves the thread live-only. It becomes resumable only
+through a later event for that exact thread with a path, or an exact thread-ID rollout
+match under the slot's native sessions directory. Otherwise relaunch uses the last
+proved resumable thread, or starts fresh. Missing or ambiguous confirmed persisted
+history refuses; directory-only slots are never adopted automatically. A live tmux
+pane remains attachable independently. The launch trampoline requires POSIX exec;
+Windows refuses because writer identity continuity is unverified there.
+
+The versioned hook contract covers Codex 0.169.0; unsupported versions report unknown.
+The stable hook command is `ai internal codex-session-confirm`; launch identity travels
+through the child environment rather than hook arguments. `ai internal codex-hook-contract`
+prints the versioned declaration, key and expected hash for a policy installer to verify
+against Codex's `hooks/list` before approving that exact hook. Until installed, normal
+hook trust can leave a launch unconfirmed. SessionStart runs at the first accepted turn.
+A fresh untrusted Git project still requires separate directory consent. See the
+[session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
 
 When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
 branch or transcript, or asks the remote host to allocate anything. The refusal lists

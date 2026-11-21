@@ -33,27 +33,103 @@ The Linux build host still needs the same measurement for every client installed
 
 ### Codex slot identity contract
 
-Interactive numbered slots store a version 1 identity record beside the launch scripts:
+Interactive numbered slots store a version 2 identity record beside the launch scripts:
 `$XDG_STATE_HOME/ai-cli-utils/sessions/<tmux-slot>.codex.json` (the usual
 `~/.local/state` fallback applies). Native rollouts remain under
-`$CODEX_HOME/sessions` or `~/.codex/sessions`. Only their first metadata record is read.
-Claude Code, Gemini and Pi keep their existing adapters and launch arguments.
+`$CODEX_HOME/sessions` or the client's default sessions directory. Only their first
+metadata record is read. Claude Code, Gemini and Pi keep their existing launch behavior.
+Version 1 slot records refuse with a tagged incompatible-schema error; there is no
+pre-v1 migration or directory-based adoption.
 
-Before a Codex process starts, the launcher writes `phase: pending`. A native
-`SessionStart` hook confirms `session_id`, `cwd` and nullable `transcript_path` for
-that launch token. The record retains only identity metadata: schema version, slot,
-directory, native thread ID, rollout path, client version, execution mode, route,
-result and launch token. It contains no prompt, message or transcript bodies.
-These records are neither process liveness nor commit authority.
+The committed fields are `phase` (`unconfirmed` or `confirmed`), `thread_id`,
+`rollout_path`, and `result` (`unconfirmed`, `confirmed`, or `live-only`). The record
+also retains `slot`, `cwd`, `client_version`, `execution_mode`, and `route`.
+`resumable` is null or the last confirmed resumable `{thread_id, rollout_path}` pair;
+it preserves a fallback if a subsequent confirmed thread is live-only. A resumable
+confirmation must agree with that saved pair, and an unconfirmed identity cannot
+carry a resumable fallback; inconsistent records refuse without writing.
+The separate `in_flight` object contains `token`, `writer` (`pid`, `backend`,
+`start_time`), `launched_at` (UTC ISO timestamp), `client_version`, and `route`.
+`prepare` replaces only `in_flight`, except when exact persisted evidence upgrades a
+live-only identity. It never erases a confirmed identity while awaiting a first turn.
+No prompt, message, transcript body, credentials or hook trust is stored here.
 
-On restart or supervisor recreation, a confirmed ID must match exactly one readable
-rollout's `payload.id` and `payload.cwd`. The launcher passes that ID to
-`codex resume`; it never selects by newest file, working directory or `--last`.
-Missing, duplicate, malformed, wrong-directory and ephemeral history refuses resume.
-An unconfirmed callback, incompatible schema or unsupported version stays pending or
-unknown. There is no automatic adoption of old directory-only slots. A live pane
-can still be attached with `ai cx NAME` or `ai attach <tmux-slot>` without claiming
-that it has resumable persisted history. Confirmed history alone never proves liveness.
+#### Writer identity decision
+
+Resolved: a Python launch trampoline reserves its own process identity while holding
+the slot lock, then uses POSIX `exec` to replace itself with Codex. PID and process
+birth marker survive exec, through exec-preserving executable shims. Thus the writer exists before
+Codex can start and remains the Codex process throughout its run. `run_agent` still
+runs a foreground child and waits for it; the long-lived slot shell is never used as
+the writer. The initial version query precedes reservation and does not run a session.
+A failed exec leaves an abandoned launch, recoverable by the same decision table.
+
+This uses `process_probe.probe_for`, `capture_identity`, `normalize_proc_start` and
+`StartTimeMatch`: Linux compares procfs birth ticks; macOS uses the shared psutil
+creation-time comparison. `UNPROVEN` alone never proves death: a readable captured
+identity with a different birth marker is required to identify PID reuse. A missing
+or unreadable identity, malformed marker or backend change refuses. A stopped or unreaped zombie process
+with a matching birth marker also refuses; recovery never signals an existing process.
+Windows launch refuses with `writer exec identity unsupported on this platform`:
+Python exec there does not provide the required POSIX process-identity continuity.
+The shared process probe remains portable, but a Windows launcher mechanism is unverified.
+
+Alternatives rejected: the slot shell outlives each Codex run and would falsely block
+sequential relaunches; the short-lived `prepare` subprocess would falsely permit live
+collisions; hook-only writer recording misses quits before the first prompt; spawning
+Codex and recording its PID afterward leaves a race before reservation. A gated child
+protocol could support another process model, but adds a second launch handshake;
+exec needs no child discovery, timing heuristic or new dependency.
+
+| Existing launch evidence | Decision |
+|---|---|
+| PID alive and birth marker matches | Refuse live writer collision, including another pane |
+| PID gone, confirmed resumable thread | Log abandoned launch; resume that exact confirmed thread |
+| PID present with a proved different birth marker | Treat old writer as dead; apply the same resume/fresh rules |
+| Dead writer, no confirmed thread | Log `abandoned-unconfirmed`; start a fresh thread (`new`) |
+| Same shell after its Codex child returned | Old child is dead; apply the same resume/fresh rules |
+| Dead writer, live-only identity with exact rollout proof | Upgrade that identity; resume its exact thread |
+| Dead writer, live-only identity without proof | Keep it live-only; resume the last confirmed resumable fallback, or start fresh |
+| Missing/unreadable writer, incomparable backend, malformed record, old schema | Refuse without a record write |
+| Confirmed resumable identity or fallback with missing/ambiguous/corrupt/wrong-directory rollout | Refuse without guessing |
+
+Abandonment is logged through the output interface as a tagged line naming the slot
+and `resume-confirmed` or `abandoned-unconfirmed; start-fresh`. It never includes the
+token, thread ID or rollout path. Logs are on stderr so the four-line `prepare`
+reply remains machine-readable. In-flight tokens are retained after confirmation so
+later SessionStart callbacks in that session can add persisted proof.
+
+#### First-turn confirmation and transcript proof
+
+Codex 0.169.0 invokes SessionStart at the first accepted turn, not at thread creation.
+An isolated app-server observation found no hook for three seconds after `thread/start`
+and a hook about 13 ms after the first turn was accepted. The source at commit
+`d32063f96c2dff1dc96af839b3952abb6acfeda4` places session setup at
+[core/src/session/session.rs:2243](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/session/session.rs#L2243),
+first-turn dispatch at
+[core/src/session/turn.rs:411](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/session/turn.rs#L411),
+and hook invocation at
+[core/src/hook_runtime.rs:132–189](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/hook_runtime.rs#L132-L189).
+Quitting before a first prompt therefore leaves an in-flight launch, not a reason to
+erase or permanently refuse the committed identity.
+
+A native `SessionStart` confirms `session_id`, `cwd` and nullable `transcript_path`
+only with the current launch token. That token may replace a previously confirmed
+thread ID. Stale or missing tokens never write, even for the same thread. A null
+`transcript_path` always leaves the current identity `live-only`, which cannot itself
+be resumed. A later current-token event for the exact same thread can supply a
+non-null path. A subsequent null event leaves it live-only again; the separately
+saved last resumable pair remains a fallback that needs exact native-store proof
+before relaunch.
+
+The other permitted upgrade is `_client().probe_thread(cwd, confirmed_thread_id)`:
+exactly one readable rollout under the slot's native sessions root must contain that
+exact `payload.id` and matching `payload.cwd`. File name, age, newest/nearest file and
+working directory alone never select a thread. If there is no proof, the identity
+stays live-only; launch uses a proved last resumable fallback or starts fresh. A
+non-null hook path still needs exact native-store proof before a later resume.
+Confirmed history proves neither liveness nor commit authority. Live tmux attach
+remains independent of persisted resume proof.
 
 The supported native event contract is pinned to Codex 0.169.0:
 [event schema](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/schema.rs)
@@ -69,9 +145,9 @@ hooks.SessionStart=[{hooks=[{type="command",command="ai internal codex-session-c
 
 These bytes are identical across launches, slots and hosts. There is no matcher,
 timeout, async, statusMessage or additionalContextLimit override. The native defaults
-are used. The four-line `prepare` reply contains target, declaration, absolute slot
+are used. The four-line diagnostic `prepare` reply contains target, declaration, absolute slot
 record path and launch token, in that order; record paths containing CR/LF are refused
-before writing. `_run_codex` passes `AI_CLI_CODEX_SLOT_RECORD` and
+before writing. `_run_codex` calls the launch trampoline, which sets `AI_CLI_CODEX_SLOT_RECORD` and
 `AI_CLI_CODEX_LAUNCH_TOKEN` only to the client invocation and its descendants. The
 callback reads these variables and SessionStart JSON from stdin. The former
 `python -m ai_cli.codex_session confirm <record> <token>` form is removed.
@@ -80,8 +156,8 @@ Missing/empty variables, a missing record, a stale token or a nonbinding event f
 with a nonzero status and a tagged error, without changing the identity record or
 printing tokens, payloads or exception text. This intentionally replaces the prior
 behavior that wrote pending/unknown before rejecting an event; a launch already has
-pending state before its client starts. Duplicate valid callbacks remain idempotent.
-A disabled or unapproved callback leaves that launch pending. No trust bypass is added.
+separate in-flight state before its client starts. Duplicate valid callbacks remain idempotent.
+A disabled or unapproved callback leaves the committed identity untouched and the launch in flight. No trust bypass is added.
 A new client version needs verified event and hook fixtures before enablement.
 
 #### Version 1 hook trust boundary
@@ -132,10 +208,16 @@ Source citations below were re-opened at commit
   and any earlier session-environment policy remain a runtime transport risk. The
   synthetic bash/zsh tests prove launcher inheritance, not real-client replay.
 
-The owner's real-client canary must verify the two variables reach the hook, the
-PATH-resolved command runs, the exact hook approval removes its review gate, and the
-slot becomes confirmed. This change cannot run the real client or edit trust state.
-The paired host, macOS and Windows also remain unverified.
+The isolated real-client regression on Linux with Codex 0.169.0 used fresh HOME and
+CODEX_HOME directories, synthetic environment values, and a local network guard with
+no authentication. Default-shell, bash and sh positive cases all had zero hook events
+during the three seconds after `thread/start`. After the first turn, the real callback
+exited 0, confirmed the exact client thread, and retained `live-only` because the native
+event's transcript path was null. Stale-token and missing-record-environment callbacks
+exited 1 without changing records; missing `ai` also left its record unchanged. Each
+started app-server was waited for and exited 0. Only throwaway hook trust was written.
+The TUI, tmux with the real client, paired host, macOS, Windows and authenticated turns
+remain unverified. The synthetic tmux tests do exercise the generated launcher.
 
 #### Hook acceptance criteria
 

@@ -370,10 +370,10 @@ class TestGetEngineScript:
         )
 
         assert 'export CX_TMUX_SESSION="$tmux_session"' in script
-        assert '-m ai_cli.codex_session prepare "$_ai_state_dir/sessions/$tmux_session.codex.json"' in script
-        assert 'run_agent codex -c "$_cx_config" resume "$_cx_target"' in script
+        assert '-m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json"' in script
+        assert '"$PWD" "$tmux_session" "$first_run"' in script
         assert "codex resume --last" not in script
-        assert "|| exit 76" in script.split("_cx_reply=", 1)[1].splitlines()[0]
+        assert 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi' in script
 
     def _make_script(self, **kwargs):
         defaults = {
