@@ -473,7 +473,10 @@ def _tmux_absent_without_binary() -> bool | None:
                 return None
             if info["name"].split(":", 1)[0].removesuffix(".exe") == "tmux":
                 return None
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, SystemError):
+        # SystemError: on POSIX, process_iter's name() reads the argv of a process named 15 or
+        # more characters, and psutil on macOS can raise SystemError reading another process's
+        # argv (sysctl KERN_PROCARGS2). The scan then cannot prove tmux gone.
         return None
     return False
 
