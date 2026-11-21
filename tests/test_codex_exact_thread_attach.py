@@ -28,6 +28,7 @@ def test_given_same_directory_collision_when_local_slot_resumes_then_attach_and_
     state_record = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SLOT}.codex.json"
     fake_ai = (
         "#!/bin/sh\n"
+        f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f'if [ "$1" = ps ] && [ "$2" = cron ]; then cp {shlex.quote(str(record))} {shlex.quote(str(state_record))}; fi\n'
         'if [ "$1" = internal ] && [ "$2" = get-version ]; then echo unknown; fi\n'

@@ -360,8 +360,12 @@ thread exists in the same directory. A live tmux pane remains attachable indepen
 of saved history. A stopped slot with missing, ambiguous, ephemeral or unconfirmed
 history refuses to guess a thread. Existing directory-only slots are not adopted
 automatically. The versioned hook contract currently covers Codex 0.169.0; unsupported
-versions report unknown. Approve the launcher hook in Codex's normal hook trust flow
-for identity confirmation. See the [session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
+versions report unknown. The stable hook command is `ai internal codex-session-confirm`;
+launch identity travels through the child environment rather than hook arguments.
+`ai internal codex-hook-contract` prints the versioned declaration, key and expected
+hash for a policy installer to verify against Codex's `hooks/list` before approving
+that exact hook. Until installed, normal hook trust can leave confirmation pending.
+A fresh untrusted Git project still requires separate directory consent. See the [session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
 
 When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
 branch or transcript, or asks the remote host to allocate anything. The refusal lists

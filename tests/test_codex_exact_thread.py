@@ -1,5 +1,6 @@
 """Exact-thread launcher contracts using synthetic metadata, never transcript bodies."""
 
+import hashlib
 import json
 import os
 import shlex
@@ -60,8 +61,8 @@ def collision(tmp_path, monkeypatch):
     return worktree, state, record
 
 
-def dispatch(collision, *, first_run, prompted):
-    shell = shutil.which("bash")
+def dispatch(collision, *, first_run, prompted, shell_name="bash"):
+    shell = shutil.which(shell_name)
     if shell is None:
         pytest.skip("POSIX launcher requires bash")
     worktree, state, _ = collision
@@ -80,14 +81,19 @@ def dispatch(collision, *, first_run, prompted):
     capture = state / "argv.json"
     recorder = state / "record.py"
     recorder.write_text(
-        "import json,sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n"
+        "import json,os,sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n"
+        "Path(sys.argv[1]).with_name('environment.json').write_text(json.dumps({k:os.environ.get(k) for k in "
+        "('AI_CLI_CODEX_SLOT_RECORD','AI_CLI_CODEX_LAUNCH_TOKEN')}))\n"
     )
     harness = (
         f"engine=cx\nfirst_run={str(first_run).lower()}\ntmux_session={SLOT}\n"
         f"_ai_state_dir={shlex.quote(str(state))}\nprompt_file={shlex.quote(str(prompt))}\n"
         f'run_agent() {{ {shlex.quote(sys.executable)} {shlex.quote(str(recorder))} {shlex.quote(str(capture))} "$@"; }}\n'
         "_ai_emit() { printf '%s\\n' \"$*\" >&2; }\n"
-        "sleep() { :; }\ntmux() { :; }\n" + helpers + body
+        "sleep() { :; }\ntmux() { :; }\n"
+        + helpers
+        + body
+        + f'\nprintf \'%s:%s\' "${{AI_CLI_CODEX_SLOT_RECORD-unset}}" "${{AI_CLI_CODEX_LAUNCH_TOKEN-unset}}" > {shlex.quote(str(state / "parent-env"))}\n'
     )
     runner = state / "dispatch.sh"
     runner.write_text(harness)
@@ -137,7 +143,7 @@ def test_given_unproved_persistence_when_stopped_slot_resumes_then_no_client_is_
     assert "unknown" in result.stderr or "refus" in result.stderr
 
 
-def test_given_confirmed_slot_when_prepared_by_cli_then_reply_is_two_machine_readable_lines(
+def test_given_confirmed_slot_when_prepared_by_cli_then_reply_is_four_machine_readable_lines(
     collision, monkeypatch, capsys
 ):
     from ai_cli.codex_session import main
@@ -153,7 +159,9 @@ def test_given_confirmed_slot_when_prepared_by_cli_then_reply_is_two_machine_rea
     monkeypatch.setattr("ai_cli.codex_session.subprocess.run", version)
     assert main(["prepare", str(record), str(worktree), SLOT, "false", "local-tmux"]) == 0
     reply = capsys.readouterr()
-    target, config = reply.out.splitlines()
+    target, config, record_path, token = reply.out.splitlines()
+    assert record_path == str(record.resolve())
+    assert token == json.loads(record.read_text())["launch_token"]
     assert target == THREAD
     assert tomllib.loads(config)["hooks"]["SessionStart"][0]["hooks"][0]["type"] == "command"
     assert not reply.err
@@ -186,7 +194,7 @@ def test_given_native_event_fixture_when_replayed_then_versioned_identity_matche
     worktree, _, record = collision
     fixture = json.loads((Path(__file__).parent / "fixtures" / "codex_session_identity_v1.json").read_text())
     rollout = json.loads(record.read_text())["rollout_path"]
-    target, config = prepare(
+    target, config, record_path, token = prepare(
         record, worktree, SLOT, fresh=False, route=fixture["route"], client_version=fixture["client_version"]
     )
     doc = json.loads(record.read_text())
@@ -198,6 +206,7 @@ def test_given_native_event_fixture_when_replayed_then_versioned_identity_matche
     result = subprocess.run(
         handler["command"] if os.name == "nt" else shlex.split(handler["command"]),
         input=json.dumps(event),
+        env={**os.environ, "AI_CLI_CODEX_SLOT_RECORD": record_path, "AI_CLI_CODEX_LAUNCH_TOKEN": token},
         capture_output=True,
         text=True,
         check=False,
@@ -238,8 +247,10 @@ def test_given_incompatible_native_event_when_confirmed_then_slot_remains_pendin
         "transcript_path": None,
         field: value,
     }
+    before = record.read_bytes()
     with pytest.raises(IdentityError):
         confirm(record, doc["launch_token"], event)
+    assert record.read_bytes() == before
     assert json.loads(record.read_text())["phase"] == "pending"
 
 
@@ -286,7 +297,7 @@ def test_given_empty_native_store_when_new_slot_starts_then_it_waits_for_client_
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     record = tmp_path / "state" / "sessions" / f"{SLOT}.codex.json"
-    target, _ = prepare(record, tmp_path, SLOT, fresh=True, route="local-tmux", client_version="0.169.0")
+    target, _, _, _ = prepare(record, tmp_path, SLOT, fresh=True, route="local-tmux", client_version="0.169.0")
     doc = json.loads(record.read_text())
     assert target == "new" and doc["thread_id"] is None and doc["phase"] == "pending"
     with pytest.raises(IdentityError, match="pending"):
@@ -302,7 +313,7 @@ def test_given_custom_native_home_when_thread_probed_then_only_that_store_is_use
     custom = worktree / "custom-codex"
     root.rename(custom)
     monkeypatch.setenv("CODEX_HOME", str(custom))
-    target, _ = prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
+    target, _, _, _ = prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
     assert target == THREAD
 
 
@@ -319,3 +330,172 @@ def test_given_project_native_home_when_slot_resumes_then_identity_uses_the_clie
     result, argv = dispatch(collision, first_run=False, prompted=False)
     assert result.returncode == 0, result.stderr
     assert THREAD in argv and "--last" not in argv
+
+
+def test_given_different_slots_and_launches_when_prepared_then_declaration_is_byte_identical(tmp_path, monkeypatch):
+    from ai_cli.codex_session import prepare
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native"))
+    expected = 'hooks.SessionStart=[{hooks=[{type="command",command="ai internal codex-session-confirm"}]}]'
+    tokens = set()
+    for name in ("slot-1", "slot-2"):
+        record = tmp_path / name / "record.json"
+        for launch in range(2):
+            _, declaration, record_path, token = prepare(
+                record, tmp_path, name, fresh=True, route="local-tmux", client_version="0.169.0"
+            )
+            assert declaration == expected
+            assert declaration.count("hooks.SessionStart") == 1
+            assert tomllib.loads(declaration) == {
+                "hooks": {
+                    "SessionStart": [{"hooks": [{"type": "command", "command": "ai internal codex-session-confirm"}]}]
+                }
+            }
+            assert record_path == str(record.resolve())
+            tokens.add(token)
+            # Reset only this synthetic record to model a fresh launch on another host.
+            record.rename(record.with_suffix(f".previous-{launch}"))
+    assert len(tokens) == 4
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["missing-path", "empty-path", "missing-token", "empty-token", "missing-record", "stale", "event", "json"],
+)
+def test_given_unbound_confirmation_when_internal_action_runs_then_no_record_write_or_private_output(
+    collision, problem
+):
+    from ai_cli.codex_session import prepare
+
+    worktree, _, record = collision
+    prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
+    before = record.read_bytes()
+    token = json.loads(before)["launch_token"]
+    env = {**os.environ, "AI_CLI_CODEX_SLOT_RECORD": str(record), "AI_CLI_CODEX_LAUNCH_TOKEN": token}
+    event = {
+        "hook_event_name": "SessionStart",
+        "session_id": THREAD,
+        "cwd": str(worktree),
+        "transcript_path": None,
+        "private": "private-fixture-payload",
+    }
+    if problem == "event":
+        event["hook_event_name"] = "Stop"
+    payload = json.dumps(event)
+    if problem.startswith(("missing-", "empty-")) and problem != "missing-record":
+        key = "AI_CLI_CODEX_SLOT_RECORD" if problem.endswith("path") else "AI_CLI_CODEX_LAUNCH_TOKEN"
+        if problem.startswith("missing-"):
+            env.pop(key)
+        else:
+            env[key] = ""
+    elif problem == "missing-record":
+        env["AI_CLI_CODEX_SLOT_RECORD"] = str(record.with_name("absent.json"))
+    elif problem == "stale":
+        env["AI_CLI_CODEX_LAUNCH_TOKEN"] = "private-stale-token"
+    elif problem == "json":
+        payload = "private-invalid-json"
+    result = subprocess.run(
+        [sys.executable, "-m", "ai_cli.main", "internal", "codex-session-confirm"],
+        env=env,
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert not result.stdout
+    assert "[session]" in result.stderr and "Codex identity unknown:" in result.stderr
+    assert all(
+        value not in result.stderr
+        for value in (token, "private-stale-token", "private-fixture-payload", "private-invalid-json", "Traceback")
+    )
+    assert record.read_bytes() == before
+    assert not record.with_name("absent.json").exists()
+    assert not record.with_name("absent.json.lock").exists()
+
+
+def test_given_invalid_event_when_direct_confirmation_runs_then_record_is_unchanged(collision):
+    from ai_cli.codex_session import IdentityError, confirm, prepare
+
+    worktree, _, record = collision
+    prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
+    before = record.read_bytes()
+    with pytest.raises(IdentityError):
+        confirm(record, json.loads(before)["launch_token"], {"hook_event_name": "Stop"})
+    assert record.read_bytes() == before
+
+
+def test_given_pinned_hook_when_contract_requested_then_fixture_and_independent_hash_match():
+    result = subprocess.run(
+        [sys.executable, "-m", "ai_cli.main", "internal", "codex-hook-contract"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    contract = json.loads(result.stdout)
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "codex_hook_contract_v1.json").read_text())
+    assert contract == fixture
+    assert contract["schema_version"] == 1
+    assert contract["supported_client_versions"] == ["0.169.0"]
+    assert contract["event"] == "SessionStart"
+    assert contract["command"] == "ai internal codex-session-confirm"
+    assert contract["position"] == {"group": 0, "handler": 0}
+    assert contract["keys"] == dict.fromkeys(("linux", "macos"), "/<session-flags>/config.toml:session_start:0:0")
+    # Independent normalized identity from the pinned source, including implicit defaults.
+    identity = {
+        "hooks": [{"type": "command", "timeout": 600, "command": contract["command"], "async": False}],
+        "event_name": "session_start",
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert contract["expected_hash"] == "sha256:" + digest
+    assert not result.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="generated launcher uses a POSIX shell")
+@pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+@pytest.mark.parametrize("first_run", [True, False])
+@pytest.mark.parametrize("prompted", [True, False])
+def test_given_slot_launch_when_dispatched_then_only_child_inherits_identity_and_one_hook(
+    collision, shell_name, first_run, prompted
+):
+    _, state, record = collision
+    result, argv = dispatch(collision, first_run=first_run, prompted=prompted, shell_name=shell_name)
+    assert result.returncode == 0, result.stderr
+    overrides = [
+        argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c" and argv[i + 1].startswith("hooks.SessionStart=")
+    ]
+    assert len(overrides) == 1
+    groups = tomllib.loads(overrides[0])["hooks"]["SessionStart"]
+    assert len(groups) == 1 and len(groups[0]["hooks"]) == 1
+    env = json.loads((state / "environment.json").read_text())
+    assert env == {
+        "AI_CLI_CODEX_SLOT_RECORD": str(record.resolve()),
+        "AI_CLI_CODEX_LAUNCH_TOKEN": json.loads(record.read_text())["launch_token"],
+    }
+    assert (state / "parent-env").read_text() == "unset:unset"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="generated launcher uses a POSIX shell")
+@pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+@pytest.mark.parametrize("prompted", [True, False])
+def test_given_new_slot_when_dispatched_then_one_stable_hook_and_child_identity_are_passed(
+    collision, shell_name, prompted
+):
+    worktree, state, record = collision
+    native = Path(json.loads(record.read_text())["rollout_path"]).parents[3]
+    native.rename(worktree / "saved-native")
+    record.rename(record.with_suffix(".previous"))
+    result, argv = dispatch(collision, first_run=True, prompted=prompted, shell_name=shell_name)
+    assert result.returncode == 0, result.stderr
+    assert argv == [
+        "codex",
+        "-c",
+        'hooks.SessionStart=[{hooks=[{type="command",command="ai internal codex-session-confirm"}]}]',
+    ]
+    env = json.loads((state / "environment.json").read_text())
+    assert env["AI_CLI_CODEX_SLOT_RECORD"] == str(record.resolve())
+    assert env["AI_CLI_CODEX_LAUNCH_TOKEN"] == json.loads(record.read_text())["launch_token"]
+    assert (state / "parent-env").read_text() == "unset:unset"
