@@ -86,10 +86,9 @@ def slot(tmp_path, monkeypatch):
 @pytest.mark.skipif(
     os.name != "posix",
     reason=(
-        "OS exception, recorded on AIH-5v06ta and AIH-t5m4uc: the slot bridge needs "
-        "Unix-domain sockets and a tmux pane, so Windows is unsupported (no bridge "
-        "starts, and the harness refuses the slot as codex-no-record); macOS is "
-        "unverified"
+        "OS exception: the slot bridge needs Unix-domain sockets and a tmux pane, "
+        "so Windows is unsupported (no bridge starts, and the harness refuses the "
+        "slot as codex-no-record); macOS is unverified"
     ),
 )
 def test_given_launched_slot_when_hook_confirms_then_live_bridge_binds_only_that_launch(slot):
