@@ -83,6 +83,7 @@ def slot(tmp_path, monkeypatch):
         assert not list(directory.glob(contract()["record_glob"]))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="a shebang client and Unix sockets are POSIX-only")
 def test_given_launched_slot_when_hook_confirms_then_live_bridge_binds_only_that_launch(slot):
     process, reply, record, metadata = slot
     assert metadata["owner"]["pid"] == process.pid
