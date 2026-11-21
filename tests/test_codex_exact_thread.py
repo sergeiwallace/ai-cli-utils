@@ -449,6 +449,27 @@ def test_given_invalid_event_when_direct_confirmation_runs_then_record_is_unchan
     assert record.read_bytes() == before
 
 
+@pytest.mark.parametrize("version", ["0.169.0", "0.171.0", "0.170.0"])
+def test_given_client_version_when_prepared_then_only_supported_versions_reserve_slot(tmp_path, monkeypatch, version):
+    from ai_cli.codex_session import IdentityError, prepare
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native"))
+    record = tmp_path / "slot.json"
+    if version == "0.170.0":
+        with pytest.raises(IdentityError, match="client version is unsupported"):
+            prepare(record, tmp_path, "test-session", fresh=True, route="local-tmux", client_version=version)
+        assert not record.exists()
+        assert not record.with_suffix(".json.lock").exists()
+    else:
+        target, _, _, _ = prepare(
+            record, tmp_path, "test-session", fresh=True, route="local-tmux", client_version=version
+        )
+        assert target == "new"
+        doc = json.loads(record.read_bytes())
+        assert doc["client_version"] == doc["in_flight"]["client_version"] == version
+        assert doc["phase"] == "unconfirmed"
+
+
 def test_given_pinned_hook_when_contract_requested_then_fixture_and_independent_hash_match():
     result = subprocess.run(
         [sys.executable, "-m", "ai_cli.main", "internal", "codex-hook-contract"],
@@ -462,7 +483,7 @@ def test_given_pinned_hook_when_contract_requested_then_fixture_and_independent_
     fixture = json.loads((Path(__file__).parent / "fixtures" / "codex_hook_contract_v1.json").read_text())
     assert contract == fixture
     assert contract["schema_version"] == 1
-    assert contract["supported_client_versions"] == ["0.169.0"]
+    assert contract["supported_client_versions"] == ["0.169.0", "0.171.0"]
     assert contract["event"] == "SessionStart"
     assert contract["command"] == "ai internal codex-session-confirm"
     assert contract["position"] == {"group": 0, "handler": 0}
