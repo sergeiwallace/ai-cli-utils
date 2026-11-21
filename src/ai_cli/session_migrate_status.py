@@ -8,6 +8,9 @@ question of the disk.
 
 from __future__ import annotations
 
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +45,11 @@ def parts_left(result: m.MigrationResult) -> dict[str, str]:
     """``{part: status}`` for each part of the dry-run ``result`` that is not done."""
     if not result.parts:
         summarize(result, resumed=True)
-    return {part: status for part, status in result.parts.items() if status.strip() not in DONE_STATUSES}
+    return {
+        part: status
+        for part, status in result.parts.items()
+        if status.strip() not in DONE_STATUSES and not status.startswith("kept (accepted: ")
+    }
 
 
 def replan(repo_root: Path, old: str, new: str, **kwargs: Any) -> dict[str, str]:
@@ -183,8 +190,13 @@ def left_after(result: m.MigrationResult) -> dict[str, str]:
     return left or {UNPLANNED: f"failed: {m._one_line('; '.join([*result.kept, *result.warnings])) or 'not finished'}"}
 
 
+def command_line(args: list[str]) -> str:
+    """Render a recovery hint using the current platform's command-line quoting."""
+    return subprocess.list2cmdline(args) if sys.platform == "win32" else shlex.join(args)
+
+
 def finish_command(old: str, new: str, repo: Path) -> str:
-    return f"ai migrate-session {old} {new} --finish -r {repo}"
+    return command_line(["ai", "migrate-session", old, new, "--finish", "-r", str(repo)])
 
 
 def deferred_only(left: dict[str, str]) -> bool:

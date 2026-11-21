@@ -190,6 +190,14 @@ def _stop_epilogue(is_remote: bool) -> str:
     )
 
 
+def rendered_terminal_reset() -> str:
+    """The transport's terminal restore as the session program's ``printf`` argument."""
+    # Imported here: transport imports this module at load time.
+    from .transport import _TERMINAL_RESTORE
+
+    return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -266,9 +274,8 @@ def get_engine_script(
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
     from .tmux_binary import shell_prelude
-    from .transport import _TERMINAL_RESTORE
 
-    _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+    _terminal_reset = rendered_terminal_reset()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
@@ -1148,7 +1155,7 @@ def get_engine_script(
       # Codex's native clipboard needs a display. Without one in this shell, give this
       # Codex process (never the shell or tmux) the pair of the user's own verified
       # local graphical session; the helper writes why it found none to the launch log.
-      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+      if [[ "$1" == codex || ( "${{2:-}}" == -m && "${{3:-}}" == ai_cli.codex_session ) ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
         _cx_display="" _cx_authority=""
         _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
         while IFS= read -r _cx_display_line; do
@@ -1721,36 +1728,43 @@ with open(path, 'w') as f:
       _ai_run_agy() {{
         run_agent env -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GENAI_USE_VERTEXAI agy "$@"
       }}
-      # Codex: resume the thread that carries this session's name, by id, because
-      # Codex's own by-name lookup skips a thread that has had no turn. With none,
-      # start Codex and type `/rename $ai_name` into it once; a waiting resume prompt
-      # is handed to the namer so it lands after the name. The pre-naming launch
-      # lines below stay, unreachable, so a running older supervisor still certifies
-      # (session_restart._compatible). docs/designs/codex-session-naming.md.
-      _ai_run_codex() {{
-        local _cx_thread _cx_own=()
-        # Its own Codex process, not the host's shared app-server daemon, when this Codex
-        # offers --no-daemon, so tool processes descend from the attested agent.
-        if [[ "$(ai internal codex-exclusive-flags 2>/dev/null)" == "--no-daemon" ]]; then _cx_own=(--no-daemon); fi
-        _cx_thread=$(ai internal resolve-codex-session "$ai_name" 2>/dev/null) || _cx_thread=""
+    # END AGENT NAMING
+    # BEGIN CODEX THREAD
+      # Codex resumes the thread its slot record confirmed, else the thread that carries
+      # this session's name (ai_cli.codex_session). A launch with no named thread is named
+      # once: `/rename $ai_name` is typed after Codex starts, and a waiting resume prompt is
+      # handed to the namer so it lands after the name; otherwise the prompt rides on the
+      # launch. docs/designs/codex-session-naming.md.
+      _run_codex() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Codex needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
         # Record this pane for the thread, so a tool inside Codex finds its own pane even
         # when the app-server it runs under inherited a pane that has since closed.
         (ai internal bind-codex-pane "${{TMUX_PANE:-}}" "$ai_name" >/dev/null 2>&1 || true) &
-        if [[ -n "$_cx_thread" ]]; then
-          run_agent codex resume "${{_cx_own[@]}}" "$_cx_thread" "$@"
-          return
+        if [[ $# -gt 0 ]]; then printf '%s' "$1" > "$prompt_file.codex"; fi
+        if [[ -z "$(ai internal resolve-codex-session "$ai_name" 2>/dev/null)" ]]; then
+          local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
+          if [[ $# -gt 0 ]]; then _cx_namer+=(--prompt-file "$prompt_file.codex"); fi
+          ({LAUNCH_LOG_ENV}="$_ai_launch_log" "${{_cx_namer[@]}}" >/dev/null 2>&1 || true) &
+        elif [[ $# -gt 0 ]]; then
+          export AI_CLI_CODEX_PROMPT_FILE="$prompt_file.codex"
         fi
-        local _cx_namer=(ai internal name-codex-session "$tmux_session" "$ai_name")
-        if [[ $# -gt 0 ]]; then
-          printf '%s' "$1" > "$prompt_file.codex"
-          _cx_namer+=(--prompt-file "$prompt_file.codex")
-        fi
-        ({LAUNCH_LOG_ENV}="$_ai_launch_log" "${{_cx_namer[@]}}" >/dev/null 2>&1 || true) &
-        if $first_run; then run_agent codex "${{_cx_own[@]}}"
-        else run_agent codex resume "${{_cx_own[@]}}" --last
-        fi
+        run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}
+        if [[ -n "${{AI_CLI_CODEX_PROMPT_FILE:-}}" ]]; then rm -f "$AI_CLI_CODEX_PROMPT_FILE"; unset AI_CLI_CODEX_PROMPT_FILE; fi
+        if [[ "${{agent_exit_code:-0}}" == 76 ]]; then exit 76; fi
       }}
-    # END AGENT NAMING
+    # END CODEX THREAD
+
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1788,12 +1802,10 @@ with open(path, 'w') as f:
         else
     # BEGIN AGENT NAMING codex-prompted
           if [[ "$engine" == "agy" ]]; then (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) & _ai_run_agy
-          elif [[ "$engine" == "cx" ]]; then _ai_run_codex "$resume_msg"; else
+          elif [[ "$engine" == "cx" ]]; then _run_codex "$resume_msg"; else
     # END AGENT NAMING
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
     # BEGIN AGENT NAMING codex-prompted-end
           fi
     # END AGENT NAMING
@@ -1828,12 +1840,9 @@ with open(path, 'w') as f:
     # END AGENT NAMING
         else
     # BEGIN AGENT NAMING codex
-          if [[ "$engine" == "agy" ]]; then _ai_run_agy
-          elif [[ "$engine" == "cx" ]]; then _ai_run_codex; else
+          if [[ "$engine" == "agy" ]]; then _ai_run_agy; else
     # END AGENT NAMING
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
     # BEGIN AGENT NAMING codex-end
           fi
     # END AGENT NAMING

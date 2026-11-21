@@ -290,7 +290,7 @@ def _dispatch_block(engine: str) -> str:
         prefix=f"{engine}-myproject-",
         project_prefix="myproject",
     )
-    start = script.index("_ai_run_codex() {")
+    start = script.index("_ai_run_agy() {")
     # The Claude-only attach branch opens before the Codex dispatch and closes after it.
     end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
     return script[start:end]
@@ -311,11 +311,16 @@ tmux_session={engine}-{NAME}
 first_run={"true" if first_run else "false"}
 prompt_file={prompt_file}
 _ai_launch_log=""
+_ai_state_dir={tmp_path}/state
+agent_direnv_initialized=true
 resolve_status=1
 matched_file=""
 bg_target=""
 claude_perms_flag=""
-run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
+run_agent() {{
+  printf 'RUN %s\\n' "$*" >> {log}
+  if [[ -n "${{AI_CLI_CODEX_PROMPT_FILE:-}}" ]]; then printf 'PROMPT %s\\n' "$(cat "$AI_CLI_CODEX_PROMPT_FILE")" >> {log}; fi
+}}
 ai() {{
   printf 'AI %s\\n' "$*" >> {log}
   if [[ "$1 $2" == "internal resolve-codex-session" && -n "{thread}" ]]; then echo "{thread}"; fi
@@ -333,12 +338,18 @@ wait
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
+def _launches(calls: list[str]) -> list[str]:
+    return [call for call in calls if call.startswith("RUN ")]
+
+
 @posix_only
-def test_given_named_codex_thread_when_relaunching_ai_cx_then_resumes_that_thread_without_renaming(tmp_path):
+def test_given_named_codex_thread_when_relaunching_ai_cx_then_launches_the_slot_without_renaming(tmp_path):
     # The owner's relaunch: a new tmux session, so first_run is true.
     calls = _run_dispatch(tmp_path, "cx", first_run=True, thread=THREAD)
 
-    assert f"RUN codex resume {THREAD}" in calls
+    [launch] = _launches(calls)
+    assert f"-m ai_cli.codex_session launch {tmp_path}/state/sessions/cx-{NAME}.codex.json" in launch
+    assert launch.endswith(f" cx-{NAME} true local-tmux")
     assert not any("name-codex-session" in call for call in calls)
 
 
@@ -346,23 +357,25 @@ def test_given_named_codex_thread_when_relaunching_ai_cx_then_resumes_that_threa
 def test_given_no_named_codex_thread_when_launching_ai_cx_then_starts_codex_and_names_it(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True)
 
-    assert "RUN codex" in calls
+    assert len(_launches(calls)) == 1
     assert f"AI internal name-codex-session cx-{NAME} {NAME}" in calls
 
 
 @posix_only
-def test_given_in_loop_restart_with_no_named_thread_when_relaunching_then_resumes_last_and_names_it(tmp_path):
+def test_given_in_loop_restart_with_no_named_thread_when_relaunching_then_names_it(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=False)
 
-    assert "RUN codex resume --last" in calls
+    [launch] = _launches(calls)
+    assert launch.endswith(f" cx-{NAME} false local-tmux")
     assert f"AI internal name-codex-session cx-{NAME} {NAME}" in calls
 
 
 @posix_only
-def test_given_resume_prompt_and_named_thread_when_relaunching_then_prompt_rides_on_the_resume(tmp_path):
+def test_given_resume_prompt_and_named_thread_when_relaunching_then_prompt_rides_on_the_launch(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True, thread=THREAD, prompt="continue the task")
 
-    assert f"RUN codex resume {THREAD} continue the task" in calls
+    assert "PROMPT continue the task" in calls
+    assert not any("name-codex-session" in call for call in calls)
     assert not any(call.startswith("TMUX send-keys") for call in calls)
 
 
@@ -370,7 +383,8 @@ def test_given_resume_prompt_and_named_thread_when_relaunching_then_prompt_rides
 def test_given_resume_prompt_and_no_named_thread_when_launching_then_namer_delivers_it_after_naming(tmp_path):
     calls = _run_dispatch(tmp_path, "cx", first_run=True, prompt="continue the task")
 
-    assert "RUN codex" in calls
+    assert len(_launches(calls)) == 1
+    assert not any(call.startswith("PROMPT") for call in calls)
     namer = [call for call in calls if "name-codex-session" in call]
     assert namer == [f"AI internal name-codex-session cx-{NAME} {NAME} --prompt-file {tmp_path}/resume-prompt.codex"]
     assert (tmp_path / "resume-prompt.codex").read_text(encoding="utf-8") == "continue the task"
@@ -383,6 +397,118 @@ def test_given_existing_pi_session_when_relaunching_ai_p_then_continues_it(tmp_p
     calls = _run_dispatch(tmp_path, "p", first_run=True)
 
     assert f"RUN pi --continue --provider openai-codex --name {NAME}" in calls
+
+
+# --- the slot launch: which thread, which flags, which prompt ---------------------
+
+
+HOOK = 'hooks.SessionStart=[{hooks=[{type="command",command="ai internal codex-session-confirm"}]}]'
+
+
+def _owned_rollout(home: Path, thread_id: str, cwd: Path) -> Path:
+    path = _rollout(home, thread_id)
+    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": thread_id, "cwd": str(cwd)}}) + "\n")
+    return path
+
+
+@pytest.fixture
+def slot_launch(tmp_path, monkeypatch, codex_home):
+    """Run ``codex_session launch`` up to its exec, against a fake Codex on PATH."""
+    from ai_cli import codex_control, codex_session
+    from ai_cli import main as main_module
+
+    worktree = tmp_path / "myproject"
+    worktree.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    codex = bin_dir / "codex"
+    codex.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = --version ]; then echo "codex-cli 0.169.0"; exit 0; fi\n'
+        'if [ "$1" = --help ]; then echo "      --no-daemon"; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.setenv(codex_session.SESSION_NAME_ENV, NAME)
+    # The launch sets its slot identity in this process's environment before the exec.
+    for variable in (codex_session.PROMPT_FILE_ENV, codex_session.SLOT_RECORD_ENV, codex_session.LAUNCH_TOKEN_ENV):
+        monkeypatch.setenv(variable, "")
+        monkeypatch.delenv(variable)
+    monkeypatch.setattr(codex_control, "start", lambda _record: None)
+    execs: list[list[str]] = []
+    monkeypatch.setattr(main_module, "_exec_handoff", lambda _file, argv: execs.append(argv))
+
+    def launch(*, fresh: bool = True, route: str = "local-tmux") -> tuple[int, list[str]]:
+        record = tmp_path / "state" / f"cx-{NAME}.codex.json"
+        code = codex_session.main(["launch", str(record), str(worktree), f"cx-{NAME}", str(fresh).lower(), route])
+        return code, execs[-1] if execs else []
+
+    return worktree, launch
+
+
+@posix_only
+def test_given_session_named_by_hand_in_codex_before_slots_when_relaunching_with_remote_then_resumes_it_by_id(
+    slot_launch, codex_home
+):
+    # Amendment 4: the owner ran /rename <name> inside Codex on the remote host, used it,
+    # then relaunched with `ai cx <name> -R`. The launcher never recorded that name or a
+    # slot; only Codex's own index holds it, and the remote session script runs on that host.
+    worktree, launch = slot_launch
+    _index(codex_home, (OLDER, "myproject-2"), (THREAD, NAME))
+    _owned_rollout(codex_home, THREAD, worktree)
+    _owned_rollout(codex_home, OLDER, worktree)
+
+    code, argv = launch(route="paired-host-tmux")
+
+    assert code == 0
+    assert argv == ["codex", "-c", HOOK, "resume", "--no-daemon", THREAD]
+
+
+@posix_only
+def test_given_named_thread_of_another_directory_when_slot_has_no_record_then_the_launch_is_refused(
+    slot_launch, codex_home, tmp_path
+):
+    _, launch = slot_launch
+    _index(codex_home, (THREAD, NAME))
+    _owned_rollout(codex_home, THREAD, tmp_path / "elsewhere")
+
+    code, argv = launch(fresh=False)
+
+    assert code == 76
+    assert argv == []
+
+
+@posix_only
+def test_given_new_session_when_slot_launches_then_codex_runs_its_own_process_without_resuming(slot_launch):
+    _, launch = slot_launch
+
+    code, argv = launch()
+
+    assert code == 0
+    assert argv == ["codex", "-c", HOOK, "--no-daemon"]
+
+
+@posix_only
+def test_given_resume_prompt_file_when_slot_launches_then_codex_gets_the_prompt_and_the_file_is_gone(
+    slot_launch, codex_home, tmp_path, monkeypatch
+):
+    from ai_cli import codex_session
+
+    worktree, launch = slot_launch
+    _index(codex_home, (THREAD, NAME))
+    _owned_rollout(codex_home, THREAD, worktree)
+    prompt = tmp_path / "resume-prompt.codex"
+    prompt.write_text("continue the task", encoding="utf-8")
+    monkeypatch.setenv(codex_session.PROMPT_FILE_ENV, str(prompt))
+
+    code, argv = launch()
+
+    assert code == 0
+    assert argv == ["codex", "-c", HOOK, "resume", "--no-daemon", THREAD, "continue the task"]
+    assert not prompt.exists()
+    assert codex_session.PROMPT_FILE_ENV not in os.environ
 
 
 # --- bare launches ------------------------------------------------------------------
@@ -401,57 +527,6 @@ def test_given_pi_bare_launch_without_resume_flag_when_launching_then_continues_
     command = _bare_engine_command("p", NAME, Path.cwd(), None, "gemini", "--no-sandbox", [])
 
     assert command == ["pi", "--continue", "--provider", "openai-codex", "--name", NAME]
-
-
-@posix_only
-def test_given_session_named_by_hand_in_codex_before_this_change_when_relaunching_with_remote_then_resumes_it_by_id(
-    tmp_path,
-):
-    # Amendment 4: the owner ran /rename <name> inside Codex on the remote host, used it,
-    # then relaunched with `ai cx <name> -R`. The launcher never recorded that name; only
-    # Codex's own index holds it, and the remote session script runs on that host.
-    home = tmp_path / "codex-home"
-    _index(home, (OLDER, "myproject-2"), (THREAD, NAME))
-    _rollout(home, THREAD)
-    script = get_engine_script(
-        engine="cx",
-        ai_name=NAME,
-        session=f"cx-r-{NAME}",
-        prefix="cx-r-myproject-",
-        project_prefix="myproject",
-        is_remote=True,
-    )
-    start = script.index("_ai_run_codex() {")
-    end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
-    log = tmp_path / "calls.log"
-    harness = tmp_path / "dispatch.sh"
-    harness.write_text(
-        f"""
-engine=cx
-ai_name={NAME}
-tmux_session=cx-r-{NAME}
-first_run=true
-prompt_file={tmp_path}/no-prompt
-_ai_launch_log=""
-run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
-ai() {{
-  if [[ "$1 $2" == "internal resolve-codex-session" ]]; then
-    CODEX_HOME={home} {sys.executable} -c 'import sys; from ai_cli.codex_session import find_thread; print(find_thread(sys.argv[1]) or "")' "$3"
-  else
-    printf 'AI %s\\n' "$*" >> {log}
-  fi
-}}
-{script[start:end]}
-wait
-""",
-        encoding="utf-8",
-    )
-    done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=60, check=False)
-
-    assert done.returncode == 0, done.stderr
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert [call for call in calls if call.startswith("RUN")] == [f"RUN codex resume {THREAD}"]
-    assert not any("name-codex-session" in call for call in calls)
 
 
 # --- its own Codex process ------------------------------------------------------------
@@ -491,45 +566,6 @@ def test_given_older_codex_without_no_daemon_when_bare_launching_then_the_flag_i
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
 
     assert _bare_engine_command("cx", NAME, Path.cwd(), None, "gemini", "--no-sandbox", []) == ["codex"]
-
-
-@posix_only
-def test_given_codex_offering_no_daemon_when_the_session_script_launches_then_it_passes_it(tmp_path):
-    script = get_engine_script(
-        engine="cx", ai_name=NAME, session=f"cx-{NAME}", prefix="cx-myproject-", project_prefix="myproject"
-    )
-    start = script.index("_ai_run_codex() {")
-    end = script.index("# END BACKGROUND ATTACH", script.index("# BEGIN BACKGROUND ATTACH prompted-end"))
-    log = tmp_path / "calls.log"
-    calls = {}
-    for thread in ("", THREAD):
-        log.write_text("", encoding="utf-8")
-        harness = tmp_path / "dispatch.sh"
-        harness.write_text(
-            f"""
-engine=cx
-ai_name={NAME}
-tmux_session=cx-{NAME}
-first_run=true
-prompt_file={tmp_path}/no-prompt
-_ai_launch_log=""
-run_agent() {{ printf 'RUN %s\\n' "$*" >> {log}; }}
-ai() {{
-  if [[ "$1 $2" == "internal codex-exclusive-flags" ]]; then echo "--no-daemon"; fi
-  if [[ "$1 $2" == "internal resolve-codex-session" && -n "{thread}" ]]; then echo "{thread}"; fi
-  return 0
-}}
-{script[start:end]}
-wait
-""",
-            encoding="utf-8",
-        )
-        done = subprocess.run(["bash", str(harness)], capture_output=True, text=True, timeout=30, check=False)
-        assert done.returncode == 0, done.stderr
-        calls[thread] = [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("RUN")]
-
-    assert calls[""] == ["RUN codex --no-daemon"]
-    assert calls[THREAD] == [f"RUN codex resume --no-daemon {THREAD}"]
 
 
 @posix_only

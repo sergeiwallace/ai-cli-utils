@@ -360,7 +360,7 @@ class TestGetEngineScript:
 
         assert 'run_agent pi --continue --provider anthropic --name "$ai_name"' in script
 
-    def test_given_codex_engine_when_generating_script_then_resumes_last_worktree_session(self):
+    def test_given_codex_engine_when_generating_script_then_resumes_confirmed_thread(self):
         script = get_engine_script(
             engine="cx",
             ai_name="myproject-1",
@@ -370,8 +370,10 @@ class TestGetEngineScript:
         )
 
         assert 'export CX_TMUX_SESSION="$tmux_session"' in script
-        assert "if $first_run; then run_agent codex" in script
-        assert "else run_agent codex resume --last" in script
+        assert '-m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json"' in script
+        assert '"$PWD" "$tmux_session" "$first_run"' in script
+        assert "codex resume --last" not in script
+        assert 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi' in script
 
     def _make_script(self, **kwargs):
         defaults = {

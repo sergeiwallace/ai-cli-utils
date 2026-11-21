@@ -1,0 +1,1 @@
+- `ai copier-update` serializes Copier calls that share a Git mirror cache, preventing one call from pruning another's temporary worktree.

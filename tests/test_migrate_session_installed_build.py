@@ -16,7 +16,7 @@ import pytest
 from test_session_migrate import NEW, OLD, _everything, _migrate, run_cli, slot  # noqa: F401  (slot is a fixture)
 
 from ai_cli import main
-from ai_cli.session_migrate import MIGRATION_FORMAT
+from ai_cli.session_migrate import BASE_MIGRATION_FORMAT, MIGRATION_FORMAT
 
 REAL_PROBE = main._installed_migration_format
 FAKE_AI = str(Path("/opt/example/bin/ai"))
@@ -82,7 +82,7 @@ def test_given_an_installed_build_older_than_the_format_when_migrated_then_it_is
     assert (slot["repo"] / ".worktrees" / NEW).is_dir()
     rows = _ledger(slot)
     assert [bool(row.get("finished")) for row in rows] == [False, True], "the migration, then its verified finish"
-    assert [row["format"] for row in rows] == [MIGRATION_FORMAT, MIGRATION_FORMAT]
+    assert [row["format"] for row in rows] == [BASE_MIGRATION_FORMAT, BASE_MIGRATION_FORMAT]
 
 
 def test_given_the_update_failing_when_migrated_then_it_exits_2_with_the_update_command_and_writes_nothing(
@@ -131,7 +131,7 @@ def test_given_a_current_installed_build_when_migrated_and_finished_then_nothing
     slot,  # noqa: F811
     installed,
 ):
-    installed.format = MIGRATION_FORMAT
+    installed.format = BASE_MIGRATION_FORMAT
 
     code, out, err = _migrate(slot["repo"], "-y")
     assert code == 0, out + err
@@ -141,7 +141,7 @@ def test_given_a_current_installed_build_when_migrated_and_finished_then_nothing
     assert UPDATE not in installed.calls
     rows = _ledger(slot)
     assert any(row.get("finished") for row in rows)
-    assert {row["format"] for row in rows} == {MIGRATION_FORMAT}
+    assert {row["format"] for row in rows} == {BASE_MIGRATION_FORMAT}
 
 
 def test_given_this_build_when_asked_for_its_migration_format_then_it_prints_the_number():

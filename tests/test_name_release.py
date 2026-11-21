@@ -891,3 +891,51 @@ def test_given_the_registry_unreadable_when_checked_then_it_exits_three_and_prin
     assert result.exit_code == 3
     assert "could not read the registry" in result.output
     assert "limits" not in result.output
+
+
+# --- AI-CLI-uvg5j: what one reconcile pass reads, and holds ----------------------------------------
+
+
+@pytest.mark.registry_backends("sqlite")  # what is read from the client store does not depend on the backend
+def test_given_rows_without_worktrees_and_a_large_transcript_when_reconciled_then_each_transcript_is_read_once_in_bounded_memory(
+    fleet, monkeypatch
+):
+    import tracemalloc
+
+    repo = _repo(fleet)
+    for name in ("cleo", "dora", "edna", "fern"):
+        _session(fleet, name, worktree=False)
+    project = _add_transcript(repo, f"{STEM}-cleo", cwd=repo)
+    large = project / "large.jsonl"
+    filler = json.dumps({"type": "assistant", "message": {"content": "x" * 1024}}).encode() + b"\n"
+    with large.open("wb") as handle:
+        handle.write(json.dumps({"type": "user", "cwd": str(repo)}).encode() + b"\n")
+        handle.write(filler * 32 * 1024)
+        handle.write(json.dumps({"type": "custom-title", "customTitle": f"{STEM}-dora"}).encode() + b"\n")
+    size = large.stat().st_size
+    transcripts = {project / "s.jsonl", large}
+    opened: list[Path] = []
+    real_read_bytes, real_open = Path.read_bytes, Path.open
+
+    def read_bytes(self):
+        opened.append(Path(self))
+        return real_read_bytes(self)
+
+    def open_(self, *args, **kwargs):
+        opened.append(Path(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(Path, "open", open_)
+    tracemalloc.start()
+    try:
+        code, summary = reconcile()
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert code == 0, summary
+    assert {path: opened.count(path) for path in transcripts} == dict.fromkeys(transcripts, 1)
+    assert peak < size // 4, f"peak {peak} bytes while reading a {size}-byte transcript"
+    assert "cleo" in fleet.rows() and "dora" in fleet.rows()
+    assert "edna" not in fleet.rows() and "fern" not in fleet.rows()

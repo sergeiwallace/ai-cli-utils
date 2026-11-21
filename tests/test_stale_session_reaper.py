@@ -1884,6 +1884,13 @@ def _reap_leaked_supervisors() -> Iterator[None]:
 _CHILD_SPAWNED = "        _child_pid=$!\n"
 
 
+def _require_script() -> str:
+    script_bin = shutil.which("script")
+    if script_bin is None:
+        pytest.skip("script(1) unavailable on PATH; install the package providing it (e.g. util-linux-script)")
+    return script_bin
+
+
 def _start_generated_supervisor(
     tmp_path: Path,
     shell: str,
@@ -1909,9 +1916,7 @@ def _start_generated_supervisor(
     # generated executables had been written, so a host without `script` paid for
     # all of it and then skipped (AI-CLI-bug-tests-skip-capability-probe-bfqy).
     # `which` builds nothing, so hoisting it is free and cannot leak.
-    script_bin = shutil.which("script") if pseudo_terminal else None
-    if pseudo_terminal and script_bin is None:
-        pytest.skip("script binary unavailable for terminal process-group test")
+    script_bin = _require_script() if pseudo_terminal else None
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -2523,6 +2528,7 @@ def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_proce
     teardown is the only thing that can end the tree. Each recorded process and
     process group is gone once that run returns.
     """
+    _require_script()
     records = tmp_path / "records"
     records.mkdir()
     inner = tmp_path / "test_failing_supervisor.py"
@@ -2583,6 +2589,26 @@ def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_proce
                     survivor = psutil.Process(int(member["pid"]))
                     if abs(survivor.create_time() - member["created"]) < 1:
                         survivor.kill()
+
+
+@pytest.mark.parametrize(
+    ("run", "kwargs"),
+    [
+        (_start_generated_supervisor, {"pseudo_terminal": True}),
+        (test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_process_from_its_groups_survives, {}),
+    ],
+    ids=("nested", "outer"),
+)
+def test_given_script_is_missing_when_terminal_coverage_is_requested_then_it_skips_before_setup(tmp_path, run, kwargs):
+    with (
+        patch.object(shutil, "which", return_value=None) as which,
+        patch.object(Path, "mkdir", side_effect=AssertionError("setup ran before the capability probe")),
+        pytest.raises(pytest.skip.Exception, match=r"script\(1\).*util-linux-script"),
+    ):
+        run(tmp_path, "test-shell", **kwargs)
+
+    which.assert_called_once_with("script")
+    assert list(tmp_path.iterdir()) == []
 
 
 class _ExitedRoot:
@@ -3261,9 +3287,7 @@ def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty
     because zsh had recorded the stop and the resume as the child's status. The supervisor
     reads 19 as "restart". Bash read 77 either way, so this is a zsh regression.
     """
-    script_bin = shutil.which("script")
-    if script_bin is None:
-        pytest.skip("script binary unavailable for terminal process-group test")
+    script_bin = _require_script()
 
     script = _with_promotion_budget(get_engine_script("c", "session-1", "test-session", "test-", "myproject"), 30)
     ready = tmp_path / "ready"

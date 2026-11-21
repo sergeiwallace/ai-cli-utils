@@ -299,3 +299,26 @@ def test_given_promotion_interrupt_when_ac_i_3_breaks_then_final_exit_persists_f
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=5)
+
+
+def test_given_program_sending_the_single_pop_terminal_restore_when_compared_then_it_is_compatible(programs):
+    """A live session rendered its restore with one `CSI < u` before AI-CLI-ftxh6.
+
+    The restore is printf data, so a changed byte string must not make every
+    running supervisor uncertifiable for an in-place upgrade.
+    """
+    legacy, current = programs
+    single_pop = current.replace("\\033[<99u\\033[?1049l\\033[<99u", "\\033[?1049l").replace(
+        "\\033[>4;0m\\033[0m", "\\033[>4;0m\\033[<u\\033[0m"
+    )
+    assert single_pop != current and "\\033[<99u" not in single_pop
+    assert "\\033[<u" in legacy
+    assert session_restart._compatible(single_pop, current)
+    assert session_restart._compatible(legacy, current)
+
+
+def test_given_program_whose_terminal_restore_was_otherwise_edited_when_compared_then_it_is_rejected(programs):
+    _, current = programs
+    edited = current.replace("\\033[>4;0m", "\\033[>4;2m")
+    assert edited != current
+    assert not session_restart._compatible(edited, current)

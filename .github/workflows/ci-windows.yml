@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           # Kept in sync with `.python-version` by the lint job's version-sync step.
           python-version: "3.14"
@@ -78,7 +78,7 @@ jobs:
       # to the same current packages. It is only a fallback because the suite
       # ran slower from C: in two of three runs that tried it.
       - id: msys2-attempt-1
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2
         continue-on-error: true
         with:
           msystem: MSYS
@@ -94,7 +94,7 @@ jobs:
         run: Start-Sleep -Seconds 120
       - id: msys2-attempt-2
         if: steps.msys2-attempt-1.outcome == 'failure'
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2
         continue-on-error: true
         with:
           msystem: MSYS
@@ -108,7 +108,7 @@ jobs:
         if: steps.msys2-attempt-2.outcome == 'failure'
         run: Start-Sleep -Seconds 240
       - if: steps.msys2-attempt-2.outcome == 'failure'
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2
         with:
           msystem: MSYS
           release: false

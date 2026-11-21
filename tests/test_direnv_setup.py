@@ -377,19 +377,37 @@ def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("PATH", r"C:\existing")
 
-    # Its own roots, not a bogus handle: a real ``winreg`` opens these and would make
-    # a bogus-handle OSError look like the guard working.
-    ambient = sys.modules["winreg"]
-    with pytest.raises(OSError, match="shadowed in tests"):
-        ambient.OpenKey(ambient.HKEY_CURRENT_USER, "Environment")
-    # And ONLY those keys: anything else is the real module's problem, so the guard cannot
-    # surprise a standard-library or dependency consumer that imports winreg late.
-    with pytest.raises(OSError) as other:
-        ambient.OpenKey(ambient.HKEY_CURRENT_USER, r"Software\NotTheEnvironment")
-    assert "shadowed in tests" not in str(other.value)
+    ambient = sys.modules.get("winreg")
+    if ambient is not None:
+        # Its own roots, not a bogus handle: a real ``winreg`` opens these and would make
+        # a bogus-handle OSError look like the guard working.
+        with pytest.raises(OSError, match="shadowed in tests"):
+            ambient.OpenKey(ambient.HKEY_CURRENT_USER, "Environment")
+        # And ONLY those keys: anything else is the real module's problem, so the guard cannot
+        # surprise a standard-library or dependency consumer that imports winreg late.
+        with pytest.raises(OSError) as other:
+            ambient.OpenKey(ambient.HKEY_CURRENT_USER, r"Software\NotTheEnvironment")
+        assert "shadowed in tests" not in str(other.value)
 
     assert refresh_windows_path() is False
     assert os.environ["PATH"] == r"C:\existing"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the real winreg is importable on Windows")
+def test_given_host_without_winreg_when_a_dependency_probes_for_it_then_the_suite_guard_does_not_fake_one(monkeypatch):
+    """Regression (AI-CLI-v8pmb): the suite-wide guard must not invent ``winreg`` off Windows.
+
+    ``dateutil.tz.win`` decides "am I on Windows" by importing ``winreg`` and then calls
+    ``winreg.ConnectRegistry`` at import time. A POSIX-side stub made that import succeed,
+    so the first ``freezegun`` import inside a test raised AttributeError instead of the
+    ImportError dateutil documents and handles.
+    """
+    with pytest.raises(ImportError):
+        import winreg  # noqa: F401
+
+    monkeypatch.delitem(sys.modules, "dateutil.tz.win", raising=False)
+    with pytest.raises(ImportError):
+        import dateutil.tz.win  # noqa: F401
 
 
 def test_given_install_succeeding_only_after_path_refresh_then_reported_installed(monkeypatch):

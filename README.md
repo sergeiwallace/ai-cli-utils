@@ -38,7 +38,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Session recovery** | `ai audit-sessions`, `ai adopt-session`, and `ai migrate-transcript` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
-| **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
+| **Notifications** | Multi-channel notification delivery (Discord or Slack webhook, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
 | **iTerm2 restore** | `ai iterm2 restore` reopens recorded sessions in their panes after a terminal quit or a reboot, recording why each one ended |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
@@ -356,6 +356,31 @@ relaunched under the same title, which resumes its worktree, branch and conversa
 session named before the name registry has no registry row and is found the same way,
 by its worktree. With `-R` the launcher asks the remote host for that session, and the
 remote host answers only with one that exists there.
+
+Numbered Codex slots (`ai cx 1`) retain the native thread ID confirmed by Codex's
+`SessionStart` hook. Restart uses `codex resume <recorded-id>`, including when a newer
+thread exists in the same directory. Version 2 slot records keep confirmed history
+separate from an in-flight launch and its process identity. Quitting before the first
+prompt no longer strands a slot: after the old writer exits, relaunch logs the abandoned
+launch and resumes confirmed history, or starts fresh if none was confirmed. A live
+writer collision or unreadable writer identity refuses. Old record schemas also refuse.
+
+A null hook transcript path leaves the thread live-only. It becomes resumable only
+through a later event for that exact thread with a path, or an exact thread-ID rollout
+match under the slot's native sessions directory. Otherwise relaunch uses the last
+proved resumable thread, or starts fresh. Missing or ambiguous confirmed persisted
+history refuses; directory-only slots are never adopted automatically. A live tmux
+pane remains attachable independently. The launch trampoline requires POSIX exec;
+Windows refuses because writer identity continuity is unverified there.
+
+The versioned hook contract covers Codex 0.169.0 and 0.171.0; unsupported versions report unknown.
+The stable hook command is `ai internal codex-session-confirm`; launch identity travels
+through the child environment rather than hook arguments. `ai internal codex-hook-contract`
+prints the versioned declaration, key and expected hash for a policy installer to verify
+against Codex's `hooks/list` before approving that exact hook. Until installed, normal
+hook trust can leave a launch unconfirmed. SessionStart runs at the first accepted turn.
+A fresh untrusted Git project still requires separate directory consent. See the
+[session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
 
 When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
 branch or transcript, or asks the remote host to allocate anything. The refusal lists

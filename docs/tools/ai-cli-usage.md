@@ -314,8 +314,10 @@ launches, `ai cos`, remote allocation, migration, audit labels and name commands
 The single source order is:
 a fresh login shell run without inherited `AI_HOST`, then the global tmux environment, then
 the inherited `AI_HOST` only when neither fresh source answers. Each fresh probe is bounded
-by `[relaunch] host_refresh_timeout_seconds`. If the remaining identity has no host alias,
-`[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
+by `[relaunch] host_refresh_timeout_seconds`. On Linux and macOS the login shell runs in a
+session of its own with no controlling terminal, and its whole process group is killed on
+timeout or as soon as the `ai` process that started it exits, however it exits. If the
+remaining identity has no host alias, `[naming] legacy_convention` controls whether allocation uses the old name form or refuses;
 a refusal names the host id it tried and, when replaced, the inherited id.
 
 The user config file (`$XDG_CONFIG_HOME/ai-cli-utils/config.toml`, defaulting to
@@ -613,7 +615,9 @@ on both hosts to list the group in both directions. These are publication host I
 entry or the default remote machine uses an SSH alias, set its `[remote.machines.<alias>] host_id`
 to the ID used to publish its snapshot. Personal profiles default to `group` and can restrict the
 scope to `host` or explicitly permit `fleet` with `[machine] sessions_list_scope`. Work, client,
-and unclassified profiles always use `host`.
+and unclassified profiles always use `host`. When the profile narrows a scope set by `-S/--scope` or
+`[sessions_list] scope`, the list ends with one line naming the reason and the key to set. The
+retired `pair_host` key is refused with a message naming its replacement, `group_host`.
 
 [docs/reference/sessions-list-defaults.toml](../reference/sessions-list-defaults.toml) documents
 each key.
@@ -693,7 +697,7 @@ ai notifications list
 ai notifications log [-n N] [-s SINCE] [-S/--source SRC] [-F/--failed]
 ```
 
-`list` prints configured channels (Discord, ntfy, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
+`list` prints configured channels (Discord, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
 
 ---
 
@@ -1051,6 +1055,11 @@ Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on net
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
 
 ### ai copier-update
+
+`ai copier-update` serializes its Copier calls using `copier-mirror.lock` alongside the Git
+mirrors in the Copier cache. The lock follows `COPIER_CACHE_DIR` when set. The command reports
+when it has to wait and fails the project if the lock is still held after 900 seconds. Set
+`AI_CLI_COPIER_MIRROR_LOCK_TIMEOUT` to change the wait limit in seconds.
 
 Each run reads `config/canonical-readme-sync.toml` from the fleet's canonical source repository
 under the configured projects directory. Set `canonical_source_repo` in `[copier_update]` in
