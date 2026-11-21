@@ -700,6 +700,29 @@ def test_given_the_copy_runs_in_another_sessions_environment_when_resolving_then
     assert "other-session-1" in err and "resuming its conversation instead" in err
 
 
+def test_given_other_processes_argv_raising_system_error_when_resolving_then_the_host_is_still_found(
+    workdir, tmp_path, fake_tools, capsys, monkeypatch
+):
+    """psutil on macOS can raise SystemError, not AccessDenied, reading another process's argv
+    (``sysctl(KERN_PROCARGS2)``); one such process must not end the scan for the host."""
+    real_cmdline = psutil.Process.cmdline
+
+    def cmdline(self):
+        arguments = real_cmdline(self)
+        if not any(part.endswith(".sock") and "pty" in part for part in arguments):
+            raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+        return arguments
+
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 73)
+    assert fake_tools.stopped == [host_id]
+    assert "other-session-1" in err
+
+
 def test_given_a_foreign_copy_is_mid_turn_when_resolving_then_the_relaunch_holds_without_stopping_it(
     workdir, tmp_path, fake_tools, capsys
 ):
