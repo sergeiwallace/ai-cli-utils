@@ -990,11 +990,12 @@ class _ClaudeRestartTranscriptError(RuntimeError):
     """The evidence is insufficient to restart a Claude Code conversation safely."""
 
 
-def _cc_restart_records(project: Path, cwd: Path, title: str) -> tuple[Path, Path, float] | None:
+def _cc_restart_records(project: Path, cwd: Path, title: str, newest: Path | None) -> tuple[Path, Path, float] | None:
     """Read the optional SessionEnd identity and the path shown by the launch-resume hook.
 
     The periodic stamp must belong to the same run as the end record. Its path
     was picked by project mtime, while SessionEnd received the UUID from Claude Code.
+    Without a stamp, the hook also uses project mtime to name the transcript.
     """
     from .session_migrate import utc_instant
 
@@ -1002,24 +1003,33 @@ def _cc_restart_records(project: Path, cwd: Path, title: str) -> tuple[Path, Pat
         return None
     root = Path.home() / ".claude" / "resume"
     end = _background_attach._read_json(root / "launch" / f"{title}.end.json")
-    stamp = _background_attach._read_json(root / "boot-stamps" / f"{title}.json")
-    if not isinstance(end, dict) or not isinstance(stamp, dict) or stamp.get("cwd") != str(cwd):
+    if not isinstance(end, dict) or end.get("key") != title:
         return None
-    if end.get("key") != title or any(
-        not end.get(key) or end[key] != stamp.get(key) for key in ("key", "pid", "pane_id", "boot_id", "ended_at")
-    ):
+    identity = ("key", "pid", "pane_id", "boot_id", "ended_at")
+    if any(not end.get(key) for key in identity):
         return None
     ended = utc_instant(end["ended_at"])
-    session_id, stamped = end.get("session_id"), stamp.get("transcript_path")
-    if ended is None or not isinstance(session_id, str) or not isinstance(stamped, str):
+    session_id = end.get("session_id")
+    if ended is None or not isinstance(session_id, str):
         return None
     try:
         own = project / f"{uuid_module.UUID(session_id)}.jsonl"
+        stamp_path = root / "boot-stamps" / f"{title}.json"
+        stamp = _background_attach._read_json(stamp_path)
+        if stamp is None and not stamp_path.exists():
+            if own == newest and _background_attach.is_copy_title(_cc_transcript_current_title(own), title):
+                return own, own, ended.timestamp()
+            return None
+        if not isinstance(stamp, dict) or stamp.get("cwd") != str(cwd):
+            return None
+        stamped = stamp.get("transcript_path")
+        if not isinstance(stamped, str) or any(end[key] != stamp.get(key) for key in identity):
+            return None
         expected = Path(stamped)
         if expected.parent != project or expected.suffix != ".jsonl":
             return None
         _cc_session_id(expected)
-    except (ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError):
         return None
     return own, expected, ended.timestamp()
 
@@ -1028,10 +1038,12 @@ def _pick_cc_restart_transcript(cwd: Path, title: str) -> Path | None:
     """Require the restart's identity evidence to agree before handing off a transcript."""
     project = _cc_project_dir(cwd)
     try:
-        newest = max(((path.stat().st_mtime, path) for path in project.glob("*.jsonl")), default=None)
+        newest = max(
+            ((path.stat().st_mtime, path) for path in project.glob("*.jsonl")), key=lambda entry: entry[0], default=None
+        )
     except OSError as exc:
         raise _ClaudeRestartTranscriptError(f"Cannot restart '{title}': could not read transcript timestamps.") from exc
-    recorded = _cc_restart_records(project, cwd, title)
+    recorded = _cc_restart_records(project, cwd, title, newest[1] if newest is not None else None)
     if recorded is not None:
         own, expected, ended = recorded
         if own == expected and newest is not None and newest[0] > ended:
