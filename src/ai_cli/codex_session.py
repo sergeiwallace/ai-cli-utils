@@ -281,6 +281,10 @@ def confirm(path: Path, token: str, event: object) -> None:
         )
         _write(path, doc)
 
+    from .codex_control import notify
+
+    notify(path, token)
+
 
 def confirm_from_environment(args: list[str]) -> int:
     """Read hook identity privately; report refusals without exception contents."""
@@ -315,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
             if args[0] == "launch":
                 os.environ[SLOT_RECORD_ENV] = record
                 os.environ[LAUNCH_TOKEN_ENV] = token
+                from .codex_control import start
+
+                start(Path(record))
                 command = ["codex", "-c", config]
                 if target != "new":
                     command.extend(["resume", target])
