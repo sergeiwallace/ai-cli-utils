@@ -141,7 +141,7 @@ def pane_session(request, tmp_path, monkeypatch):
                 )
                 confirm(
                     record,
-                    json.loads(record.read_text())["launch_token"],
+                    json.loads(record.read_text())["in_flight"]["token"],
                     {
                         "hook_event_name": "SessionStart",
                         "session_id": thread,
@@ -149,6 +149,9 @@ def pane_session(request, tmp_path, monkeypatch):
                         "transcript_path": str(rollout),
                     },
                 )
+                doc = json.loads(record.read_text())
+                doc["in_flight"]["writer"]["pid"] = 99999999
+                record.write_text(json.dumps(doc))
                 monkeypatch.setenv("TEST_CODEX_ROLLOUT", str(rollout))
             if quick_clean:
                 date = binaries / "date"

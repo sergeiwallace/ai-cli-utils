@@ -38,7 +38,7 @@ def collision(tmp_path, monkeypatch):
     record.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "slot": SLOT,
                 "cwd": str(worktree),
                 "phase": "confirmed",
@@ -48,7 +48,18 @@ def collision(tmp_path, monkeypatch):
                 "execution_mode": "interactive",
                 "route": "local-tmux",
                 "result": "confirmed",
-                "launch_token": "fixture-token",
+                "resumable": {"thread_id": THREAD, "rollout_path": str(next(rollouts.glob(f"*{THREAD}.jsonl")))},
+                "in_flight": {
+                    "token": "fixture-token",
+                    "writer": {
+                        "pid": 99999999,
+                        "backend": "procfs" if sys.platform == "linux" else "psutil",
+                        "start_time": 100,
+                    },
+                    "launched_at": "2026-11-21T00:00:00+00:00",
+                    "client_version": "0.169.0",
+                    "route": "local-tmux",
+                },
             }
         )
     )
@@ -61,7 +72,7 @@ def collision(tmp_path, monkeypatch):
     return worktree, state, record
 
 
-def dispatch(collision, *, first_run, prompted, shell_name="bash"):
+def dispatch(collision, *, first_run, prompted, shell_name="bash", launches=1):
     shell = shutil.which(shell_name)
     if shell is None:
         pytest.skip("POSIX launcher requires bash")
@@ -81,18 +92,24 @@ def dispatch(collision, *, first_run, prompted, shell_name="bash"):
     capture = state / "argv.json"
     recorder = state / "record.py"
     recorder.write_text(
-        "import json,os,sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n"
+        "import json,os,sys\nfrom pathlib import Path\nfrom ai_cli.codex_session import _writer\n"
+        "Path(sys.argv[1]).with_name('writer.json').write_text(json.dumps(_writer()))\n"
+        "Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n"
         "Path(sys.argv[1]).with_name('environment.json').write_text(json.dumps({k:os.environ.get(k) for k in "
         "('AI_CLI_CODEX_SLOT_RECORD','AI_CLI_CODEX_LAUNCH_TOKEN')}))\n"
+    )
+    fake = worktree.parent / "bin" / "codex"
+    fake.write_text(
+        f"#!{sys.executable}\nimport os,sys\nif sys.argv[1:] == ['--version']:\n print('codex-cli 0.169.0'); sys.exit(0)\nos.execv(sys.executable, [sys.executable, {str(recorder)!r}, {str(capture)!r}, 'codex', *sys.argv[1:]])\n"
     )
     harness = (
         f"engine=cx\nfirst_run={str(first_run).lower()}\ntmux_session={SLOT}\n"
         f"_ai_state_dir={shlex.quote(str(state))}\nprompt_file={shlex.quote(str(prompt))}\n"
-        f'run_agent() {{ {shlex.quote(sys.executable)} {shlex.quote(str(recorder))} {shlex.quote(str(capture))} "$@"; }}\n'
+        'run_agent() { "$@"; agent_exit_code=$?; return 0; }\n'
         "_ai_emit() { printf '%s\\n' \"$*\" >&2; }\n"
         "sleep() { :; }\ntmux() { :; }\n"
         + helpers
-        + body
+        + "\nfirst_run=false\n".join([body] * launches)
         + f'\nprintf \'%s:%s\' "${{AI_CLI_CODEX_SLOT_RECORD-unset}}" "${{AI_CLI_CODEX_LAUNCH_TOKEN-unset}}" > {shlex.quote(str(state / "parent-env"))}\n'
     )
     runner = state / "dispatch.sh"
@@ -127,16 +144,22 @@ def test_given_unproved_persistence_when_stopped_slot_resumes_then_no_client_is_
     elif problem == "corrupt":
         rollout.write_text("invalid metadata\n")
     elif problem == "ephemeral":
-        doc["rollout_path"] = None
+        doc.update(rollout_path=None, result="live-only", resumable=None)
     elif problem == "pending":
         doc["phase"] = "pending"
     elif problem == "schema":
-        doc["schema_version"] = 2
+        doc["schema_version"] = 1
     elif problem == "unrecorded":
         record.rename(record.with_suffix(".unavailable"))
     if problem != "unrecorded":
         record.write_text(json.dumps(doc))
     result, argv = dispatch(collision, first_run=False, prompted=False)
+    if problem == "ephemeral":
+        # Null hook paths can now be upgraded only with exact persisted ID proof.
+        assert result.returncode == 0, result.stderr
+        assert THREAD in argv and "resume" in argv
+        assert json.loads(record.read_text())["result"] == "confirmed"
+        return
     assert result.returncode == 76
     assert not argv
     assert "[session]" in result.stderr
@@ -161,10 +184,11 @@ def test_given_confirmed_slot_when_prepared_by_cli_then_reply_is_four_machine_re
     reply = capsys.readouterr()
     target, config, record_path, token = reply.out.splitlines()
     assert record_path == str(record.resolve())
-    assert token == json.loads(record.read_text())["launch_token"]
+    assert token == json.loads(record.read_text())["in_flight"]["token"]
     assert target == THREAD
     assert tomllib.loads(config)["hooks"]["SessionStart"][0]["hooks"][0]["type"] == "command"
-    assert not reply.err
+    assert "[session]" in reply.err and SLOT in reply.err
+    assert token not in reply.err
 
 
 @pytest.mark.parametrize("operation", ["invalid", "confirm"])
@@ -198,7 +222,7 @@ def test_given_native_event_fixture_when_replayed_then_versioned_identity_matche
         record, worktree, SLOT, fresh=False, route=fixture["route"], client_version=fixture["client_version"]
     )
     doc = json.loads(record.read_text())
-    assert target == THREAD and doc["phase"] == "pending"
+    assert target == THREAD and doc["phase"] == "confirmed"
     handler = tomllib.loads(config)["hooks"]["SessionStart"][0]["hooks"][0]
     assert handler["type"] == "command"
     event = {**fixture["input"], "cwd": str(worktree), "transcript_path": rollout}
@@ -220,21 +244,20 @@ def test_given_native_event_fixture_when_replayed_then_versioned_identity_matche
     assert actual["route"] == fixture["route"]
     assert fixture["canary_result"] == "unknown"
     assert not ({"model", "permission_mode", "source"} & actual.keys())
-    confirm(record, doc["launch_token"], event)  # duplicate native callbacks are idempotent
+    confirm(record, doc["in_flight"]["token"], event)  # duplicate native callbacks are idempotent
     assert json.loads(record.read_text()) == actual
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("session_id", NEWER),
         ("session_id", "not-an-id"),
         ("cwd", "/different"),
         ("hook_event_name", "Stop"),
         ("transcript_path", {}),
     ],
 )
-def test_given_incompatible_native_event_when_confirmed_then_slot_remains_pending(collision, field, value):
+def test_given_incompatible_native_event_when_confirmed_then_committed_identity_is_preserved(collision, field, value):
     from ai_cli.codex_session import IdentityError, confirm, prepare
 
     worktree, _, record = collision
@@ -249,9 +272,9 @@ def test_given_incompatible_native_event_when_confirmed_then_slot_remains_pendin
     }
     before = record.read_bytes()
     with pytest.raises(IdentityError):
-        confirm(record, doc["launch_token"], event)
+        confirm(record, doc["in_flight"]["token"], event)
     assert record.read_bytes() == before
-    assert json.loads(record.read_text())["phase"] == "pending"
+    assert json.loads(record.read_text())["phase"] == "confirmed"
 
 
 def test_given_stale_callback_when_new_launch_is_pending_then_confirmation_is_refused(collision):
@@ -265,7 +288,7 @@ def test_given_stale_callback_when_new_launch_is_pending_then_confirmation_is_re
     assert record.read_bytes() == before
 
 
-def test_given_ephemeral_native_confirmation_when_resumed_then_persistence_is_refused(collision):
+def test_given_ephemeral_native_confirmation_when_writer_is_live_then_collision_is_refused(collision):
     from ai_cli.codex_session import IdentityError, confirm, prepare
 
     worktree, _, record = collision
@@ -273,23 +296,23 @@ def test_given_ephemeral_native_confirmation_when_resumed_then_persistence_is_re
     doc = json.loads(record.read_text())
     confirm(
         record,
-        doc["launch_token"],
+        doc["in_flight"]["token"],
         {"hook_event_name": "SessionStart", "session_id": THREAD, "cwd": str(worktree), "transcript_path": None},
     )
     assert json.loads(record.read_text())["result"] == "live-only"
-    with pytest.raises(IdentityError, match="ephemeral"):
+    with pytest.raises(IdentityError, match="writer"):
         prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
 
 
-def test_given_unsupported_client_when_prepared_then_unknown_stays_visible(collision):
+def test_given_unsupported_client_when_prepared_then_confirmed_identity_is_preserved(collision):
     from ai_cli.codex_session import IdentityError, prepare
 
     worktree, _, record = collision
     with pytest.raises(IdentityError, match="unsupported"):
         prepare(record, worktree, SLOT, fresh=False, route="paired-host-tmux", client_version="99.0.0")
     doc = json.loads(record.read_text())
-    assert doc["result"] == "unknown" and doc["phase"] == "pending"
-    assert doc["client_version"] == "99.0.0" and doc["route"] == "paired-host-tmux"
+    assert doc["result"] == "confirmed" and doc["phase"] == "confirmed"
+    assert doc["client_version"] == "0.169.0" and doc["route"] == "local-tmux"
 
 
 def test_given_empty_native_store_when_new_slot_starts_then_it_waits_for_client_confirmation(tmp_path, monkeypatch):
@@ -299,8 +322,8 @@ def test_given_empty_native_store_when_new_slot_starts_then_it_waits_for_client_
     record = tmp_path / "state" / "sessions" / f"{SLOT}.codex.json"
     target, _, _, _ = prepare(record, tmp_path, SLOT, fresh=True, route="local-tmux", client_version="0.169.0")
     doc = json.loads(record.read_text())
-    assert target == "new" and doc["thread_id"] is None and doc["phase"] == "pending"
-    with pytest.raises(IdentityError, match="pending"):
+    assert target == "new" and doc["thread_id"] is None and doc["phase"] == "unconfirmed"
+    with pytest.raises(IdentityError, match="writer"):
         prepare(record, tmp_path, SLOT, fresh=True, route="local-tmux", client_version="0.169.0")
 
 
@@ -370,7 +393,7 @@ def test_given_unbound_confirmation_when_internal_action_runs_then_no_record_wri
     worktree, _, record = collision
     prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
     before = record.read_bytes()
-    token = json.loads(before)["launch_token"]
+    token = json.loads(before)["in_flight"]["token"]
     env = {**os.environ, "AI_CLI_CODEX_SLOT_RECORD": str(record), "AI_CLI_CODEX_LAUNCH_TOKEN": token}
     event = {
         "hook_event_name": "SessionStart",
@@ -422,7 +445,7 @@ def test_given_invalid_event_when_direct_confirmation_runs_then_record_is_unchan
     prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
     before = record.read_bytes()
     with pytest.raises(IdentityError):
-        confirm(record, json.loads(before)["launch_token"], {"hook_event_name": "Stop"})
+        confirm(record, json.loads(before)["in_flight"]["token"], {"hook_event_name": "Stop"})
     assert record.read_bytes() == before
 
 
@@ -473,7 +496,7 @@ def test_given_slot_launch_when_dispatched_then_only_child_inherits_identity_and
     env = json.loads((state / "environment.json").read_text())
     assert env == {
         "AI_CLI_CODEX_SLOT_RECORD": str(record.resolve()),
-        "AI_CLI_CODEX_LAUNCH_TOKEN": json.loads(record.read_text())["launch_token"],
+        "AI_CLI_CODEX_LAUNCH_TOKEN": json.loads(record.read_text())["in_flight"]["token"],
     }
     assert (state / "parent-env").read_text() == "unset:unset"
 
@@ -497,5 +520,5 @@ def test_given_new_slot_when_dispatched_then_one_stable_hook_and_child_identity_
     ]
     env = json.loads((state / "environment.json").read_text())
     assert env["AI_CLI_CODEX_SLOT_RECORD"] == str(record.resolve())
-    assert env["AI_CLI_CODEX_LAUNCH_TOKEN"] == json.loads(record.read_text())["launch_token"]
+    assert env["AI_CLI_CODEX_LAUNCH_TOKEN"] == json.loads(record.read_text())["in_flight"]["token"]
     assert (state / "parent-env").read_text() == "unset:unset"

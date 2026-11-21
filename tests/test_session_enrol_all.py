@@ -497,3 +497,20 @@ def test_given_uninitialised_host_profile_when_enrolled_then_owner_matches_futur
     record = registry.load_registry()["sessions"][0]
     assert record["owning_host"] == record["boot_recipe"]["owning_host"] == "host-a"
     assert not path.exists()
+
+
+@pytest.mark.parametrize("replacement", ["other_module", "prepare"])
+def test_given_codex_launch_wrapper_when_its_operation_is_changed_then_enrolment_refuses(live_sessions, replacement):
+    script = live_sessions.add("cx-session-1", engine="cx", saved=False)
+    source = script.read_text(encoding="utf-8")
+    changed = source.replace(
+        "ai_cli.codex_session launch",
+        f"{replacement} launch" if replacement == "other_module" else "ai_cli.codex_session prepare",
+    )
+    assert changed != source
+    script.write_text(changed, encoding="utf-8")
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["status"] == "skipped"
+    assert not registry.registry_path().exists()
+    assert script.read_text(encoding="utf-8") == changed

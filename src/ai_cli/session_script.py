@@ -11,7 +11,6 @@ import sys
 
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
-from .codex_session import LAUNCH_TOKEN_ENV, SLOT_RECORD_ENV
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
@@ -1156,7 +1155,7 @@ def get_engine_script(
       # Codex's native clipboard needs a display. Without one in this shell, give this
       # Codex process (never the shell or tmux) the pair of the user's own verified
       # local graphical session; the helper writes why it found none to the launch log.
-      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+      if [[ "$1" == codex || ( "${{2:-}}" == -m && "${{3:-}}" == ai_cli.codex_session ) ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
         _cx_display="" _cx_authority=""
         _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
         while IFS= read -r _cx_display_line; do
@@ -1724,18 +1723,8 @@ with open(path, 'w') as f:
             fi
           fi
         fi
-        _cx_reply=$({shlex.quote(sys.executable)} -m ai_cli.codex_session prepare "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}) || exit 76
-        _cx_target="${{_cx_reply%%$'\\n'*}}"
-        _cx_reply="${{_cx_reply#*$'\\n'}}"
-        _cx_config="${{_cx_reply%%$'\\n'*}}"
-        _cx_reply="${{_cx_reply#*$'\\n'}}"
-        _cx_record="${{_cx_reply%%$'\\n'*}}"
-        _cx_token="${{_cx_reply#*$'\\n'}}"
-        if [[ "$_cx_target" == new ]]; then
-          {SLOT_RECORD_ENV}="$_cx_record" {LAUNCH_TOKEN_ENV}="$_cx_token" run_agent codex -c "$_cx_config"
-        else
-          {SLOT_RECORD_ENV}="$_cx_record" {LAUNCH_TOKEN_ENV}="$_cx_token" run_agent codex -c "$_cx_config" resume "$_cx_target"
-        fi
+        run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}
+        if [[ "${{agent_exit_code:-0}}" == 76 ]]; then exit 76; fi
       }}
     # END CODEX THREAD
 

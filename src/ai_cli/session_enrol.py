@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -264,13 +265,17 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict,
             engine
         ]
 
+        launch_prefix = f"run_agent {shlex.quote(command)} "
+        if engine == "cx":
+            launch_prefix = f"run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "
+
         def launches(text):
             return {
                 match.group(0)
                 for line in text.splitlines()
                 if not line.lstrip().startswith("#")
                 for match in re.finditer(r"\brun_agent [^\n]+", line)
-                if match.group(0).startswith(f"run_agent {shlex.quote(command)} ")
+                if match.group(0).startswith(launch_prefix)
             }
 
         replacement = _engine_script_from_meta(meta)
