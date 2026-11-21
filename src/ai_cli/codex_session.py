@@ -6,13 +6,14 @@ not a liveness or authorization authority; attaching to a live pane stays indepe
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
-import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import portalocker
@@ -23,6 +24,31 @@ from .session_clients import PRESENT, Codex
 
 SCHEMA_VERSION = 1
 SUPPORTED_VERSIONS = {"0.169.0"}
+HOOK_COMMAND = "ai internal codex-session-confirm"
+HOOK_DECLARATION = 'hooks.SessionStart=[{hooks=[{type="command",command=' + json.dumps(HOOK_COMMAND) + "}]}]"
+SLOT_RECORD_ENV = "AI_CLI_CODEX_SLOT_RECORD"
+LAUNCH_TOKEN_ENV = "AI_CLI_CODEX_LAUNCH_TOKEN"
+
+
+def hook_contract() -> dict:
+    """Describe the pinned launch boundary; this does not grant hook trust."""
+    # Codex 0.169.0 normalizes omitted timeout/async to 600/false and omits
+    # absent optional fields before hashing recursively sorted compact JSON.
+    group = tomllib.loads(HOOK_DECLARATION)["hooks"]["SessionStart"][0]
+    handler = {**group["hooks"][0], "timeout": 600, "async": False}
+    identity = {"event_name": "session_start", "hooks": [handler]}
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    key = "/<session-flags>/config.toml:session_start:0:0"
+    return {
+        "schema_version": 1,
+        "supported_client_versions": sorted(SUPPORTED_VERSIONS),
+        "event": "SessionStart",
+        "command": HOOK_COMMAND,
+        "declaration": HOOK_DECLARATION,
+        "position": {"group": 0, "handler": 0},
+        "keys": {"linux": key, "macos": key},
+        "expected_hash": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 class IdentityError(ValueError):
@@ -59,8 +85,13 @@ def _client() -> Codex:
     return LocatedCodex()
 
 
-def prepare(path: Path, cwd: Path, slot: str, *, fresh: bool, route: str, client_version: str) -> tuple[str, str]:
-    """Return an exact target and a native confirmation hook; leave launch pending."""
+def prepare(
+    path: Path, cwd: Path, slot: str, *, fresh: bool, route: str, client_version: str
+) -> tuple[str, str, str, str]:
+    """Return target, stable hook, record path and token; leave launch pending."""
+    path = path.resolve()
+    if "\n" in str(path) or "\r" in str(path):
+        raise IdentityError("Codex slot path cannot be represented in the launcher reply")
     path.parent.mkdir(parents=True, exist_ok=True)
     with portalocker.Lock(str(path) + ".lock", timeout=5):
         doc = _read(path) if path.exists() else None
@@ -94,22 +125,17 @@ def prepare(path: Path, cwd: Path, slot: str, *, fresh: bool, route: str, client
         _write(path, doc)
         if client_version not in SUPPORTED_VERSIONS:
             raise IdentityError("Codex client version is unsupported; identity result is unknown")
-        command = [sys.executable, "-m", "ai_cli.codex_session", "confirm", str(path), doc["launch_token"]]
-        hook = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
-        config = 'hooks.SessionStart=[{hooks=[{type="command",command=' + json.dumps(hook) + "}]}]"
-        return target, config
+        return target, HOOK_DECLARATION, str(path), doc["launch_token"]
 
 
 def confirm(path: Path, token: str, event: object) -> None:
     """Consume a native SessionStart, binding it to this pending launch only."""
+    if not token or not path.is_file():
+        raise IdentityError("missing Codex launch confirmation identity")
     with portalocker.Lock(str(path) + ".lock", timeout=5):
         doc = _read(path)
         if doc.get("launch_token") != token:
             raise IdentityError("stale Codex launch confirmation refused")
-        # A matching launch callback that cannot be interpreted invalidates prior proof.
-        # In particular, /new or a fork must not leave the old ID silently confirmed.
-        doc.update(phase="pending", result="unknown")
-        _write(path, doc)
         if not isinstance(event, dict) or event.get("hook_event_name") != "SessionStart":
             raise IdentityError("unsupported Codex confirmation event")
         thread = event.get("session_id")
@@ -132,15 +158,27 @@ def confirm(path: Path, token: str, event: object) -> None:
         _write(path, doc)
 
 
+def confirm_from_environment(args: list[str]) -> int:
+    """Read hook identity privately; report refusals without exception contents."""
+    try:
+        record = os.environ.get(SLOT_RECORD_ENV)
+        token = os.environ.get(LAUNCH_TOKEN_ENV)
+        if args or not record or not token:
+            raise IdentityError("missing Codex launch environment")
+        confirm(Path(record), token, json.load(sys.stdin))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, portalocker.LockException):
+        output.error(output.Tag.SESSION, "session", "Codex identity unknown: launch confirmation refused.")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        if len(args) == 3 and args[0] == "confirm":
-            confirm(Path(args[1]), args[2], json.load(sys.stdin))
-        elif len(args) == 6 and args[0] == "prepare":
+        if len(args) == 6 and args[0] == "prepare":
             version = subprocess.run(["codex", "--version"], capture_output=True, text=True, check=False, timeout=10)
             match = re.fullmatch(r"codex-cli ([0-9.]+)\s*", version.stdout) if version.returncode == 0 else None
-            target, config = prepare(
+            target, config, record, token = prepare(
                 Path(args[1]),
                 Path(args[2]),
                 args[3],
@@ -150,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             output.raw(Untagged.INTERNAL_REPLY, target)
             output.raw(Untagged.INTERNAL_REPLY, config)
+            output.raw(Untagged.INTERNAL_REPLY, record)
+            output.raw(Untagged.INTERNAL_REPLY, token)
         else:
             raise IdentityError("invalid Codex identity operation")
     except IdentityError as exc:

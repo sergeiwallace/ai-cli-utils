@@ -2233,6 +2233,15 @@ def _handle_internal(argv: list[str]) -> None:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
+    if action == "codex-session-confirm":
+        from .codex_session import confirm_from_environment
+
+        sys.exit(confirm_from_environment(argv[1:]))
+    if action == "codex-hook-contract" and len(argv) == 1:
+        from .codex_session import hook_contract
+
+        _out.raw(Untagged.INTERNAL_REPLY, json.dumps(hook_contract(), sort_keys=True))
+        sys.exit(0)
     if action in ("restart-pin", "restart-detached", "restart-auto", "restart-remedy", "restart-exec"):
         from . import session_restart
 

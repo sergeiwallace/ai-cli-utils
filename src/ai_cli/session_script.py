@@ -11,6 +11,7 @@ import sys
 
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
+from .codex_session import LAUNCH_TOKEN_ENV, SLOT_RECORD_ENV
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
@@ -1725,11 +1726,15 @@ with open(path, 'w') as f:
         fi
         _cx_reply=$({shlex.quote(sys.executable)} -m ai_cli.codex_session prepare "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}) || exit 76
         _cx_target="${{_cx_reply%%$'\\n'*}}"
-        _cx_config="${{_cx_reply#*$'\\n'}}"
+        _cx_reply="${{_cx_reply#*$'\\n'}}"
+        _cx_config="${{_cx_reply%%$'\\n'*}}"
+        _cx_reply="${{_cx_reply#*$'\\n'}}"
+        _cx_record="${{_cx_reply%%$'\\n'*}}"
+        _cx_token="${{_cx_reply#*$'\\n'}}"
         if [[ "$_cx_target" == new ]]; then
-          run_agent codex -c "$_cx_config"
+          {SLOT_RECORD_ENV}="$_cx_record" {LAUNCH_TOKEN_ENV}="$_cx_token" run_agent codex -c "$_cx_config"
         else
-          run_agent codex -c "$_cx_config" resume "$_cx_target"
+          {SLOT_RECORD_ENV}="$_cx_record" {LAUNCH_TOKEN_ENV}="$_cx_token" run_agent codex -c "$_cx_config" resume "$_cx_target"
         fi
       }}
     # END CODEX THREAD

@@ -58,10 +58,94 @@ that it has resumable persisted history. Confirmed history alone never proves li
 The supported native event contract is pinned to Codex 0.169.0:
 [event schema](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/schema.rs)
 and [configuration discovery](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/engine/discovery.rs).
-The launcher adds a session-flag `hooks.SessionStart` command. Native discovery reads
-each configuration layer, preserving existing file hooks. Normal Codex hook trust
-applies; a disabled or unapproved callback leaves identity pending. No trust bypass
-is added. A new client version needs a verified event fixture before enablement.
+The launcher owns exactly one session-flags `hooks.SessionStart` override, with one
+group and one handler at position 0/0. File-layer hooks stay independent. The command
+is PATH-resolved, as are the launcher's other `ai internal` callbacks:
+
+```text
+ai internal codex-session-confirm
+hooks.SessionStart=[{hooks=[{type="command",command="ai internal codex-session-confirm"}]}]
+```
+
+These bytes are identical across launches, slots and hosts. There is no matcher,
+timeout, async, statusMessage or additionalContextLimit override. The native defaults
+are used. The four-line `prepare` reply contains target, declaration, absolute slot
+record path and launch token, in that order; record paths containing CR/LF are refused
+before writing. `_run_codex` passes `AI_CLI_CODEX_SLOT_RECORD` and
+`AI_CLI_CODEX_LAUNCH_TOKEN` only to the client invocation and its descendants. The
+callback reads these variables and SessionStart JSON from stdin. The former
+`python -m ai_cli.codex_session confirm <record> <token>` form is removed.
+
+Missing/empty variables, a missing record, a stale token or a nonbinding event fail
+with a nonzero status and a tagged error, without changing the identity record or
+printing tokens, payloads or exception text. This intentionally replaces the prior
+behavior that wrote pending/unknown before rejecting an event; a launch already has
+pending state before its client starts. Duplicate valid callbacks remain idempotent.
+A disabled or unapproved callback leaves that launch pending. No trust bypass is added.
+A new client version needs verified event and hook fixtures before enablement.
+
+#### Version 1 hook trust boundary
+
+`ai internal codex-hook-contract` prints the document in
+[codex_hook_contract_v1.json](../../tests/fixtures/codex_hook_contract_v1.json).
+Launch adapters own the declaration here; the policy installer owns approvals in its
+separate repository. Both sides must replay this fixture. Its fields are
+`schema_version`, `supported_client_versions`, `event`, `command`, `declaration`,
+`position`, `keys` (linux/macos) and `expected_hash`. The hash is pinned to 0.169.0:
+
+```text
+sha256:f48156510f48462d9df8bbeb7f27e892142a567bc35edb0b0505f2716dd6723d
+```
+
+The installer must obtain the exact key and current hash from the pinned client's
+`hooks/list`, compare them with this fixture, and refuse any mismatch before writing
+trust. Linux/macOS use `/<session-flags>/config.toml:session_start:0:0`. Windows key
+spelling differs (`C:\<session-flags>\config.toml:session_start:0:0`) and must be read
+from the native client; Windows execution is unverified. Repeated overrides replace
+the SessionStart array, so a second session-flags override would violate this boundary.
+The generated-launch tests assert one override and one handler for each launch path.
+
+Source citations below were re-opened at commit
+`d32063f96c2dff1dc96af839b3952abb6acfeda4` (Codex 0.169.0):
+
+- Hash identity: [hooks/src/engine/discovery.rs:972–997](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/hooks/src/engine/discovery.rs#L972-L997).
+  The independent Python implementation normalizes the handler with timeout 600 and
+  async false, omits absent optionals, recursively sorts JSON keys and hashes compact
+  UTF-8 bytes with SHA-256, following
+  [config/src/fingerprint.rs:54–65](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/config/src/fingerprint.rs#L54-L65).
+  Environment values and executable contents are outside this identity.
+- Key: [discovery.rs:469–485](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/hooks/src/engine/discovery.rs#L469-L485)
+  constructs the synthetic path; [hooks/src/lib.rs:124–135](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/hooks/src/lib.rs#L124-L135)
+  appends event and declaration position.
+- Trust is read from user/session layers and merged field by field in
+  [hooks/src/config_rules.rs:8–64](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/hooks/src/config_rules.rs#L8-L64).
+  The native trust action writes `trusted_hash` under `hooks.state` using Upsert in
+  [tui/src/hooks_rpc.rs:69–94](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/tui/src/hooks_rpc.rs#L69-L94).
+  The installer must preserve unrelated entries and existing enablement preferences.
+- Directory consent is separate: [tui/src/lib.rs:2041–2076](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/tui/src/lib.rs#L2041-L2076)
+  checks it before hook review at [2313–2319](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/tui/src/lib.rs#L2313-L2319).
+  [tui/src/config_update.rs:368–377](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/tui/src/config_update.rs#L368-L377)
+  defines when consent can be skipped. A fresh untrusted Git project still prompts a
+  human. Satisfying directory consent is a precondition this launcher does not remove.
+- Environment transport: [hooks/src/engine/command_runner.rs:484–495](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/hooks/src/engine/command_runner.rs#L484-L495)
+  replays the session environment and filters `is_non_inheritable_env_var`. That filter
+  and any earlier session-environment policy remain a runtime transport risk. The
+  synthetic bash/zsh tests prove launcher inheritance, not real-client replay.
+
+The owner's real-client canary must verify the two variables reach the hook, the
+PATH-resolved command runs, the exact hook approval removes its review gate, and the
+slot becomes confirmed. This change cannot run the real client or edit trust state.
+The paired host, macOS and Windows also remain unverified.
+
+#### Hook acceptance criteria
+
+- When any supported slot launches, the launcher shall pass the same declaration
+  exactly once at group 0/handler 0, with no launch identity in its command text.
+- When confirmation lacks bound environment or event identity, it shall refuse
+  without an identity-record write or disclosure of private input.
+- When the contract is requested, it shall equal the reciprocal version 1 fixture,
+  including the independently calculated pinned hash.
+- When a non-Codex client launches, its existing behavior shall be preserved.
 
 The reciprocal boundary fixture is
 [codex_session_identity_v1.json](../../tests/fixtures/codex_session_identity_v1.json).

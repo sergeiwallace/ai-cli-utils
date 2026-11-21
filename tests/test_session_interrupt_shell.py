@@ -66,7 +66,11 @@ def pane_session(request, tmp_path, monkeypatch):
     binaries.mkdir()
     # All project/engine services are fakes; terminal, signals, wrapper, lifecycle
     # persistence and tmux remain real. No inherited login files or direnv run.
-    (binaries / "ai").write_text('#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\nexit 0\n')
+    (binaries / "ai").write_text(
+        '#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
+        f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        "exit 0\n"
+    )
     (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
     agent = (
         f"#!{sys.executable}\n"
