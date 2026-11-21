@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -183,6 +184,38 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     assert script.read_bytes() != source
     assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
     assert {cmd[1] for cmd in w.commands} == {"list-sessions", "list-panes"}
+
+
+@pytest.mark.parametrize("engine", ["c", "g", "p"])
+@pytest.mark.parametrize("changed_flags", [False, True])
+def test_given_pre_codex_thread_script_when_enrolled_then_only_unchanged_active_launch_is_accepted(
+    live_sessions, engine, changed_flags
+):
+    w = live_sessions
+    name = f"{engine}-session-1"
+    script = w.add(name, engine=engine)
+    source = script.read_text(encoding="utf-8")
+    source = re.sub(r"(?ms)^    # BEGIN CODEX THREAD\n.*?^    # END CODEX THREAD\n", "", source)
+    source = re.sub(
+        r"(?m)^( *)_run_codex\n",
+        r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
+        source,
+    )
+    if changed_flags:
+        command = {"c": "claude", "g": "gemini", "p": "pi"}[engine]
+        source = source.replace(f"run_agent {command} ", f"run_agent {command} --unexpected ")
+    script.write_text(source, encoding="utf-8")
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)[0]
+    if changed_flags:
+        assert report["status"] == "skipped" and report["reason"]
+        assert not registry.registry_path().exists()
+        assert script.read_text(encoding="utf-8") == source
+    else:
+        assert report["status"] == "registered", report
+        assert state.valid_boot_recipe(registry.load_registry()["sessions"][0])
+        assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
 
 
 def test_given_existing_ownership_and_policy_when_bulk_repeated_then_bytes_and_records_survive(live_sessions):

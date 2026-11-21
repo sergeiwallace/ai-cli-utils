@@ -1904,15 +1904,6 @@ def _start_generated_supervisor(
     after_child_spawn: str = "",
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
-    # Decide the host-capability question BEFORE building anything. This used to
-    # sit ~60 lines down, after a bin directory, three log paths and several
-    # generated executables had been written, so a host without `script` paid for
-    # all of it and then skipped (AI-CLI-bug-tests-skip-capability-probe-bfqy).
-    # `which` builds nothing, so hoisting it is free and cannot leak.
-    script_bin = shutil.which("script") if pseudo_terminal else None
-    if pseudo_terminal and script_bin is None:
-        pytest.skip("script binary unavailable for terminal process-group test")
-
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     event_log = tmp_path / "events.log"
@@ -2019,23 +2010,14 @@ fi
     }
     command = [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)]
     if pseudo_terminal:
-        # Resolved and skip-checked at the top of this function, so by here it is
-        # known good; re-probing would just be a second PATH lookup.
-        assert script_bin is not None
-        if sys.platform == "darwin":
-            # BSD script: `script [-q] file [command ...]` — the trailing words
-            # are the command and are not re-parsed as script's own options.
-            command = [script_bin, "-q", "/dev/null", *command]
-        else:
-            # util-linux script has NO trailing-command form; the command must go
-            # through `-c`. Measured on util-linux 2.39.3: passing it as trailing
-            # words let script consume the SHELL's `-o NO_BG_NICE` as its own
-            # `--output-limit`, and it died with "failed to parse output limit
-            # size: 'NO_BG_NICE'" before the supervisor ever started. The test
-            # then reported "supervisor exited before its child was ready",
-            # blaming the code under test for an argv-parsing collision in its
-            # own harness.
-            command = [script_bin, "-q", "-c", shlex.join(command), "/dev/null"]
+        # POSIX-only, imported in the child so Windows can still collect this module.
+        # Use a real controlling pty without depending on the optional script utility.
+        command = [
+            sys.executable,
+            "-c",
+            "import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))",
+            *command,
+        ]
     if stdin_fd is not None:
         stdin_value: int | None = stdin_fd
     else:

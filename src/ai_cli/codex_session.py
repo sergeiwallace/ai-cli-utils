@@ -17,6 +17,8 @@ from pathlib import Path
 
 import portalocker
 
+from . import output
+from .output import Untagged
 from .session_clients import PRESENT, Codex
 
 SCHEMA_VERSION = 1
@@ -146,12 +148,12 @@ def main(argv: list[str] | None = None) -> int:
                 route=args[5],
                 client_version=match[1] if match else "unknown",
             )
-            print(target)
-            print(config)
+            output.raw(Untagged.INTERNAL_REPLY, target)
+            output.raw(Untagged.INTERNAL_REPLY, config)
         else:
             raise IdentityError("invalid Codex identity operation")
     except IdentityError as exc:
-        print(f"Codex identity unknown: {exc}", file=sys.stderr)
+        output.error(output.Tag.SESSION, "session", f"Codex identity unknown: {exc}")
         return 1
     except (
         OSError,
@@ -163,9 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.TimeoutExpired,
     ):
         # Never echo event payloads, child output, or exception text from JSON parsing.
-        print(
+        output.error(
+            output.Tag.SESSION,
+            "session",
             "Codex identity unknown: launch/resume refused; keep a live pane attached or inspect the slot record.",
-            file=sys.stderr,
         )
         return 1
     return 0

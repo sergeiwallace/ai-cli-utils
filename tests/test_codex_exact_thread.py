@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -132,7 +133,51 @@ def test_given_unproved_persistence_when_stopped_slot_resumes_then_no_client_is_
     result, argv = dispatch(collision, first_run=False, prompted=False)
     assert result.returncode == 76
     assert not argv
+    assert "[session]" in result.stderr
     assert "unknown" in result.stderr or "refus" in result.stderr
+
+
+def test_given_confirmed_slot_when_prepared_by_cli_then_reply_is_two_machine_readable_lines(
+    collision, monkeypatch, capsys
+):
+    from ai_cli.codex_session import main
+
+    worktree, _, record = collision
+
+    def version(argv, **kwargs):
+        assert argv == ["codex", "--version"]
+        return subprocess.CompletedProcess(argv, 0, "codex-cli 0.169.0\n", "")
+
+    # The version probe is synthetic on every OS; prepare and its filesystem proof
+    # stay real, as does the output interface whose protocol this test exercises.
+    monkeypatch.setattr("ai_cli.codex_session.subprocess.run", version)
+    assert main(["prepare", str(record), str(worktree), SLOT, "false", "local-tmux"]) == 0
+    reply = capsys.readouterr()
+    target, config = reply.out.splitlines()
+    assert target == THREAD
+    assert tomllib.loads(config)["hooks"]["SessionStart"][0]["hooks"][0]["type"] == "command"
+    assert not reply.err
+
+
+@pytest.mark.parametrize("operation", ["invalid", "confirm"])
+def test_given_invalid_identity_input_when_cli_refuses_then_error_is_tagged_without_echoing_payload(
+    tmp_path, operation
+):
+    args = [] if operation == "invalid" else ["confirm", str(tmp_path / "slot.json"), "fixture-token"]
+    payload = "private-fixture-payload"
+    result = subprocess.run(
+        [sys.executable, "-m", "ai_cli.codex_session", *args],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert not result.stdout
+    assert "[session]" in result.stderr and "Codex identity unknown:" in result.stderr
+    assert payload not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_given_native_event_fixture_when_replayed_then_versioned_identity_matches(collision):
@@ -146,8 +191,6 @@ def test_given_native_event_fixture_when_replayed_then_versioned_identity_matche
     )
     doc = json.loads(record.read_text())
     assert target == THREAD and doc["phase"] == "pending"
-    import tomllib
-
     handler = tomllib.loads(config)["hooks"]["SessionStart"][0]["hooks"][0]
     assert handler["type"] == "command"
     event = {**fixture["input"], "cwd": str(worktree), "transcript_path": rollout}
