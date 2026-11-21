@@ -95,8 +95,11 @@ def test_given_agy_not_installed_when_launching_then_it_refuses_with_the_install
 
 
 def test_given_a_signed_in_account_and_an_exported_api_key_when_launching_then_agy_starts_without_the_key(
-    home, monkeypatch
+    home, monkeypatch, tmp_path
 ):
+    # The session name's repo alias comes from the directory the launch runs in.
+    (tmp_path / "myproject").mkdir()
+    monkeypatch.chdir(tmp_path / "myproject")
     _sign_in(home)
     _settings(home, colorScheme="dark")
     monkeypatch.setenv("GEMINI_API_KEY", "placeholder-not-a-key")
