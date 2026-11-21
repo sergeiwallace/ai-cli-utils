@@ -95,11 +95,13 @@ so it has no holder).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import mmap
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -166,6 +168,10 @@ class PlannedMove:
     dest: str
     action: str = "move"
 
+    @property
+    def accepted_hold(self) -> bool:
+        return self.action.startswith(("kept (accepted: ", "kept (would accept: "))
+
     def describe(self) -> str:
         if self.action == "move":
             return f"{self.kind}: {self.source} -> {self.dest}"
@@ -189,6 +195,7 @@ class MigrationResult:
     resume_moves: list[ResumeMove] = field(default_factory=list)
     resolved: Path | None = None
     dry_run: bool = False
+    no_op: str = ""
     warnings: list[str] = field(default_factory=list)
     #: Each old-name slot in another repo left in place, as ``<path>: <reason>``; any makes the run fail.
     kept: list[str] = field(default_factory=list)
@@ -214,7 +221,11 @@ class MigrationResult:
             bool(self.kept)
             or any("FAILED" in w or "NOT " in w for w in self.warnings)
             or any(
-                move.action in ("conflict", DEFERRED) or move.action.startswith(("left alone", "left in place", "kept"))
+                not move.accepted_hold
+                and (
+                    move.action in ("conflict", DEFERRED)
+                    or move.action.startswith(("left alone", "left in place", "kept"))
+                )
                 for move in self.moves
             )
         )
@@ -1032,6 +1043,7 @@ def _sweep_containers(
     new: str,
     repo_root: Path,
     moving: Container[Path] = (),
+    accepted: dict[Path, str] | None = None,
 ) -> list[PlannedMove]:
     """Remove each ``<old>-agents`` container that holds no file, and name each one that is kept.
 
@@ -1061,8 +1073,17 @@ def _sweep_containers(
         held = sorted(child.name for child in container.iterdir() if child not in gone and _holds_a_file(child, moving))
         if holder is not None:
             moves.append(PlannedMove("agent container", str(container), f"pid {holder} works in it", "kept"))
-        elif held:
+            continue
+        accepted_names = {
+            name: accepted[container / name] for name in held if accepted and container / name in accepted
+        }
+        for action in accepted_names.values():
+            moves.append(PlannedMove("agent container", str(container), "", action))
+        held = [name for name in held if name not in accepted_names]
+        if held:
             moves.append(PlannedMove("agent container", str(container), f"holds {', '.join(held)}", "kept"))
+        elif accepted_names:
+            continue
         elif dry_run:
             moves.append(PlannedMove("agent container", str(container), "empty", "would be removed"))
         else:
@@ -1148,6 +1169,7 @@ def _clean_other_repos(
         new=result.new,
         repo_root=repo_root,
         moving=moving,
+        accepted={e.worktree: e.keep_action for e in agent_plan.entries if e.worktree and e.keep_action},
     )
     _record_kept(leftovers, result)
 
@@ -1156,13 +1178,11 @@ def _clean_other_repos(
 #: ``session-retirements.jsonl``: the record a later ``--finish`` reads before re-keying issues.
 MIGRATION_LEDGER = "session-migrations.jsonl"
 
-#: The migration record format this build writes, stamped as ``format`` on every
-#: :data:`MIGRATION_LEDGER` row. A build reporting a lower number (``ai internal
-#: get-migration-format``; a build from before that probe answers none, read as 0) predates a
-#: step the migrated session's relaunch depends on: format 1 is the boot-recipe rename. Raise it
-#: whenever what a migration writes needs a newer installed ``ai`` to read it. A launch meeting a
-#: row whose ``format`` is higher than this build's is running a build too old for that record.
-MIGRATION_FORMAT = 1
+#: Format 1 covers ordinary migrations, including the boot-recipe rename. Format 2 adds kept-hold
+#: acceptances to the same ledger. The launch guard must revalidate them, so only a reader that
+#: supports format 2 can launch a session whose ledger holds one.
+BASE_MIGRATION_FORMAT = 1
+MIGRATION_FORMAT = 2
 
 #: Where a migration files OLD's copy of an artifact NEW already holds its own copy of, under
 #: the state directory: ``<archive>/<UTC date>/<old>-to-<new>/<part>/...``. NEW's copy is
@@ -1427,7 +1447,7 @@ def _append_ledger(state: Path, old: str, new: str, repo_root: Path, **fields: o
         "old": old,
         "new": new,
         "repo": str(repo_root),
-        "format": MIGRATION_FORMAT,
+        "format": BASE_MIGRATION_FORMAT,
         **fields,
     }
     with (state / MIGRATION_LEDGER).open("a", encoding="utf-8") as ledger:
@@ -1466,11 +1486,11 @@ def _record_archived(state: Path, old: str, new: str, repo_root: Path, archived:
 
 
 def bookkeeping_row(row: dict) -> bool:
-    """Whether a ledger row only notes a delivered context, recorded transcripts, archived files or deferred parts.
+    """Whether a ledger row only records a migration's bookkeeping.
 
     None of them is a migration, so none makes a pair pending or recorded.
     """
-    return any(
+    return "accepted_kept_holds" in row or any(
         row.get(key) is True
         for key in ("context_announced", "transcripts_recorded", "archive_recorded", "deferred_recorded")
     )
@@ -1563,6 +1583,129 @@ def _ledger_rows(state: Path) -> list[dict]:
                 if isinstance(row, dict):
                     rows.append(row)
     return rows
+
+
+def kept_hold_acceptances(state: Path, old: str, new: str, repo: Path) -> dict[str, dict]:
+    """The latest acceptance for each old path, scoped to the recorded pair and its home repo."""
+    found: dict[str, dict] = {}
+    for row in _ledger_rows(state):
+        if (row.get("old"), row.get("new"), row.get("repo")) != (old, new, str(repo)):
+            continue
+        records = row.get("accepted_kept_holds")
+        if isinstance(records, list):
+            for record in records:
+                if isinstance(record, dict) and isinstance(record.get("old_path"), str):
+                    found[record["old_path"]] = record
+        elif not (row.get("finished") or bookkeeping_row(row)):
+            found.clear()  # A later migration of the same pair starts fresh.
+    return found
+
+
+def _hold_inventory(container: Path, hold: Path) -> str:
+    """Fingerprint the container's entries and the acknowledged checkout's own files."""
+    digest = hashlib.sha256()
+    pending = [container]
+    while pending:
+        directory = pending.pop()
+        for child in sorted(directory.iterdir()):
+            info = child.lstat()
+            entry = (
+                str(child.relative_to(container)),
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+            digest.update(json.dumps(entry).encode())
+            if stat.S_ISDIR(info.st_mode) and (child == hold or directory != container):
+                pending.append(child)
+    return digest.hexdigest()
+
+
+def _hold_snapshot(source: Path, dest: Path) -> dict | None:
+    """Identify both linked checkouts and snapshot the contents relevant to the hold."""
+    heads = []
+    containers = []
+    try:
+        for path in (source, dest):
+            if path.resolve(strict=True) != path or not (path / ".git").is_file():
+                return None
+            result = _git(path, "rev-parse", "--show-toplevel", "HEAD")
+            lines = result.stdout.splitlines()
+            if result.returncode or len(lines) != 2 or Path(lines[0]).resolve() != path:
+                return None
+            heads.append(lines[1])
+            containers.append(_hold_inventory(path.parent, path))
+    except (OSError, RuntimeError):
+        return None
+    return {
+        "slot": source.name,
+        "old_path": str(source),
+        "new_path": str(dest),
+        "old_head": heads[0],
+        "new_head": heads[1],
+        "old_container": containers[0],
+        "new_container": containers[1],
+    }
+
+
+def _plan_kept_holds(
+    plan: _agents.AgentPlan, result: MigrationResult, repo: Path, state: Path, requested: tuple[str, ...]
+) -> tuple[list[dict] | None, dict[str, str]]:
+    """Account for current ledger matches, and validate every newly requested slot before writing."""
+    from .session_migrate_status import command_line, finish_command
+
+    collisions = {
+        e.worktree: e
+        for e in plan.entries
+        if e.worktree and e.dest and e.path_collision and e.worktree.parent in plan.containers
+    }
+    if requested and not collisions:
+        return None, {}
+    selected: set[Path] = set()
+    for name in requested:
+        matches = [path for path in collisions if name in (path.name, str(path))]
+        if not matches:
+            raise MigrationError(f"{name} is not colliding in this migration")
+        if len(matches) > 1:
+            raise MigrationError(f"{name} is ambiguous; give the old worktree path: {', '.join(map(str, matches))}")
+        selected.add(matches[0])
+
+    recorded = kept_hold_acceptances(state, result.old, result.new, repo)
+    additions: list[dict] = []
+    commands: dict[str, str] = {}
+    kept_destinations: set[Path] = set()
+    for source, entry in collisions.items():
+        dest = entry.dest
+        assert dest is not None
+        snapshot = None
+        if entry.registered_destination and entry.held_by is None:
+            if source in selected or str(source) in recorded:
+                snapshot = _hold_snapshot(source, dest)
+            name = str(source) if sum(path.name == source.name for path in collisions) > 1 else source.name
+            command = finish_command(result.old, result.new, repo)
+            commands[str(source)] = f"{command} --accept-kept-hold {command_line([name])}"
+        if source in selected and snapshot is None:
+            raise MigrationError(
+                f"cannot accept {source} -> {dest}; need two readable registered worktrees and no live old hold"
+            )
+        if snapshot is None:
+            continue
+        current = snapshot == recorded.get(str(source))
+        if not current and source not in selected:
+            continue
+        if not current:
+            additions.append(snapshot)
+        verb = "would accept" if result.dry_run and not current else "accepted"
+        entry.keep_action = f"kept ({verb}: {source.name})"
+        kept_destinations.add(dest)
+
+    # A destination can also have a recovery step for its branch, metadata or venv.
+    plan.entries[:] = [e for e in plan.entries if e.worktree is not None or e.dest not in kept_destinations]
+    plan.markers[:] = [m for m in plan.markers if Path(m.value) not in kept_destinations]
+    return additions, commands
 
 
 def migration_recorded(old: str, new: str, state_dir: Path | None = None) -> bool:
@@ -2232,7 +2375,9 @@ def _start_session(
     return result
 
 
-def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, state: Path) -> None:
+def _plan_task_rekey(
+    old: str, new: str, home: Path, result: MigrationResult, state: Path, *, hold_commands: dict[str, str] | None = None
+) -> None:
     """Plan the task-namespace and resume-tree rekey.
 
     A namespace conflict is a warning. A resume artifact NEW already holds its own copy of is
@@ -2253,9 +2398,18 @@ def _plan_task_rekey(old: str, new: str, home: Path, result: MigrationResult, st
             )
         else:
             result.moves.append(PlannedMove("task namespace", str(old_ns), "", "removed after rekey"))
+    worktree_conflicts = []
     for item in result.moves:
         if item.action == "conflict":
-            result.warnings.append(f"{item.kind} {item.source} was NOT moved: {item.dest} already exists")
+            warning = f"{item.kind} {item.source} was NOT moved: {item.dest} already exists"
+            if item.kind == "agent worktree":
+                if command := (hold_commands or {}).get(item.source):
+                    warning += f"; to keep both, run `{command}`"
+                worktree_conflicts.append(warning)
+            else:
+                result.warnings.append(warning)
+    if worktree_conflicts:
+        result.warnings.append("; ".join(worktree_conflicts))
     archive = archive_dir(state, old, new) / "resume"
     for conflict in [m for m in result.resume_moves if m.action == "conflict"]:
         target = _archive_target(archive / conflict.source.parent.name, conflict.source.name)
@@ -2344,6 +2498,7 @@ def finish_session(
     regenerate_script: Callable[[dict], str] | None = None,
     record_finish: bool = True,
     progress: Progress | None = None,
+    accept_kept_hold: tuple[str, ...] = (),
 ) -> MigrationResult:
     """Finish a migration whose slot already moved to ``new``: every leftover still named ``old``.
 
@@ -2386,6 +2541,8 @@ def finish_session(
     old_wt = repo_root / ".worktrees" / old
     still = _registered_worktree_at(old_wt, registered)
     if still is not None:
+        if accept_kept_hold:
+            raise MigrationError("--accept-kept-hold requires finishing in the migrated session's home repository")
         home_slot = _migrated_home(repo_root, still, new, home, projects)
         if home_slot is None:
             raise MigrationError(f"{old_wt} is still a registered slot -- migrate it without --finish first")
@@ -2438,6 +2595,12 @@ def finish_session(
         )
 
     result = MigrationResult(old=old, new=new, old_worktree=old_wt, new_worktree=new_wt, dry_run=dry_run)
+    accepted, hold_commands = _plan_kept_holds(agent_plan, result, repo_root, state, accept_kept_hold)
+    if accepted is None:
+        result.no_op = "no kept-hold collision to accept"
+        return result
+    if accepted and not _migration_evidence(old, new, state):
+        raise MigrationError(f"this host holds no record that {old} was migrated to {new} here")
     if refusal is not None:
         _live_note(result, refusal, deferring=deferring)
     if deferring:
@@ -2476,7 +2639,7 @@ def finish_session(
     launcher_moves = _plan_launch_logs(old, new, state) + _plan_chief(old, new, tmux, result)
     moves += state_moves + map_moves + iterm2_moves + launcher_moves + held_moves + memory_moves + index_moves
     moves += lock_moves
-    _plan_task_rekey(old, new, home, result, state)
+    _plan_task_rekey(old, new, home, result, state, hold_commands=hold_commands)
     if deferring:
         for move in moves:
             if move.kind in LIVE_SESSION_KINDS and move.action not in ("report", "already done"):
@@ -2493,6 +2656,8 @@ def finish_session(
         _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
         return result
 
+    if accepted:
+        _append_ledger(state, old, new, repo_root, format=MIGRATION_FORMAT, accepted_kept_holds=accepted)
     agent_renames, agent_warnings = _agents.apply_agents(agent_plan)
     result.warnings += agent_warnings
     for item in [m for m in held_moves if m.action == "move"]:

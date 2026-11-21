@@ -195,7 +195,7 @@ def test_given_group_by_status_in_config_when_a_flag_says_none_then_the_flag_win
         ({"sort_by": ["size"]}, [], "sort_by"),
         ({"show_all": "yes"}, [], "show_all"),
         ({"order": "name"}, [], "order"),
-        ({"pair_host": "host-b"}, [], "unknown key pair_host"),
+        ({"pair_host": "host-b"}, [], "pair_host was renamed to group_host"),
         ({"scope": "pair"}, [], "scope must be one of"),
         ({}, ["-S", "pair"], "Invalid value"),
         ({}, ["-s", "name,size"], "-s/--sort-by"),
@@ -294,6 +294,61 @@ def test_given_an_invalid_machine_scope_when_listed_then_it_is_refused(host, pro
 
     assert result.exit_code == 2
     assert "[machine] sessions_list_scope must be one of" in result.output
+
+
+def test_given_the_renamed_pair_host_key_when_listed_then_the_refusal_names_group_host_and_the_file(host):
+    cfg, _ = host
+    cfg["sessions_list"] = {"pair_host": "host-b", "group_by": "colour"}
+    result = CliRunner().invoke(_cli_group, ["sessions", "list"])
+
+    assert result.exit_code == 2
+    assert "pair_host was renamed to group_host" in result.output
+    assert 'rename the line to group_host = "host-b"' in result.output
+
+
+@pytest.mark.parametrize(
+    ("machine", "table", "args", "note"),
+    [
+        (
+            {"profile_class": "work"},
+            {"scope": "group", "group_host": "host-b"},
+            [],
+            'scope group narrowed to host: [machine] profile_class is "work", not "personal"; '
+            'set [machine] profile_class = "personal" to list other hosts',
+        ),
+        (
+            {},
+            {},
+            ["-S", "fleet"],
+            'scope fleet narrowed to host: [machine] profile_class is unset, not "personal"; '
+            'set [machine] profile_class = "personal" to list other hosts',
+        ),
+        (
+            {"profile_class": "personal", "sessions_list_scope": "group"},
+            {"scope": "fleet"},
+            [],
+            'scope fleet narrowed to group: [machine] sessions_list_scope is "group"; '
+            'set [machine] sessions_list_scope = "fleet" to widen it',
+        ),
+    ],
+)
+def test_given_a_configured_scope_the_profile_narrows_when_listed_then_one_line_names_the_reason_and_key(
+    published, machine, table, args, note
+):
+    published["machine"] = {"host_id": LOCAL, "session_group_members": [LOCAL, "host-b"]} | machine
+    published["sessions_list"] = table
+
+    out = _run("sessions", "list", *args)
+
+    assert "c-myproject-ada" in out
+    assert out.count(note) == 1
+
+
+def test_given_a_host_only_profile_and_no_configured_scope_when_listed_then_no_narrowing_note_prints(host):
+    cfg, _ = host
+    cfg["machine"] = {"host_id": LOCAL, "profile_class": "work"}
+
+    assert "narrowed" not in _run("sessions", "list")
 
 
 def test_given_a_group_member_without_a_snapshot_when_listed_then_available_rows_and_a_publish_hint_appear(published):

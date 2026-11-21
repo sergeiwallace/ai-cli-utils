@@ -668,9 +668,22 @@ def _host(tmp_path: Path, **environment: str | None) -> Iterator[str]:
     socket = str(tmp_path / "cc-daemon" / "pty" / f"{host_id}.sock")
     with owned_process([sys.executable, "-c", "import time; time.sleep(60)", socket], env=env) as proc:
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not psutil.Process(proc.pid).cmdline():
+        while time.monotonic() < deadline and socket not in _cmdline_or_empty(proc.pid):
             time.sleep(0.01)
         yield host_id
+
+
+def _cmdline_or_empty(pid: int) -> list[str]:
+    """The process's arguments, or ``[]`` while it is still exec'ing.
+
+    macOS answers ``sysctl(KERN_PROCARGS2)`` with EIO for a child mid-exec, which psutil
+    reports as ``AccessDenied``; Linux can still show the forking parent's arguments.
+    Either way the host is not ready yet, so the caller keeps polling until its deadline.
+    """
+    try:
+        return psutil.Process(pid).cmdline()
+    except psutil.AccessDenied:
+        return []
 
 
 def test_given_the_copy_runs_in_another_sessions_environment_when_resolving_then_it_is_stopped_not_attached(

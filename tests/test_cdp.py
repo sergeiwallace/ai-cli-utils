@@ -687,6 +687,31 @@ def _real_edge() -> str | None:
     return shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable")
 
 
+def _read_edge_install(edge: str) -> None:
+    """Read every file of the Edge install once, so a cold disk is paid before any deadline.
+
+    On a fresh hosted Linux runner the install is not in the page cache: reading its
+    711 MB took 40-48 s, the first launch took 34-40 s to open its DevTools port, and a
+    launch after the read took 4.5 s and later ones under 0.5 s (measured, Ubuntu runner,
+    2026-11). Under the suite's own disk load the cold launch overran the 60 s port
+    deadline while Edge was still alive and starting. The read itself needs no deadline:
+    it either progresses or the job's timeout ends it.
+    """
+    binary = Path(edge).resolve()
+    # A macOS app keeps its frameworks beside Contents/MacOS, so read the whole bundle.
+    root = next((parent for parent in binary.parents if parent.suffix == ".app"), binary.parent)
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            try:
+                with path.open("rb") as handle:
+                    while handle.read(1 << 20):
+                        pass
+            except OSError:
+                # An unreadable file (a lock, a permission) is not on the startup path
+                # this warms; Edge itself reports anything it cannot load.
+                continue
+
+
 def _security_agent_windows() -> set[int]:
     """Window numbers of on-screen windows owned by SecurityAgent, which draws keychain dialogs.
 
@@ -806,6 +831,7 @@ class TestCdpEdgeRealBoundary:
             edge_home = tmp_path / "edge-home"
             (edge_home / "AppData" / "Local").mkdir(parents=True)
             env = {**os.environ, "USERPROFILE": str(edge_home)}
+        _read_edge_install(edge)
         dialogs_before = _security_agent_windows()
         proc = spawn_owned(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         try:

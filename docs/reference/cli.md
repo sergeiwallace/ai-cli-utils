@@ -242,7 +242,7 @@ Register Claude Code workspace trust for every repo under a root (fixes 'workspa
 ai c [OPTIONS] [NAME]
 ```
 
-Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
+Launch a Claude Code session. A migration to the session's name that this host recorded and never finished is finished first, as `ai migrate-session OLD NEW --finish -y` would, one recorded verified finished is trusted unless it has accepted kept holds (`ai migrate-session -s -a` re-checks it), and one recorded finished without verification is finished again when starting its existing slot. If any is still partial, the launch is refused: it starts nothing, prints the parts left and the --finish command, and exits 1. -P/--allow-partial-migration starts the session anyway. When the session is already running, nothing can be finished, so attaching to it warns with the parts left and the --finish command to run once it exits.
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
@@ -854,7 +854,7 @@ Every writing run ends with a read-only re-plan of the pair. Only a re-plan that
 
 A run that finishes then looks for references to OLD left behind. It runs the `[migrate_session] references_command` from config.toml, if one is set, with `--old OLD --new NEW`, and scans the repo's tracked files for OLD and its tmux session names as whole words. Each reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.
 
--s/--status [NAME] lists, read-only, each migration this host records that is not verified finished (-a/--all: every one), re-planned as complete or partial with the parts left and the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default remote machine.
+-s/--status [NAME] lists, read-only, each migration this host records that is not verified finished or has an accepted kept hold (-a/--all: every one), re-planned as complete or partial with the parts left and the --finish command; NAME narrows it to one pair. It runs while NEW is live, writes nothing, and exits 1 if any pair is partial, 2 on a usage error. -R/--remote runs it on the default remote machine.
 
 -f/--finish -a/--all re-plans every recorded migration on this host, verified or not, and finishes each partial one whose sessions are stopped, so a migration recorded before a fix (or stuck on a refusal since fixed) needs no hand run. A live pair, or one it cannot plan, is skipped and named. It checks the installed `ai` once, lists what it would finish and asks unless -y is given, and with -n/--dry-run writes nothing. It prints one row per pair and exits 1 if any pair is left partial or skipped.
 
@@ -873,9 +873,10 @@ Arguments:
 | `-n` | `--dry-run` |  | Print every planned move without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt |
 | `-f` | `--finish` |  | The slot already moved to NEW: carry or clean up every leftover still named OLD, hooks included; with -n/--dry-run it plans even while a session is live and names it. While NEW runs it does every step except those writing NEW's open transcript and task files, which it defers and names; a running OLD refuses it |
+| `-k` | `--accept-kept-hold` | `SLOT` | With --finish: acknowledge a collision between two registered agent worktrees and keep both. Records their paths, HEADs and container entries; changes require fresh acknowledgement. Repeat for multiple slots or use the old worktree path if a name is ambiguous. |
 | `-b` | `--beads-only` |  | Only re-key the Beads issues still on OLD, for a migration this host records; NEW may be running |
 | `-t` | `--to-name` | `TEXT` | Reserve a first name (this one, or the shortest free one) and migrate OLD to it |
-| `-s` | `--status` |  | List each recorded migration not verified finished as complete or partial, read-only |
+| `-s` | `--status` |  | List unverified migrations and those with accepted kept holds as complete or partial, read-only |
 | `-R` | `--remote` |  | With -s/--status: run it on the default remote machine |
 | `-a` | `--all` |  | With -T/--to-names: every index-named session here; with -s/--status: every recorded migration; with -f/--finish: finish every stopped partial migration this host records |
 | `-T` | `--to-names` |  | With -a/--all: migrate each one to a picked first name |

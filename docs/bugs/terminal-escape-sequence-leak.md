@@ -9,7 +9,7 @@ template_version: "bug-1.0.0"
 
 # Remote Claude Code session leaks terminal input escape sequences
 
-**Status:** diagnosed-upstream; no repository code change
+**Status:** diagnosed-upstream for the agents-view leak; the launcher restores input modes before every tmux attach since 2026-11-20 (see [Measured](#measured-a-terminal-left-in-kitty-report-all-keys-mode-cannot-type-into-tmux))
 
 **Created:** 2026-09-02
 
@@ -227,12 +227,12 @@ reset
 ```
 
 If `reset` is unavailable, the following narrower sequence disables the common xterm mouse modes,
-resets xterm `modifyOtherKeys`, pops one Kitty keyboard-protocol mode, and repairs the PTY line
-discipline. Run it only from the normal shell after detaching or exiting the TUI, not by injecting
-it into a live application:
+resets xterm `modifyOtherKeys`, empties the Kitty keyboard-protocol stack on both screens, and
+repairs the PTY line discipline. Run it only from the normal shell after detaching or exiting the
+TUI, not by injecting it into a live application:
 
 ```sh
-printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[>4;0m\033[<u'
+printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[>4;0m\033[<99u\033[?1049l\033[<99u'
 stty sane
 ```
 
@@ -346,11 +346,39 @@ to an input-state desynchronization at the Claude Code view boundary.
 5. Defensive terminal cleanup belongs at an ownership boundary proven by a PTY regression test, not
    as an unconditional escape sequence injected into every attach.
 
+## Measured: a terminal left in kitty "report all keys" mode cannot type into tmux
+
+A later report (2026-11-20) was a hand relaunch of an exited remote session with `ai c <name> -R`:
+the new pane accepted no usable typing. Inside the pane only the agent held the terminal as stdin
+(the supervisor's `--ai-cli-child-body` shells in the foreground group are forked subshells waiting
+on their children, with stdin `/dev/null` or not reading), so nothing in the pane swallowed input.
+The keys reached the tmux client and were mangled there.
+
+Replayed against tmux 3.7c (the version on both ends) with `extended-keys on`,
+`extended-keys-format csi-u` and `terminal-features xterm*:extkeys`, the bytes a terminal sends in
+each keyboard mode arrive in the pane as:
+
+| Terminal sends | Pane receives |
+|---|---|
+| `hi\r` (legacy) | `hi\r` |
+| `\e[97u` (kitty flag 8, report all keys: `a`) | `\e[91;3u97u` (Alt+`[`, then `97u` as text) |
+| `\e[97;1:3u` (flag 2, release event) | `\e[91;3u97;1:3u` |
+| `\e[97;;97u` (flag 16, associated text) | `\e[91;3u97;;97u` |
+| `\e[27;5;99~` (modifyOtherKeys 2, Ctrl+C) | `\e[99;5u` (understood) |
+
+tmux does not parse kitty-protocol key reports from its own terminal, so a terminal left with kitty
+flags pushed turns every key into an Alt key plus literal text. tmux never pops those flags itself.
+The launcher at that time cleared the modes only on the way out, so the new client inherited the
+leaked mode. Since the 2026-11-20 fix every `tmux attach` the launcher execs, on the reattach and on
+the create-then-attach path, first writes the restore sequence above, which empties both kitty
+stacks. Which program left the flags pushed in that terminal tab was not recorded.
+
 ## Fix log
 
 | Date | Change | Result |
 |---|---|---|
 | 2026-09-02 | Decoded captured input, researched upstream reports and protocol specifications, audited local launcher/wrapper/transport code | Diagnosed as an upstream Claude Code input-state defect with local feature settings as preconditions; documented mitigations; no code change |
+| 2026-11-20 | Restore the terminal's input modes before every `tmux attach` the launcher execs; regression tests on the reattach and the fresh remote create-then-attach paths | A terminal left in a key-reporting mode no longer reaches a new tmux client with that mode set |
 
 ## Sources
 

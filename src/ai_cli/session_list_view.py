@@ -3,6 +3,7 @@
 Depends on: config.py
 """
 
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -19,6 +20,8 @@ DEFAULTS = {
 GROUP_KEYS = ("host", "status", "relaunch", "none")
 SORT_KEYS = ("status", "name", "changed", "host", "relaunch")
 SCOPES = ("host", "group", "fleet")
+#: Retired ``[sessions_list]`` keys and the key that replaced each; refused, never read as an alias.
+RENAMED = {"pair_host": "group_host"}
 #: The status and cause a row shows for a running record from an earlier boot of this host that
 #: tmux and the process table both prove gone; the record itself still says running.
 STALE = "stale"
@@ -60,14 +63,30 @@ def parse_sort(value: str | Sequence[str], source: str) -> list[str]:
     return keys
 
 
-def effective_scope(machine: dict, requested: str) -> str:
-    """Apply the machine profile's visibility limit to the requested table scope."""
+def effective_scope(machine: dict, requested: str) -> tuple[str, str]:
+    """Apply the machine profile's visibility limit to the requested table scope.
+
+    Returns the scope and, when the limit narrowed ``requested``, one line naming the reason and the key to set.
+    """
     limit = machine.get("sessions_list_scope", "group")
     if limit not in SCOPES:
         raise ViewError(f"[machine] sessions_list_scope must be one of {', '.join(SCOPES)}")
-    if machine.get("profile_class") != "personal":
-        return "host"
-    return min(requested, limit, key=SCOPES.index)
+    profile = machine.get("profile_class")
+    if profile != "personal":
+        if requested == "host":
+            return "host", ""
+        shown = f'"{profile}"' if profile else "unset"
+        return "host", (
+            f'scope {requested} narrowed to host: [machine] profile_class is {shown}, not "personal"; '
+            'set [machine] profile_class = "personal" to list other hosts'
+        )
+    scope = min(requested, limit, key=SCOPES.index)
+    if scope == requested:
+        return scope, ""
+    return scope, (
+        f'scope {requested} narrowed to {scope}: [machine] sessions_list_scope is "{limit}"; '
+        f'set [machine] sessions_list_scope = "{requested}" to widen it'
+    )
 
 
 def settings(cfg: dict) -> dict:
@@ -76,6 +95,12 @@ def settings(cfg: dict) -> dict:
     where = f"[sessions_list] in {config.config_file_text()}"
     if not isinstance(table, dict):
         raise ViewError(f"{where} must be a table")
+    renamed = sorted(set(table) & set(RENAMED))
+    if renamed:
+        old_key, new_key = renamed[0], RENAMED[renamed[0]]
+        raise ViewError(
+            f"{where}: {old_key} was renamed to {new_key}; rename the line to {new_key} = {json.dumps(table[old_key])}"
+        )
     unknown = sorted(set(table) - set(DEFAULTS))
     if unknown:
         raise ViewError(f"{where}: unknown key {', '.join(unknown)}; known keys: {', '.join(DEFAULTS)}")

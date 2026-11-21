@@ -963,6 +963,14 @@ _PREVIOUS_INTERRUPT_EXIT = (
 )
 
 
+#: The terminal restore as programs rendered it before it emptied the kitty keyboard
+#: stack on both screens (AI-CLI-ftxh6): one pop, on the current screen only.
+_PREVIOUS_TERMINAL_RESET = (
+    "'\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1005l\\033[?1006l\\033[?1015l\\033[?1004l"
+    "\\033[?2004l\\033[?1049l\\033[?7h\\033[?25h\\033[>4;0m\\033[<u\\033[0m'"
+)
+
+
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
@@ -983,8 +991,16 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD)[^\n]*\n.*?^    # END \1\n",
             "",
+            text,
+        )
+        # Codex launches through the bracketed _run_codex function, which resolves the
+        # exact native thread. Its call site stands for the pre-feature newest-thread
+        # branch, so a program launched before the feature is still certified.
+        text = re.sub(
+            r"(?m)^( *)_run_codex\n",
+            r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
             text,
         )
         # The background-attach branch is the head of the launch if/elif chain, so it
@@ -999,6 +1015,13 @@ def _compatible(source: str, expected: str) -> bool:
 
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
+        return True
+    # The terminal restore is printf data with no control flow, so a program that
+    # sends the retired bytes is the same program. Rebuilt in our trusted template.
+    from .session_script import rendered_terminal_reset
+
+    previous_reset = expected.replace(rendered_terminal_reset(), _PREVIOUS_TERMINAL_RESET)
+    if previous_reset != expected and _compatible(source, previous_reset):
         return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.
@@ -1951,14 +1974,12 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
     """Read a bounded receipt line before authentication."""
 
     def receive(size: int) -> bytes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        connection.settimeout(remaining)
-        data = connection.recv(size)
-        if time.monotonic() >= deadline:
-            raise TimeoutError
-        return data
+        # The deadline bounds how long the peer may keep this process waiting, not
+        # when this process gets to read: a receipt already delivered is read even
+        # when a host stall pushed the read past the deadline. Past it the read no
+        # longer blocks, so a silent or dripping peer still gets no extra time.
+        connection.settimeout(max(deadline - time.monotonic(), 0.0))
+        return connection.recv(size)
 
     data = bytearray()
     while b"\n" not in data:

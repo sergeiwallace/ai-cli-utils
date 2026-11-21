@@ -3,7 +3,7 @@
 > GitHub Actions CI is **active** on this repository and its results are a real verification
 > signal. It is not billing-blocked.
 >
-> Last updated: 2026-11-18
+> Last updated: 2026-11-20
 
 ## Current state
 
@@ -91,6 +91,77 @@ Each CI workflow has a `concurrency` group per pull request with `cancel-in-prog
 `pull_request` events, so a newer push to a pull request cancels that pull request's older run of
 the same workflow. A push to `main` or a manual dispatch gets a group of its own, keyed by its run
 id, so it never cancels or waits on another run.
+
+## Keeping hosted demand down
+
+Hosted runners share an account-wide cap, measured on 2026-11-18 at 5 concurrent macOS jobs and 40
+jobs in total. Measured over 400 runs on 2026-11-18 to 11-20, 54% of this repository's hosted
+job-minutes went to three Renovate pull requests that failed on every run and were rebased, and so
+re-run in full, after every merge to `main`. `renovate.json5` now prevents that, and
+`tests/test_renovate_config_contract.py` pins each rule:
+
+- `rebaseWhen: "conflicted"`: an update branch is rebased only when it conflicts. The ruleset does
+  not require branches to be up to date, so a rebase after every merge tested nothing new.
+- ruff's two pins, the `ruff` package and the `ruff-pre-commit` hook, move in one pull request. The
+  pre-commit manager is on for that hook only.
+- The `pyenv` manager is off: `.python-version` is one of several files that must agree, so moving
+  the interpreter is a deliberate change, not an automated one.
+
+The measurements, and the candidates that were measured and not built (a docs-only skip, a skip for
+a `main` push whose tree a pull request already tested, fewer Windows shards), are in
+`docs/bugs/ai-cli-kreio-hosted-ci-queue-demand.md`.
+
+## When the hosted queue is starved
+
+A pull request needs all four required checks, `lint`, `test`, `test-windows` and `test-macos`.
+When hosted jobs wait too long there are two routes to them.
+
+### The self-hosted fallback
+
+The routing contract above moves a starved run's later attempt onto a self-hosted pool. The
+watchdog that writes `CI_FALLBACK_RUNS_ON` lives outside this repository. As of 2026-11-20 its
+GitHub App permissions are granted, and the Linux and macOS pools are not yet attached: the Linux
+runner waits on its install, and the macOS runner on its registration token. There is no Windows
+pool.
+
+### A local run of one check
+
+`scripts/run_local_ci.py` runs one required check on the current machine. Its commands are read
+from the check's workflow file, so they are the ones CI runs:
+
+```bash
+uv run python scripts/run_local_ci.py -n test-macos   # print the commands, run nothing
+uv run python scripts/run_local_ci.py lint            # run them here
+uv run python scripts/run_local_ci.py -r test-macos   # run them and report the result on HEAD
+```
+
+| Check | Runs on | Needs |
+|---|---|---|
+| `lint` | Linux or macOS | uv |
+| `test` | Linux | uv, tmux, Dolt |
+| `test-macos` | macOS | uv, tmux, Dolt |
+| `test-windows` | Windows, from an MSYS2 shell | uv, MSYS2 tmux, Dolt |
+
+The test checks run the whole suite with the project's `-n auto`, so they use every core of the
+machine for about as long as the CI job takes, around 30 minutes on a hosted runner. A sharded check runs its shards one after another.
+
+`-r/--report` posts the result as a commit status named after the check, on the commit that ran.
+The ruleset names its required contexts with no required source, so that status satisfies the
+check. The description says it came from a local run, and a failed run is reported as a failure.
+The script refuses to report from a tree with uncommitted changes, from an operating system the
+check does not run on, or when `HEAD` moves during the run. Push the commit first, so the status
+has a commit to land on. Using a local status while a hosted check run of the same name is still
+queued has not been tried yet: run `gh pr checks <n>` afterwards to see what the pull request
+reads.
+
+**Windows has no maintainer machine.** What is possible:
+
+- A Windows machine or virtual machine with MSYS2 (`pacman -S tmux python`), uv and Dolt can run
+  `test-windows` from an MSYS2 shell, and report it.
+- Hosted Windows jobs draw on the 40-job pool, not the 5-job macOS one, so they clear sooner: the
+  median wait measured on 2026-11-18 was 19 minutes for Windows against 36 for macOS.
+- Without either, `test-windows` stays pending. An administrator's bypass can merge without it,
+  and the `main` push run is then the first Windows result for that change.
 
 ## The retirement this replaces was based on a false premise
 

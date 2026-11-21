@@ -176,6 +176,9 @@ class AgentEntry:
     new_branch: str | None
     held_by: int | None = None
     conflict: bool = False
+    path_collision: bool = False
+    registered_destination: bool = False
+    keep_action: str = ""
     tip: str = ""
     ownership: WorktreeOwnership | None = None
     venv_old: Path | None = None
@@ -514,6 +517,7 @@ def plan_agents(
         container = (repo / ".worktrees" / f"{old}-agents").resolve()
         new_container = container.parent / f"{new}-agents"
         worktrees = _worktrees(repo)
+        registered = {path for path, _branch in worktrees}
         holding = {branch: path for path, branch in worktrees if branch}
         local_branches = _local_branches(repo)
         stamps = _agent_worktree_stamps(repo)
@@ -571,7 +575,9 @@ def plan_agents(
             if entry.new_branch is None:
                 entry.branch = None
             entry.held_by = _holder(path, live_cwds)
-            entry.conflict = (dest != path and os.path.lexists(dest)) or _branch_exists(entry.new_branch)
+            entry.path_collision = dest != path and os.path.lexists(dest)
+            entry.registered_destination = dest in registered
+            entry.conflict = entry.path_collision or _branch_exists(entry.new_branch)
             if entry.moves:
                 entry.ownership = plan_worktree_ownership(
                     repo,
@@ -667,6 +673,9 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
     """``(kind, source, dest, action)`` for each planned step, in the order they run."""
     lines: list[tuple[str, str, str, str]] = []
     for e in plan.entries:
+        if e.keep_action and e.worktree:
+            lines.append(("agent worktree", str(e.worktree), str(e.dest), e.keep_action))
+            continue
         if e.held_by is not None:
             action, dest = f"left alone: held by pid {e.held_by}", ""
         else:
@@ -691,18 +700,26 @@ def describe(plan: AgentPlan, renames: dict[Path, dict[str, str]] | None = None)
         lines.append(("session-home marker", f"{m.key} ({m.repo})", f"{key} = {m.value}", "rewrite"))
     for p in plan.project_dirs:
         lines.append(("agent project dir", str(p.source), str(p.dest), "conflict" if p.conflict else "move"))
+    accepted_containers = {e.worktree.parent for e in plan.entries if e.worktree and e.keep_action}
     for container in plan.containers + plan.host_containers:
-        lines.append(("agent container", str(container), "", "removed once empty"))
+        if container not in accepted_containers:
+            lines.append(("agent container", str(container), "", "removed once empty"))
     return lines
 
 
-def _remove_if_empty(container: Path) -> None:
+def _remove_if_empty(container: Path, protected: set[Path] | None = None) -> None:
     """Remove ``container`` and its empty subdirectories; keep anything still holding a file."""
     if not container.is_dir():
         return
-    for root, _dirs, _files in os.walk(container, topdown=False):
+    visited: list[Path] = []
+    for root, dirs, _files in os.walk(container):
+        path = Path(root)
+        if protected:
+            dirs[:] = [name for name in dirs if path / name not in protected]
+        visited.append(path)
+    for path in reversed(visited):
         with contextlib.suppress(OSError):  # still holds a worktree that was left alone
-            Path(root).rmdir()
+            path.rmdir()
 
 
 def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]]:
@@ -747,8 +764,11 @@ def apply_agents(plan: AgentPlan) -> tuple[dict[Path, dict[str, str]], list[str]
         if res.returncode != 0:
             warnings.append(f"session-home marker {key} in {m.repo} FAILED to rewrite: {(res.stderr or '').strip()}")
     warnings += _apply_project_dirs(plan.project_dirs)
+    protected = {e.worktree for e in plan.entries if e.worktree is not None and e.worktree not in moved}
+    kept = {e.worktree.parent for e in plan.entries if e.worktree and e.keep_action}
     for container in plan.containers + plan.host_containers:
-        _remove_if_empty(container)
+        if container not in kept:
+            _remove_if_empty(container, protected)
     return done, warnings
 
 

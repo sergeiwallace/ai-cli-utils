@@ -200,6 +200,8 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
                 return 5
             if value.startswith("deferred:"):
                 return 4
+            if value.startswith("kept (accepted: "):
+                return 1
             if value.startswith("skipped:") and not any(
                 word in value for word in ("no matching", "informational", "missing", "unconfigured", "unreadable")
             ):
@@ -216,6 +218,8 @@ def summarize(result: m.MigrationResult, *, resumed: bool) -> None:
             continue  # Hook status is carried by its explicit planned/applying step.
         if move.action == "already done":
             status = "done earlier"
+        elif move.accepted_hold:
+            status = "would do" if move.action.startswith("kept (would accept: ") else move.action
         elif move.action == m.DEFERRED:
             status = deferred
         elif move.action.startswith(("skipped:", "left alone", "kept", "left in place")) or move.action == "conflict":

@@ -190,6 +190,14 @@ def _stop_epilogue(is_remote: bool) -> str:
     )
 
 
+def rendered_terminal_reset() -> str:
+    """The transport's terminal restore as the session program's ``printf`` argument."""
+    # Imported here: transport imports this module at load time.
+    from .transport import _TERMINAL_RESTORE
+
+    return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -266,9 +274,8 @@ def get_engine_script(
     from .session_lifecycle import pinned_python
     from .session_registry import registry_path
     from .tmux_binary import shell_prelude
-    from .transport import _TERMINAL_RESTORE
 
-    _terminal_reset = shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+    _terminal_reset = rendered_terminal_reset()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
@@ -1148,7 +1155,7 @@ def get_engine_script(
       # Codex's native clipboard needs a display. Without one in this shell, give this
       # Codex process (never the shell or tmux) the pair of the user's own verified
       # local graphical session; the helper writes why it found none to the launch log.
-      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+      if [[ "$1" == codex || ( "${{2:-}}" == -m && "${{3:-}}" == ai_cli.codex_session ) ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
         _cx_display="" _cx_authority=""
         _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
         while IFS= read -r _cx_display_line; do
@@ -1702,6 +1709,25 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN CODEX THREAD
+      _run_codex() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Codex needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
+        run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}
+        if [[ "${{agent_exit_code:-0}}" == 76 ]]; then exit 76; fi
+      }}
+    # END CODEX THREAD
+
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1732,9 +1758,7 @@ with open(path, 'w') as f:
           fi
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       else
         if [[ "$engine" == "c" ]]; then
@@ -1759,9 +1783,7 @@ with open(path, 'w') as f:
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
         else
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       fi
     # BEGIN BACKGROUND ATTACH prompted-end

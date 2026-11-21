@@ -737,9 +737,8 @@ def postcondition_problems(compiled: Compiled, after: reg.Snapshot) -> list[str]
         elif path.startswith(f"{VERDICTS_DIR}/"):
             if (after.verdicts or {}).get(parse_verdict_path(path)) != wanted:
                 problems.append(f"the verdict {path} differs from what was written")
-        elif path.startswith(f"{META_DIR}/"):
-            if (after.meta or {}).get(path[len(META_DIR) + 1 :]) != wanted:
-                problems.append(f"the setting {path} differs from what was written")
+        elif path.startswith(f"{META_DIR}/") and (after.meta or {}).get(path[len(META_DIR) + 1 :]) != wanted:
+            problems.append(f"the setting {path} differs from what was written")
     return problems
 
 
