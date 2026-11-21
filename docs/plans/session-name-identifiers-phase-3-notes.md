@@ -250,6 +250,47 @@ were waited for and exited 0; none remained running. No transcript or message bo
 was retained in the observations. Real TUI/tmux, macOS, Windows, paired-host,
 authenticated turns and directory consent remain unverified.
 
+#### Live slot control contract
+
+The exec trampoline also starts a local attestation bridge before starting the TUI
+when `TMUX_PANE` is present. This does not change the version 2 slot record or the
+hook trust contract. A separate version 1 publication lives beside the slot record:
+`<slot>.codex.<generation>.control-v1.json`. Its reciprocal wire fixture is
+[codex_control_contract_v1.json](../../tests/fixtures/codex_control_contract_v1.json).
+The generation is a SHA-256 digest of the current launch token; the token itself is
+never published there. The publication names the slot record, Unix socket, pane,
+owner and listener, with PID and six-decimal psutil creation time for both processes.
+It is discovery metadata, not delivery authority.
+
+The bridge is a child of the exec-preserving writer and lives only while that
+owner's process identity and parent relationship still match. It starts unconfirmed.
+The existing callback notifies it after validating the native event. Confirmation
+requires the current token and a kernel peer PID whose ancestry includes the owner,
+with the same effective UID. A `get` request returns a live `waiting` snapshot only
+after this confirmation, including the thread, cwd and nullable rollout path. A
+changed committed binding invalidates that snapshot until another valid callback.
+Requests and replies are bounded JSON lines on a private Unix socket; the bridge
+does not accept prompts, simulate native goal RPC, or change native hook trust.
+Dead generations cannot serve requests; normal exit removes only the bridge's own
+unchanged publication. A crash may leave a stale discovery file, which consumers
+must refuse unless every live proof succeeds.
+
+Consumers must verify listener credentials, listener/owner birth identities and
+ancestry, phase and thread, and the owner's ancestry in the selected tmux pane.
+Delivery uses that fenced pane. The native read-only `thread/goal/get` WebSocket
+protocol is a separate endpoint that this TUI bridge does not provide; consumers
+must retain refusal when native current goal state cannot be established.
+
+- When a launch has no confirmed callback, a consumer shall refuse it as a thread target.
+- When the writer or listener dies or changes identity, a consumer shall refuse delivery.
+- When a callback comes from outside the writer's process tree or carries a stale token,
+  the bridge shall refuse confirmation.
+- When no tmux pane is present, the existing diagnostic launch behavior shall be preserved.
+
+The fake-client launch regression verifies this protocol without authenticating a
+native client. Authenticated TUI goal/prompt read-back and macOS remain unverified.
+This adds no installer configuration, package dependency, or native control socket.
+
 #### Hook acceptance criteria
 
 - When any supported slot launches, the launcher shall pass the same declaration
