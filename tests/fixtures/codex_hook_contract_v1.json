@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "supported_client_versions": [
+    "0.169.0",
+    "0.171.0"
+  ],
+  "event": "SessionStart",
+  "command": "ai internal codex-session-confirm",
+  "declaration": "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"ai internal codex-session-confirm\"}]}]",
+  "position": {
+    "group": 0,
+    "handler": 0
+  },
+  "keys": {
+    "linux": "/<session-flags>/config.toml:session_start:0:0",
+    "macos": "/<session-flags>/config.toml:session_start:0:0"
+  },
+  "expected_hash": "sha256:f48156510f48462d9df8bbeb7f27e892142a567bc35edb0b0505f2716dd6723d"
+}

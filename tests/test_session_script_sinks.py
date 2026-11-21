@@ -60,7 +60,7 @@ def _telemetry(session: Session) -> list[tuple[str, dict]]:
 
 
 # Every CSI sequence, not only SGR: the supervisor resets the terminal's modes after each
-# child (`\x1b[?1000l`, `\x1b[>4;0m`, `\x1b[<u`), and those bytes would otherwise prefix
+# child (`\x1b[?1000l`, `\x1b[>4;0m`, `\x1b[<99u`), and those bytes would otherwise prefix
 # the next line the script prints.
 _CSI = re.compile(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]")
 
