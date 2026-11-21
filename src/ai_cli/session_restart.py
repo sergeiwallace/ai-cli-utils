@@ -1966,14 +1966,12 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
     """Read a bounded receipt line before authentication."""
 
     def receive(size: int) -> bytes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        connection.settimeout(remaining)
-        data = connection.recv(size)
-        if time.monotonic() >= deadline:
-            raise TimeoutError
-        return data
+        # The deadline bounds how long the peer may keep this process waiting, not
+        # when this process gets to read: a receipt already delivered is read even
+        # when a host stall pushed the read past the deadline. Past it the read no
+        # longer blocks, so a silent or dripping peer still gets no extra time.
+        connection.settimeout(max(deadline - time.monotonic(), 0.0))
+        return connection.recv(size)
 
     data = bytearray()
     while b"\n" not in data:
