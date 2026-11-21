@@ -275,8 +275,10 @@ def _settled_cmdline(process, family: str | None) -> list[str]:
         cmdline = process.cmdline()
         # The Codex slot launcher (``python -m ai_cli.codex_session``) names Codex in its
         # module, but it has not exec'd Codex yet.
-        launched = any(want in Path(arg).name for arg in cmdline) and "ai_cli.codex_session" not in cmdline
-        if want is None or launched or time.monotonic() >= deadline:
+        launched = want is None or (
+            any(want in Path(arg).name for arg in cmdline) and "ai_cli.codex_session" not in cmdline
+        )
+        if launched or time.monotonic() >= deadline:
             return cmdline
         time.sleep(0.05)
 
