@@ -31,6 +31,52 @@ Two points differ from what the design's store table recorded on the other host:
 
 The Linux build host still needs the same measurement for every client installed there.
 
+### Codex slot identity contract
+
+Interactive numbered slots store a version 1 identity record beside the launch scripts:
+`$XDG_STATE_HOME/ai-cli-utils/sessions/<tmux-slot>.codex.json` (the usual
+`~/.local/state` fallback applies). Native rollouts remain under
+`$CODEX_HOME/sessions` or `~/.codex/sessions`. Only their first metadata record is read.
+Claude Code, Gemini and Pi keep their existing adapters and launch arguments.
+
+Before a Codex process starts, the launcher writes `phase: pending`. A native
+`SessionStart` hook confirms `session_id`, `cwd` and nullable `transcript_path` for
+that launch token. The record retains only identity metadata: schema version, slot,
+directory, native thread ID, rollout path, client version, execution mode, route,
+result and launch token. It contains no prompt, message or transcript bodies.
+These records are neither process liveness nor commit authority.
+
+On restart or supervisor recreation, a confirmed ID must match exactly one readable
+rollout's `payload.id` and `payload.cwd`. The launcher passes that ID to
+`codex resume`; it never selects by newest file, working directory or `--last`.
+Missing, duplicate, malformed, wrong-directory and ephemeral history refuses resume.
+An unconfirmed callback, incompatible schema or unsupported version stays pending or
+unknown. There is no automatic adoption of old directory-only slots. A live pane
+can still be attached with `ai cx NAME` or `ai attach <tmux-slot>` without claiming
+that it has resumable persisted history. Confirmed history alone never proves liveness.
+
+The supported native event contract is pinned to Codex 0.169.0:
+[event schema](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/schema.rs)
+and [configuration discovery](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/engine/discovery.rs).
+The launcher adds a session-flag `hooks.SessionStart` command. Native discovery reads
+each configuration layer, preserving existing file hooks. Normal Codex hook trust
+applies; a disabled or unapproved callback leaves identity pending. No trust bypass
+is added. A new client version needs a verified event fixture before enablement.
+
+The reciprocal boundary fixture is
+[codex_session_identity_v1.json](../../tests/fixtures/codex_session_identity_v1.json).
+It records input/output identity, client version, execution mode, route and an explicit
+unknown live-canary result. Local tests replay the actual callback command, collision
+dispatch with and without a queued prompt, and a synthetic client in an isolated tmux
+pane through the local attach/list path. They do not establish actual client behavior
+on either host. The policy-side consumer must replay the same versioned fixture.
+
+Remaining exit checks: repeat a real same-directory collision through local and
+paired-host attach, then repeat on macOS. Record installed version, execution mode,
+route and result without message bodies. The storage mode of tmux-launched Codex on
+each host, and exact-thread `queue --resume` readback, remain open questions. The
+launcher refuses missing legacy rollouts; support for another native store is unverified.
+
 ## The generated name list
 
 Built 2026-10-23 by `scripts/refresh_session_names.py` from the two pinned artifacts,

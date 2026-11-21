@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "client_version": "0.169.0",
+  "execution_mode": "interactive",
+  "route": "local-tmux",
+  "canary_result": "unknown",
+  "canary_reason": "Synthetic protocol replay; interactive host attach has not been verified",
+  "input": {
+    "hook_event_name": "SessionStart",
+    "session_id": "11111111-2222-4333-8444-555555555555",
+    "cwd": "<worktree>",
+    "transcript_path": "<rollout>",
+    "source": "startup",
+    "model": "test-model",
+    "permission_mode": "default"
+  },
+  "output": {
+    "schema_version": 1,
+    "phase": "confirmed",
+    "thread_id": "11111111-2222-4333-8444-555555555555",
+    "result": "confirmed"
+  }
+}

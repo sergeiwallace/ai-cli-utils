@@ -280,6 +280,26 @@ class Codex(Adapter):
     def store_root(self) -> Path:
         return self.home / ".codex" / "sessions"
 
+    def probe_thread(self, worktree: Path, thread_id: str) -> Probe:
+        """Corroborate one native ID, never infer it from cwd, filename or recency.
+
+        This is persisted evidence only. A caller must obtain the ID from the client;
+        a matching rollout does not prove that a process or pane is alive.
+        """
+        problem = self._root_problem()
+        if problem:
+            return Probe(UNKNOWN, problem)
+        try:
+            matches = [record for record in self.all_records() if record.session_id == thread_id]
+            if len(matches) != 1:
+                return Probe(UNKNOWN, "recorded Codex thread has missing or ambiguous rollouts")
+            record = matches[0]
+            if record.problem or not isinstance(record.cwd, str) or Path(record.cwd).resolve() != worktree.resolve():
+                return Probe(UNKNOWN, "recorded Codex thread working directory cannot be corroborated")
+            return Probe(PRESENT, str(record.path))
+        except (OSError, ValueError, RuntimeError):
+            return Probe(UNKNOWN, "recorded Codex thread store is unreadable")
+
     def _record(self, path: Path) -> Record:
         first = _read_first_json(path)
         if first is None or first.get("type") != "session_meta" or not isinstance(first.get("payload"), dict):

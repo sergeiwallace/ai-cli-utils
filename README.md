@@ -354,6 +354,15 @@ session named before the name registry has no registry row and is found the same
 by its worktree. With `-R` the launcher asks the remote host for that session, and the
 remote host answers only with one that exists there.
 
+Numbered Codex slots (`ai cx 1`) retain the native thread ID confirmed by Codex's
+`SessionStart` hook. Restart uses `codex resume <recorded-id>`, including when a newer
+thread exists in the same directory. A live tmux pane remains attachable independently
+of saved history. A stopped slot with missing, ambiguous, ephemeral or unconfirmed
+history refuses to guess a thread. Existing directory-only slots are not adopted
+automatically. The versioned hook contract currently covers Codex 0.169.0; unsupported
+versions report unknown. Approve the launcher hook in Codex's normal hook trust flow
+for identity confirmation. See the [session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
+
 When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
 branch or transcript, or asks the remote host to allocate anything. The refusal lists
 the closest existing titles and the command that starts a new session instead. A name
