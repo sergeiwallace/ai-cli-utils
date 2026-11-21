@@ -90,6 +90,13 @@ prefers Git's explicit error lines. The regression appends that progress
 line after a real failed fetch and checks that the warning still reports
 the error and the launch proceeds.
 
+### Transport client stderr
+
+The VPN-aware transport loop started mosh and fallback SSH with inherited
+stderr, so the clients' diagnostics bypassed the launch log. Both now use
+the same stderr relay as the dedicated SSH runner. A test subprocess writes
+an unterminated diagnostic and checks that it reaches the terminal and log.
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->

@@ -113,7 +113,7 @@ _STDERR_TAIL_LINES = 20
 
 
 class _StderrTee:
-    """Capture an ssh attempt's stderr while still relaying it live to the operator.
+    """Capture a transport attempt's stderr while still relaying it live to the operator.
 
     The child writes to a temporary FILE rather than a pipe: a ``ControlPersist`` master
     or a ``ProxyCommand`` it forks inherits the descriptor and can outlive the attempt, and
@@ -147,8 +147,8 @@ class _StderrTee:
             with contextlib.suppress(OSError, ValueError):
                 self._drain()
 
-    def close(self) -> str:
-        """Stop following, relay what is left, and return the captured tail."""
+    def close(self) -> None:
+        """Stop following and relay what is left."""
         self._stop.set()
         self._thread.join()
         with contextlib.suppress(OSError, ValueError):
@@ -160,7 +160,20 @@ class _StderrTee:
         # blocks the unlink, and a leftover temp file is not worth failing over.
         with contextlib.suppress(OSError):
             self._path.unlink()
-        return "\n".join(self.lines)
+
+
+@contextlib.contextmanager
+def _logged_transport_stderr():
+    """Keep transport stderr in the output sink without taking over the terminal."""
+    tee = None
+    with contextlib.suppress(OSError):
+        tee = _StderrTee()
+    with _out.foreign_terminal():
+        try:
+            yield tee
+        finally:
+            if tee is not None:
+                tee.close()
 
 
 class _Terminated(SystemExit):
@@ -340,14 +353,11 @@ def run_ssh_with_reconnect(
         try:
             while True:
                 started = _monotonic()
-                tee = _StderrTee()
                 # ssh holds the terminal in raw mode for the attempt, so the tee's relayed
                 # lines must clear their row and end in CR LF themselves (AI-CLI-8h3u).
-                with _out.foreign_terminal():
-                    try:
-                        returncode = subprocess.call(ssh_args, stderr=tee.sink)
-                    finally:
-                        stderr_tail = tee.close()
+                with _logged_transport_stderr() as tee:
+                    returncode = subprocess.call(ssh_args, stderr=tee.sink if tee is not None else None)
+                stderr_tail = "\n".join(tee.lines) if tee is not None else ""
                 # A signal forwarded to ssh ends the attempt; unwind rather than reconnect.
                 raise_if_terminated()
                 if on_exit_receipt is not None and on_exit_receipt():
@@ -842,46 +852,47 @@ async def _run_transport_loop(
                     err=True,
                 )
 
-                proc = subprocess.Popen(args)
-                _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
+                with _logged_transport_stderr() as tee:
+                    proc = subprocess.Popen(args, stderr=tee.sink if tee is not None else None)
+                    _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
 
-                start_time = _monotonic()
-                _vpn_poll_ticks = 0
-                _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
-                # Poll process while watching for NATS VPN signal.
-                # Also poll VPN state directly every vpn_poll_interval seconds as a
-                # fallback — mosh never exits when UDP is blocked by VPN, so NATS alone
-                # is insufficient; the direct poll catches the case where the NATS
-                # connection drops when VPN changes routing.
-                while proc.poll() is None:
-                    if vpn_changed.is_set():
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()  # Not covered: requires proc to ignore SIGTERM
-                            proc.wait()
-                        break
-                    _vpn_poll_ticks += 1
-                    if (
-                        transport_type == "mosh"
-                        and _vpn_poll_ticks % _vpn_poll_every == 0
-                        and await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval)
-                    ):
-                        _out.emit(
-                            Tag.TRANSPORT, "reconnect", "\nVPN detected — switching from mosh to SSH...", err=True
-                        )
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait()
-                        vpn_changed.set()
-                        break
-                    await asyncio.sleep(0.5)
-                else:
-                    proc.wait()
+                    start_time = _monotonic()
+                    _vpn_poll_ticks = 0
+                    _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
+                    # Poll process while watching for NATS VPN signal.
+                    # Also poll VPN state directly every vpn_poll_interval seconds as a
+                    # fallback — mosh never exits when UDP is blocked by VPN, so NATS alone
+                    # is insufficient; the direct poll catches the case where the NATS
+                    # connection drops when VPN changes routing.
+                    while proc.poll() is None:
+                        if vpn_changed.is_set():
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()  # Not covered: requires proc to ignore SIGTERM
+                                proc.wait()
+                            break
+                        _vpn_poll_ticks += 1
+                        if (
+                            transport_type == "mosh"
+                            and _vpn_poll_ticks % _vpn_poll_every == 0
+                            and await asyncio.to_thread(_is_vpn_active, _vpn_poll_interval)
+                        ):
+                            _out.emit(
+                                Tag.TRANSPORT, "reconnect", "\nVPN detected — switching from mosh to SSH...", err=True
+                            )
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait()
+                            vpn_changed.set()
+                            break
+                        await asyncio.sleep(0.5)
+                    else:
+                        proc.wait()
 
                 elapsed = _monotonic() - start_time
                 # A signal forwarded to the client ends it; unwind instead of switching transport.
@@ -910,8 +921,6 @@ async def _run_transport_loop(
                             err=True,
                         )
                         exit_code = remote_status
-                        break
-                    if diagnostic and proc.returncode == 0:
                         break
 
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
@@ -975,22 +984,27 @@ async def _run_transport_loop(
                     for delay in (1, 2, 4):
                         _out.emit(Tag.TRANSPORT, "reconnect", f"\nSSH failed — retrying in {delay}s...", err=True)
                         time.sleep(delay)
-                        proc2 = subprocess.Popen(args)
-                        _write_transport_state(transport_file, session_name, os.getpid(), proc2.pid, transport_type)
-                        while proc2.poll() is None:
-                            if vpn_changed.is_set():
-                                proc2.terminate()
+                        with _logged_transport_stderr() as tee:
+                            proc2 = subprocess.Popen(args, stderr=tee.sink if tee is not None else None)
+                            _write_transport_state(transport_file, session_name, os.getpid(), proc2.pid, transport_type)
+                            while proc2.poll() is None:
+                                if vpn_changed.is_set():
+                                    proc2.terminate()
+                                    proc2.wait()
+                                    break
+                                await asyncio.sleep(0.5)
+                            else:
                                 proc2.wait()
-                                break
-                            await asyncio.sleep(0.5)
-                        else:
-                            proc2.wait()
                         transport_file.unlink(missing_ok=True)
                         raise_if_terminated()
                         if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
                             return 0
-                        if proc2.returncode == 0:
-                            return 0  # SSH succeeded
+                        if proc2.returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT):
+                            if ssh_diagnostic_args and remote_diagnostic_file:
+                                await asyncio.to_thread(
+                                    _report_remote_diagnostic, ssh_diagnostic_args, remote_diagnostic_file
+                                )
+                            return proc2.returncode
                         if vpn_changed.is_set():
                             _out.emit(
                                 Tag.TRANSPORT, "reconnect", "\nVPN state changed — switching transport...", err=True
