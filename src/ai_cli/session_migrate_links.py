@@ -40,9 +40,6 @@ class StaleLink:
     #: What the link is rewritten to; None when it cannot be rewritten here.
     new_target: str | None
     reason: str = ""
-    #: Whether the link itself is a directory link, read when it was planned. Windows keeps file
-    #: and directory links apart, and the new target may not exist until later in the run.
-    is_dir: bool = False
 
 
 def _is_junction(path: Path) -> bool:
@@ -54,7 +51,7 @@ def _link_is_dir(path: Path) -> bool:
     """Whether the link at ``path`` is a directory link, read from the link where the OS records it."""
     if sys.platform == "win32":  # Windows: a directory link carries the directory attribute itself
         return bool(os.lstat(path).st_file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
-    return path.is_dir()  # POSIX has one link type; this is its target, which exists at planning
+    return path.is_dir()  # POSIX has one link type and ignores the flag; this reads the target
 
 
 def _readlink(path: Path) -> str:
@@ -164,7 +161,7 @@ def scan(trees: list[tuple[Path, Path]], pairs: list[tuple[Path, Path]]) -> list
                     except ValueError:  # on another Windows drive: no relative form exists
                         new_target = str(renamed)
                 if new_target != raw:
-                    found.append(StaleLink(after, raw, new_target, is_dir=_link_is_dir(link)))
+                    found.append(StaleLink(after, raw, new_target))
                 continue
             absolute = link.parent / raw
             if _inside(absolute, now):
@@ -194,14 +191,17 @@ def _new_link(path: Path, new_target: str, is_dir: bool) -> Path:
     raise FileExistsError(f"no free temporary name beside {path} after {_TEMP_ATTEMPTS} tries")
 
 
-def _relink(path: Path, target: str, new_target: str, is_dir: bool) -> None:
+def _relink(path: Path, target: str, new_target: str) -> None:
     """Repoint the link at ``path`` from ``target`` to ``new_target``, atomically where the platform allows.
 
-    Only the temporary link this call created is ever removed. A failed rewrite leaves the
-    original link naming ``target``.
+    The new link takes the type of the link it replaces, read from that link: Windows keeps file
+    and directory links apart, and the new target may not exist until later in the run. Only the
+    temporary link this call created is ever removed. A failed rewrite leaves the original link
+    naming ``target``.
     """
     if _readlink(path) != target:
         return  # rewritten since it was planned
+    is_dir = _link_is_dir(path)
     temporary = _new_link(path, new_target, is_dir)
     try:
         try:
@@ -239,7 +239,7 @@ def apply(links: list[StaleLink]) -> list[str]:
         if link.new_target is None:
             continue
         try:
-            _relink(link.path, link.target, link.new_target, link.is_dir)
+            _relink(link.path, link.target, link.new_target)
         except OSError as exc:
             warnings.append(f"stale link {link.path} FAILED to name {link.new_target}: {exc}")
     return warnings
