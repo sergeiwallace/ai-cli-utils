@@ -1455,6 +1455,11 @@ Each phase is the line's operation (see
   is running, the lines its session script prints join the same launch's log, and
   its warnings and errors, such as a failed direnv load, also reach telemetry. A reload
   row is stored only once it has escalated.
+- When an agent exits during its first 15 seconds, the launch log records its exit
+  status and up to 12 recent terminal lines. This applies to managed and one-shot
+  tmux panes and bare sessions with a launcher-owned PTY. On a remote launch, SSH
+  and mosh also report the saved startup diagnostic when the connection ends.
+  New launch logs are created with owner-only permissions on POSIX systems.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a

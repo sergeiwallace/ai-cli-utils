@@ -13,6 +13,8 @@ import contextlib
 import itertools
 import os
 import re
+import signal
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -33,6 +35,10 @@ LAUNCH_LOG_ENV = "AI_CLI_LAUNCH_LOG"
 #: has cleared the screen. Read once and removed from the environment, so nothing the launch
 #: starts (tmux, the session script) inherits it.
 REMOTE_DIAGNOSTIC_ENV = "AI_CLI_REMOTE_DIAGNOSTIC_FILE"
+AGENT_DIAGNOSTIC_ENV = "AI_CLI_AGENT_DIAGNOSTIC_FILE"
+_STARTUP_DIAGNOSTIC_SECONDS = 15
+_PANE_TAIL_LINES = 12
+AGENT_TAIL_LIMIT = 8192
 _MAX_LOGS_PER_SESSION = 20
 
 # Breaks a launch-log path tie when the clock cannot. See create_launch_log.
@@ -196,7 +202,8 @@ def create_launch_log(session_name: str) -> LaunchLog:
             stale.unlink(missing_ok=True)
 
     try:
-        log_file = path.open("a", encoding="utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o600)
+        log_file = os.fdopen(fd, "a", encoding="utf-8")
     except OSError:
         return LaunchLog(path=None)
     launch_log = LaunchLog(path=path, _file=log_file)
@@ -214,7 +221,106 @@ def open_launch_log(path: str) -> LaunchLog:
     if not log_path.is_file():
         return LaunchLog(path=None)
     try:
-        log_file = log_path.open("a", encoding="utf-8")
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND)
+        log_file = os.fdopen(fd, "a", encoding="utf-8")
     except OSError:
         return LaunchLog(path=None)
     return LaunchLog(path=log_path, _file=log_file)
+
+
+def _pane_tail() -> str:
+    """Read this pane while it still exists, leaving all the agent's descriptors intact."""
+    from . import tmux_binary
+
+    pane = os.environ.get("TMUX_PANE", "")
+    if not re.fullmatch(r"%[0-9]+", pane):
+        return ""
+    try:
+        result = subprocess.run(
+            tmux_binary.argv("capture-pane", "-p", "-t", pane, "-S", f"-{_PANE_TAIL_LINES}"),
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode:
+        return ""
+    return result.stdout
+
+
+def agent_program(command: list[str]) -> str:
+    """Return the program name past an optional ``direnv exec <dir>`` prefix."""
+    index = 3 if command[:2] == ["direnv", "exec"] and len(command) > 3 else 0
+    return Path(command[index]).name
+
+
+def record_agent_exit(
+    path: str,
+    name: str,
+    program: str,
+    status: int,
+    elapsed: float,
+    failure: OSError | None = None,
+    *,
+    diagnostic_path: str = "",
+    terminal_output: str | None = None,
+    shell_status: bool = False,
+    force_diagnostic: bool = False,
+) -> None:
+    """Write the exit and a bounded startup tail to the launch log and any remote receipt."""
+    early = elapsed < _STARTUP_DIAGNOSTIC_SECONDS or force_diagnostic
+    save_diagnostic = early and status not in (130, -signal.SIGINT)
+    tail = []
+    if save_diagnostic:
+        observed = _pane_tail() if terminal_output is None else terminal_output
+        lines = [inert(line).rstrip() for line in observed[-AGENT_TAIL_LIMIT:].split("\n")]
+        tail = [line for line in lines if line][-_PANE_TAIL_LINES:]
+    if failure is not None:
+        description = f"{program} could not be started: {failure}"
+    elif status < 0:
+        try:
+            signame = signal.Signals(-status).name
+        except ValueError:
+            signame = f"signal {-status}"
+        description = f"{program} was ended by {signame}"
+    else:
+        description = f"{program} exited with status {status}"
+        if shell_status and status > 128:
+            # The shell also returns this value when the child explicitly exits with it.
+            with contextlib.suppress(ValueError):
+                description += f" (possible {signal.Signals(status - 128).name})"
+    log = open_launch_log(path) if path else LaunchLog(None)
+    remote = open_launch_log(diagnostic_path) if save_diagnostic and diagnostic_path else None
+    message = f"{name}: {description} after {elapsed:.1f}s"
+    previous = _out.attach_file_sink(log.write_line)
+    try:
+        level = _out.Level.INFO if status == 0 else _out.Level.WARNING
+        _out.emit(_out.Tag.SESSION, "exit", message, err=True, level=level)
+        for line in tail:
+            # Terminal text is local diagnostics, outside the telemetry sink.
+            log.write_line(_out.file_text_line(f"[session] exit: Recent output: {line}"))
+        if remote is not None:
+            remote.write_line("\n".join([message, *tail]))
+    finally:
+        _out.flush_sinks()
+        _out.attach_file_sink(previous)
+        log.close()
+        if remote is not None:
+            remote.close()
+
+
+def record_shell_agent_exit(path: str, name: str, engine: str, status: str, elapsed: str) -> None:
+    """Adapt Bash and zsh wait statuses to the shared agent exit logger."""
+    record_agent_exit(
+        path,
+        name,
+        "agent",
+        int(status),
+        float(elapsed),
+        diagnostic_path=os.environ.get(AGENT_DIAGNOSTIC_ENV, ""),
+        shell_status=True,
+        force_diagnostic=engine == "cx" and status == "76",
+    )

@@ -255,6 +255,8 @@ def run_ssh_with_reconnect(
     max_auth_backoff_seconds: float = 900.0,
     auth_fault_patterns: Sequence[str] = DEFAULT_AUTH_FAULT_PATTERNS,
     on_exit_receipt: Callable[[], bool] | None = None,
+    diagnostic_ssh_args: list[str] | None = None,
+    remote_diagnostic_file: str = "",
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -447,6 +449,8 @@ def run_ssh_with_reconnect(
                 )
                 time.sleep(delay)
                 delay = min(delay * 2, max_backoff_seconds)
+            if returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT) and diagnostic_ssh_args and remote_diagnostic_file:
+                _report_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
             if returncode == 0 and on_clean_exit is not None:
                 on_clean_exit()
         except _Terminated:
@@ -711,7 +715,8 @@ def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_fi
     """``(the remote command's recorded exit status or None, its saved diagnostic)``, both then removed.
 
     One read-only SSH command reads what the mosh wrapper left (:func:`ai_cli.main._mosh_remote_command`):
-    the ``.status`` file a nonzero exit writes, and the last 50 lines of its stderr.
+    the ``.status`` file a nonzero exit writes, the last 50 stderr lines, and the recorded
+    agent startup diagnostic. tmux can exit successfully even when the agent did not.
     """
     diagnostic_command = (
         f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
@@ -719,7 +724,9 @@ def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_fi
         f'printf "{_REMOTE_STATUS_PREFIX}%s\\n" "$(cat "$diagnostic_file.status")"; '
         'rm -f "$diagnostic_file.status"; fi; '
         'if test -f "$diagnostic_file"; then '
-        'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi'
+        'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi; '
+        'if test -f "$diagnostic_file.agent"; then '
+        'tail -n 50 "$diagnostic_file.agent" && rm -f "$diagnostic_file.agent"; fi'
     )
     try:
         result = subprocess.run(
@@ -739,6 +746,15 @@ def _read_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_fi
         value = lines.pop(0)[len(_REMOTE_STATUS_PREFIX) :].strip()
         status = int(value) if value.isdigit() else None
     return status, "\n".join(lines).strip()
+
+
+def _report_remote_diagnostic(ssh_args: list[str], path: str) -> tuple[int | None, str]:
+    status, diagnostic = _read_remote_diagnostic(ssh_args, path)
+    if diagnostic:
+        restore_terminal()
+        kind = "error" if status else "diagnostic"
+        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command {kind}:\n{diagnostic}", err=True)
+    return status, diagnostic
 
 
 def _remote_failure_line(diagnostic: str) -> str:
@@ -762,6 +778,7 @@ async def _run_transport_loop(
     diagnostic_ssh_args: list[str] | None = None,
     remote_diagnostic_file: str = "",
     on_exit_receipt: Callable[[], bool] | None = None,
+    ssh_diagnostic_args: list[str] | None = None,
 ) -> int:
     """Run the mosh/SSH transport loop with VPN-aware switching; return the exit status to leave with.
 
@@ -880,12 +897,11 @@ async def _run_transport_loop(
                 # Read the command's result before classifying a fast mosh exit as a link failure
                 # or detach. The read consumes the record, so all branches share this result.
                 diagnostic = ""
-                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                diagnostic_args = diagnostic_ssh_args if transport_type == "mosh" else ssh_diagnostic_args
+                if diagnostic_args and remote_diagnostic_file:
                     remote_status, diagnostic = await asyncio.to_thread(
-                        _read_remote_diagnostic, diagnostic_ssh_args, remote_diagnostic_file
+                        _report_remote_diagnostic, diagnostic_args, remote_diagnostic_file
                     )
-                    if diagnostic:
-                        _out.emit(Tag.TRANSPORT, "connect", f"\nRemote command error:\n{diagnostic}", err=True)
                     if remote_status:
                         _out.emit(
                             Tag.TRANSPORT,
@@ -894,6 +910,8 @@ async def _run_transport_loop(
                             err=True,
                         )
                         exit_code = remote_status
+                        break
+                    if diagnostic and proc.returncode == 0:
                         break
 
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
@@ -1011,7 +1029,7 @@ async def _run_transport_loop(
                 # ever actually starting a session. The mosh-fail branch above only
                 # catches a non-zero return code, so this case previously fell straight
                 # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
-                if transport_type == "mosh" and elapsed < 15:
+                if transport_type == "mosh" and not diagnostic and elapsed < 15:
                     _out.emit(
                         Tag.TRANSPORT,
                         "reconnect",

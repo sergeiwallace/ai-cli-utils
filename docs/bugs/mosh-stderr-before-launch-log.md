@@ -48,6 +48,40 @@ that the client exits 78, and that the collision hint is absent.
 Test stderr recovery with a process that writes straight to stderr, and test
 exits under both of the short durations the transport treats specially.
 
+## Agent exits after handoff
+
+### Symptoms and reproduction
+
+A tmux pane displays the agent's startup error and then closes. The owning
+host's log ends with `Auto-restart stopped. Returning to the calling shell.`
+and the launching host may report an ambiguous clean transport exit. To
+reproduce, run the generated supervisor or one-shot handoff on a test PTY,
+write a diagnostic to the agent's stderr, and exit the agent while it is still
+starting. Exercise the remote wrapper with a successful transport exit.
+
+### Cause
+
+The supervisor restores the agent's terminal descriptors before launching
+it. This preserves interactivity and sends its output past the launcher's
+stderr mirror. The one-shot owner recorded the exit status alone. A tmux
+client can return zero after the pane closes, so the remote wrapper's saved
+command status cannot identify the agent exit. The Codex thread guard also
+used the same supervisor exit status as a lifecycle persistence failure.
+
+### Fix and verification
+
+The shared exit recorder measures runtime before cleanup and saves a bounded
+tail for startup exits. It reads the current tmux pane while it still exists
+or uses bytes already relayed by the bare PTY. Pane capture reflects the
+screen and scrollback tmux still has. The recorder also writes remote startup
+diagnostics to a per-launch file that SSH and mosh can retrieve after the
+connection closes. The Codex refusal continues to stop the supervisor and
+now records its own reason in lifecycle evidence.
+
+At revision `6e797f42`, the regression assertions failed for missing output
+in the managed, one-shot, bare PTY and remote launch logs. The tests keep the
+agent on a PTY and use fake agent and transport commands.
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->

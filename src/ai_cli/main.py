@@ -113,7 +113,7 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .launch_logging import REMOTE_DIAGNOSTIC_ENV, create_launch_log
+from .launch_logging import AGENT_DIAGNOSTIC_ENV, REMOTE_DIAGNOSTIC_ENV, create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
@@ -374,7 +374,9 @@ def _refresh_claude_plugins() -> None:
     refresh_plugins(emit)
 
 
-def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
+def _pty_handoff(
+    session: str, *, launch_log: str = "", diagnostic_path: str = ""
+) -> Callable[[str, list[str]], NoReturn]:
     """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
 
     Used on the bare paths when the compact transport resolved to the pty, so the
@@ -386,7 +388,7 @@ def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
         from . import pty_host
 
         try:
-            sys.exit(pty_host.host(file, args, session=session))
+            sys.exit(pty_host.host(file, args, session=session, launch_log=launch_log, diagnostic_path=diagnostic_path))
         except FileNotFoundError:
             raise
         except OSError as exc:
@@ -3586,6 +3588,14 @@ def _print_launch_plan(
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
 
 
+def _remote_agent_diagnostic_setup(path: str) -> str:
+    return (
+        f'export {AGENT_DIAGNOSTIC_ENV}="$HOME/{path}.agent"; '
+        f'( umask 077; mkdir -p "$(dirname "${AGENT_DIAGNOSTIC_ENV}")" '
+        f'&& touch "${AGENT_DIAGNOSTIC_ENV}" ) 2>/dev/null; '
+    )
+
+
 def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     """The shell command mosh runs on the remote host for ``remote_cmd``.
 
@@ -3595,8 +3605,7 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     the terminal and record a failed command's own status separately from the pipe's status.
     """
     return (
-        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
-        'mkdir -p "$(dirname "$diagnostic_file")"; '
+        _remote_agent_diagnostic_setup(remote_diagnostic_file) + f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
         "exec 3>&1; "
         f"{{ ( {remote_cmd} ) 3>&-; "
@@ -3606,6 +3615,7 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
         'remote_exit_code=0; if [ -f "$diagnostic_file.status" ]; '
         'then IFS= read -r remote_exit_code < "$diagnostic_file.status"; '
         'else rm -f "$diagnostic_file"; fi; '
+        'if [ ! -s "$diagnostic_file.agent" ]; then rm -f "$diagnostic_file.agent"; fi; '
         'exit "$remote_exit_code"'
     )
 
@@ -4945,6 +4955,7 @@ def _do_session_launch(
     allow_partial_migration: bool = False,
     probe: bool = False,
 ) -> None:
+    agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
     # and tmux preflights) on the same quiet/verbose policy and the same stream.
@@ -5532,11 +5543,13 @@ def _do_session_launch(
         # The ssh_config/remote-machine ALIAS only: the registry never holds a host, user
         # or key path, and relaunch_argv is the `ai` command line, never this ssh one.
         _registry_remote = {"alias": remote_alias, "session": _r_ai_name}
-        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
+        ssh_remote_cmd = _remote_agent_diagnostic_setup(remote_diagnostic_file) + remote_cmd
+        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(ssh_remote_cmd)}")
 
         diagnostic_ssh_args = ["ssh", "-T", "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
         if id_file:
             diagnostic_ssh_args += ["-i", str(Path(id_file).expanduser())]
+        ssh_diagnostic_args = [*diagnostic_ssh_args, f"{user}@{vpn_host}"]
         diagnostic_ssh_args.append(f"{user}@{host}")
 
         # Build mosh_args unconditionally — needed for both initial connection
@@ -5575,6 +5588,7 @@ def _do_session_launch(
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
                         on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
+                        ssh_diagnostic_args=ssh_diagnostic_args,
                     )
                 )
             finally:
@@ -5615,6 +5629,8 @@ def _do_session_launch(
                         functools.partial(_mark_session_ended, reporter, _record_id) if _record_id else None
                     ),
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
+                    diagnostic_ssh_args=ssh_diagnostic_args,
+                    remote_diagnostic_file=remote_diagnostic_file,
                 )
             )
 
@@ -6267,12 +6283,15 @@ def _do_session_launch(
                 _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            handoff = (
+                _pty_handoff(session_id, launch_log=launch_log_path or "", diagnostic_path=agent_diagnostic_path)
+                if on_pty
+                else _exec_handoff
+            )
             _exec_with_direnv(
                 target_root,
                 command,
-                handoff=_session_launch_state.handoff(
-                    session_id, _pty_handoff(session_id) if on_pty else _exec_handoff
-                ),
+                handoff=_session_launch_state.handoff(session_id, handoff),
             )
 
     # tmux panes inherit their session environment from the long-lived server,
@@ -6281,6 +6300,8 @@ def _do_session_launch(
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
     _tmux_env_flags = build_tmux_env_flags(os.environ)
+    if agent_diagnostic_path:
+        _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
 
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
