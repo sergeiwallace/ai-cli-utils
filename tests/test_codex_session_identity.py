@@ -65,7 +65,9 @@ def _ancestry(monkeypatch, ancestors: list) -> None:
     monkeypatch.setattr(psutil.Process, "parents", lambda self: ancestors if self.pid == me else _real_parents(self))
 
 
-def _start_session(tmp_path, monkeypatch, name: str, agent_argv: list[str]):
+def _start_session(
+    tmp_path, monkeypatch, name: str, agent_argv: list[str], agent_code: str = "import time; time.sleep(120)"
+):
     """Register and run NAME with a real supervisor whose child is the agent process.
 
     The agent child carries AGENT_ARGV in its command line, as a launched Codex does
@@ -77,7 +79,7 @@ def _start_session(tmp_path, monkeypatch, name: str, agent_argv: list[str]):
     # agent that does not descend from the recorded supervisor.
     supervisor = spawn_owned_python(
         "import subprocess, sys, time\n"
-        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)', *{agent_argv!r}])\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {agent_code!r}, *{agent_argv!r}])\n"
         "print(child.pid, flush=True)\n"
         "time.sleep(120)\n",
         stdout=subprocess.PIPE,
@@ -412,6 +414,27 @@ def test_given_session_relaunched_when_it_gets_a_new_generation_then_the_old_att
     assert _row(name)["agent_identity"]["generation"] == old_generation
     assert result.exit_code != 0
     assert "cannot verify current session" in result.output
+
+
+@posix_only
+def test_given_slot_launcher_that_has_not_exec_d_codex_yet_when_recorded_then_it_binds_the_codex_it_becomes(
+    tmp_path, monkeypatch
+):
+    # The session script runs `python -m ai_cli.codex_session launch ...`, which names
+    # Codex in its module and only then execs `codex --no-daemon` in the same process.
+    becomes_codex = (
+        "import os, sys, time\n"
+        "time.sleep(1)\n"
+        "os.execv(sys.executable, [sys.executable, '-c', 'import time; time.sleep(120)', 'codex', '--no-daemon'])\n"
+    )
+    name = f"cx-r-{CANONICAL}"
+    _generation, supervisor, _agent = _start_session(
+        tmp_path, monkeypatch, name, ["-m", "ai_cli.codex_session", "launch"], agent_code=becomes_codex
+    )
+    try:
+        assert _row(name)["agent_identity"]["engine_binding"] == "exclusive"
+    finally:
+        reap_tree(supervisor)
 
 
 # --- a Codex on the shared app-server daemon ------------------------------------------
