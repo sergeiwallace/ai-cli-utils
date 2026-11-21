@@ -364,6 +364,9 @@ separate from an in-flight launch and its process identity. Quitting before the 
 prompt no longer strands a slot: after the old writer exits, relaunch logs the abandoned
 launch and resumes confirmed history, or starts fresh if none was confirmed. A live
 writer collision or unreadable writer identity refuses. Old record schemas also refuse.
+A slot with no record resumes the thread that already carries the session's name in
+Codex's own index (named by `/rename`), when that thread's rollout is in the slot's
+directory. A launch that resumes no named thread is named once by typing `/rename <name>`.
 
 A null hook transcript path leaves the thread live-only. It becomes resumable only
 through a later event for that exact thread with a path, or an exact thread-ID rollout

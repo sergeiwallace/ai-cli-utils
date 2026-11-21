@@ -145,6 +145,20 @@ own index is the registry: a second copy of the mapping would drift from `/renam
 owner types later. The name, not the working directory, is the key, which is how the owner
 asked to resume; the session name already carries the project and host.
 
+Numbered slots now record the thread Codex's own `SessionStart` hook confirms (README,
+"Resuming an existing session by name"), so a tmux launch runs through the slot launcher
+`python -m ai_cli.codex_session launch`, which owns the resume decision. A slot's confirmed
+thread wins. A slot with no record resumes the thread that carries the session name
+(`AI_SESSION_NAME`), the owner's hand-named case included, once the native store proves
+that thread's rollout belongs to this working directory; the hook then confirms it like any
+other launch. With neither, the launcher's own rules apply: a first launch starts fresh, and
+an in-loop restart is refused rather than resuming `--last`. The session script still names
+a launch that finds no named thread (D-2), and hands a waiting resume prompt to the namer in
+that case, or otherwise to the launcher through `AI_CLI_CODEX_PROMPT_FILE`, which passes it
+to Codex as its first prompt.
+
+> **Post-build review:** founding-ask-narrowed: D-1 "The name, not the working directory, is the key": cannot be built: once the slot launcher merged, its confirmation refuses a thread whose rollout directory differs from the slot's, so a named thread is adopted only from the launch's own directory, and the in-loop `codex resume --last` fallback is gone.
+
 **D-2. Name a new thread once, by typing `/rename <name>`.** `ai internal
 name-codex-session` waits for the idle footer (F-6, up to 30 s), types the command, presses
 Enter, and confirms by watching the index grow with an entry for that name, for up to 120 s:
