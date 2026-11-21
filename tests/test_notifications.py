@@ -1,6 +1,7 @@
 """Tests for notifications module — Notifier, channel drivers, NotificationManager."""
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -12,16 +13,10 @@ from ai_cli.notifications import (
     NotificationResult,
     Notifier,
     _send_discord,
-    _send_ntfy,
     _send_os_notification,
 )
 
-_ENV_KEYS = (
-    "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL",
-    "NTFY_BASE_URL",
-    "NTFY_TOPIC",
-    "NTFY_TOKEN",
-)
+_ENV_KEYS = ("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL",)
 
 
 def _clear_env(base: dict | None = None) -> dict:
@@ -42,7 +37,7 @@ class TestNotificationResult:
         assert r.error is None
 
     def test_when_failure_then_error_field_set(self):
-        r = NotificationResult(channel="ntfy", success=False, error="timeout")
+        r = NotificationResult(channel="discord", success=False, error="timeout")
         assert r.success is False
         assert r.error == "timeout"
 
@@ -59,31 +54,18 @@ class TestNotifierResolveChannels:
             n = Notifier(channels_config={})
             assert "discord" in n._resolve_channels(None)
 
-    def test_when_ntfy_base_and_topic_set_then_ntfy_available(self):
-        env = _clear_env({"NTFY_BASE_URL": "https://ntfy.example.com", "NTFY_TOPIC": "alerts"})
-        with patch.dict("os.environ", env, clear=True):
-            n = Notifier(channels_config={})
-            assert "ntfy" in n._resolve_channels(None)
-
     def test_when_discord_disabled_in_config_then_excluded(self):
         env = _clear_env({"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/1/x"})
         with patch.dict("os.environ", env, clear=True):
             n = Notifier(channels_config={"discord": {"enabled": False}})
             assert "discord" not in n._resolve_channels(None)
 
-    def test_when_requested_channels_filter_applied(self):
-        env = _clear_env(
-            {
-                "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/1/x",
-                "NTFY_BASE_URL": "https://ntfy.example.com",
-                "NTFY_TOPIC": "alerts",
-            }
-        )
+    def test_given_discord_configured_when_requested_channels_exclude_it_then_none_resolved(self):
+        env = _clear_env({"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/1/x"})
         with patch.dict("os.environ", env, clear=True):
             n = Notifier(channels_config={})
-            result = n._resolve_channels(["discord"])
-            assert result == ["discord"]
-            assert "ntfy" not in result
+            assert n._resolve_channels(["os"]) == []
+            assert n._resolve_channels(["discord"]) == ["discord"]
 
 
 class TestNotifierSend:
@@ -171,12 +153,11 @@ class TestNotifierListChannels:
         assert discord["enabled"] is False
         assert discord["credentials"]["webhook_url"] == "missing"
 
-    def test_always_returns_three_channels(self):
+    def test_given_any_config_when_listing_channels_then_only_discord_and_os_are_listed(self):
         with patch.dict("os.environ", _clear_env(), clear=True):
             n = Notifier(channels_config={})
             channels = n.list_channels()
-        names = {c["name"] for c in channels}
-        assert names == {"discord", "ntfy", "os"}
+        assert [c["name"] for c in channels] == ["discord", "os"]
 
     def test_os_channel_has_no_credentials(self):
         with patch.dict("os.environ", _clear_env(), clear=True):
@@ -265,76 +246,6 @@ class TestSendDiscord:
         assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
 
 
-class TestSendNtfy:
-    def _capture(self, url, token, title, body, priority, tags):
-        captured = []
-
-        class FakeReq:
-            def __init__(self, u, data, headers, method):
-                captured.append({"url": u, "body": data.decode(), "headers": headers})
-
-        with (
-            patch("urllib.request.Request", side_effect=FakeReq),
-            patch("ai_cli.notifications._open_no_redirect"),
-        ):
-            _send_ntfy(url, token, title, body, priority, tags)
-        return captured
-
-    def test_when_token_provided_then_bearer_header_set(self):
-        c = self._capture("https://ntfy.example.com/alerts", "tk_123", "Title", "Body", "default", [])
-        assert c and c[0]["headers"].get("Authorization") == "Bearer tk_123"
-
-    def test_when_no_token_then_no_auth_header(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", "Title", "Body", "default", [])
-        assert c and "Authorization" not in c[0]["headers"]
-
-    def test_when_urgent_priority_then_urgent_header(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", "Title", "Body", "urgent", [])
-        assert c and c[0]["headers"].get("Priority") == "urgent"
-
-    def test_when_high_priority_then_high_header(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", "Title", "Body", "high", [])
-        assert c and c[0]["headers"].get("Priority") == "high"
-
-    def test_when_tags_provided_then_tags_header_set(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", "Title", "Body", "default", ["warning", "robot"])
-        assert c and c[0]["headers"].get("Tags") == "warning,robot"
-
-    def test_when_no_tags_and_urgent_then_rotating_light_tag(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", "Title", "Body", "urgent", [])
-        assert c and c[0]["headers"].get("Tags") == "rotating_light"
-
-    def test_when_urlopen_succeeds_then_returns_success(self):
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        with (
-            patch("urllib.request.Request"),
-            patch("ai_cli.notifications._open_no_redirect", return_value=mock_resp),
-        ):
-            r = _send_ntfy("https://ntfy.example.com/alerts", "", "Title", "Body", "default", [])
-        assert r.success is True
-        assert r.channel == "ntfy"
-
-    def test_when_http_error_then_returns_failure_with_status(self):
-        err = urllib.error.HTTPError("url", 401, "Unauthorized", Message(), None)
-        with (
-            patch("urllib.request.Request"),
-            patch("ai_cli.notifications._open_no_redirect", side_effect=err),
-        ):
-            r = _send_ntfy("https://ntfy.example.com/alerts", "bad_token", "Title", "Body", "default", [])
-        assert r.success is False
-        assert r.status_code == 401
-
-    def test_when_network_error_then_returns_failure(self):
-        with (
-            patch("urllib.request.Request"),
-            patch("ai_cli.notifications._open_no_redirect", side_effect=OSError("timeout")),
-        ):
-            r = _send_ntfy("https://ntfy.example.com/alerts", "", "Title", "Body", "default", [])
-        assert r.success is False
-        assert r.channel == "ntfy"
-
-
 class TestSendOsNotification:
     def test_when_darwin_then_calls_osascript(self):
         with (
@@ -354,14 +265,6 @@ class TestSendOsNotification:
         assert command[2] == "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run"
         assert command[-2:] == ["Title", body]
         assert body not in command[2]
-
-
-def test_given_plaintext_or_userinfo_endpoint_when_sending_then_request_is_not_constructed():
-    for endpoint in ("http://example.com/hook", "https://token@example.com/hook", "https://éxample.com/hook"):
-        with patch("urllib.request.Request") as request:
-            result = _send_ntfy(endpoint, "secret", "Title", "Body", "default", [])
-        assert result.success is False
-        request.assert_not_called()
 
     def test_when_linux_then_calls_notify_send(self):
         with (
@@ -421,6 +324,41 @@ def test_given_plaintext_or_userinfo_endpoint_when_sending_then_request_is_not_c
         ):
             _send_os_notification("Alert", "Body")
         mock_run.assert_not_called()
+
+
+def test_given_plaintext_or_userinfo_endpoint_when_sending_then_request_is_not_constructed():
+    for endpoint in ("http://example.com/hook", "https://token@example.com/hook", "https://éxample.com/hook"):
+        with patch("urllib.request.Request") as request:
+            result = _send_discord(endpoint, "Title", "Body", "default")
+        assert result.success is False
+        request.assert_not_called()
+
+
+class TestRetiredNtfySection:
+    def test_given_config_with_ntfy_section_when_sending_then_nothing_reaches_ntfy_and_nothing_is_logged(self, caplog):
+        leftover = {
+            "notifications": {
+                "os_fallback": True,
+                "ntfy": {"enabled": True, "base_url": "https://ntfy.example.com", "topic": "alerts", "token": "tk"},
+            }
+        }
+        env = _clear_env({"NTFY_BASE_URL": "https://ntfy.example.com", "NTFY_TOPIC": "alerts"})
+        caplog.set_level(logging.DEBUG)
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("ai_cli.config.load_config", return_value=leftover),
+            patch("urllib.request.Request") as request,
+            patch("ai_cli.notifications._send_os_notification") as mock_os,
+            patch("ai_cli.notifications.Notifier._log"),
+        ):
+            mock_os.return_value = NotificationResult(channel="os", success=True)
+            n = Notifier()
+            results = n.send("Title", "Body", channels=["ntfy"])
+            listed = [c["name"] for c in n.list_channels()]
+        request.assert_not_called()
+        assert [r.channel for r in results] == ["os"]
+        assert "ntfy" not in listed
+        assert "ntfy" not in caplog.text.lower()
 
 
 def _make_plyer_import(mock_plyer):
