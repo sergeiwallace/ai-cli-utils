@@ -1709,6 +1709,31 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN CODEX THREAD
+      _run_codex() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Codex needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
+        _cx_reply=$({shlex.quote(sys.executable)} -m ai_cli.codex_session prepare "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}) || exit 76
+        _cx_target="${{_cx_reply%%$'\\n'*}}"
+        _cx_config="${{_cx_reply#*$'\\n'}}"
+        if [[ "$_cx_target" == new ]]; then
+          run_agent codex -c "$_cx_config"
+        else
+          run_agent codex -c "$_cx_config" resume "$_cx_target"
+        fi
+      }}
+    # END CODEX THREAD
+
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1739,9 +1764,7 @@ with open(path, 'w') as f:
           fi
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       else
         if [[ "$engine" == "c" ]]; then
@@ -1766,9 +1789,7 @@ with open(path, 'w') as f:
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
         else
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       fi
     # BEGIN BACKGROUND ATTACH prompted-end

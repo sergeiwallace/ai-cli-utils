@@ -991,8 +991,16 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD)[^\n]*\n.*?^    # END \1\n",
             "",
+            text,
+        )
+        # Codex launches through the bracketed _run_codex function, which resolves the
+        # exact native thread. Its call site stands for the pre-feature newest-thread
+        # branch, so a program launched before the feature is still certified.
+        text = re.sub(
+            r"(?m)^( *)_run_codex\n",
+            r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
             text,
         )
         # The background-attach branch is the head of the launch if/elif chain, so it

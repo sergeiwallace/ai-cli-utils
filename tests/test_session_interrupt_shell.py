@@ -18,6 +18,7 @@ from process_wait import scaled
 from ai_cli import config, session, session_commands, session_lifecycle_script, session_migrate
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
+from ai_cli.codex_session import confirm, prepare
 from ai_cli.session_script import get_engine_script
 
 pytestmark = [
@@ -69,8 +70,17 @@ def pane_session(request, tmp_path, monkeypatch):
     (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
     agent = (
         f"#!{sys.executable}\n"
-        "import os, signal, sys, time, tty\nfrom pathlib import Path\n"
+        "import os, shlex, signal, subprocess, sys, time, tomllib, tty\nfrom pathlib import Path\n"
         "import json\nfrom ai_cli.process_probe import probe_for\n"
+        "if Path(sys.argv[0]).name == 'codex':\n"
+        "    if sys.argv[1:] == ['--version']:\n"
+        "        print('codex-cli 0.169.0'); sys.exit(0)\n"
+        "    args = sys.argv[1:]\n"
+        "    config = tomllib.loads(args[args.index('-c') + 1])\n"
+        "    command = config['hooks']['SessionStart'][0]['hooks'][0]['command']\n"
+        "    event = {'hook_event_name': 'SessionStart', 'session_id': args[args.index('resume') + 1],\n"
+        "             'cwd': os.getcwd(), 'transcript_path': os.environ['TEST_CODEX_ROLLOUT']}\n"
+        "    subprocess.run(shlex.split(command), input=json.dumps(event), text=True, check=True)\n"
         "records = Path.home() / '.claude' / 'sessions'\nrecords.mkdir(parents=True, exist_ok=True)\n"
         "pid = os.getpid()\n"
         "(records / f'{pid}.json').write_text(json.dumps({'pid': pid, 'name': 'session-1', "
@@ -112,6 +122,30 @@ def pane_session(request, tmp_path, monkeypatch):
         name = "c-session-1"
 
         def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_clean=False):
+            if engine == "cx":
+                # Give prepare real, synthetic confirmation and persistence evidence.
+                # Version queries must not count as an interactive engine launch.
+                native_home = tmp_path / "codex"
+                monkeypatch.setenv("CODEX_HOME", str(native_home))
+                record = config.get_xdg_state_home() / "sessions" / f"{self.name}.codex.json"
+                prepare(record, tmp_path, self.name, fresh=True, route="local-tmux", client_version="0.169.0")
+                thread = "11111111-2222-4333-8444-555555555555"
+                rollout = native_home / "sessions" / "2026" / "11" / "20" / f"rollout-{thread}.jsonl"
+                rollout.parent.mkdir(parents=True)
+                rollout.write_text(
+                    json.dumps({"type": "session_meta", "payload": {"id": thread, "cwd": str(tmp_path)}})
+                )
+                confirm(
+                    record,
+                    json.loads(record.read_text())["launch_token"],
+                    {
+                        "hook_event_name": "SessionStart",
+                        "session_id": thread,
+                        "cwd": str(tmp_path),
+                        "transcript_path": str(rollout),
+                    },
+                )
+                monkeypatch.setenv("TEST_CODEX_ROLLOUT", str(rollout))
             if quick_clean:
                 date = binaries / "date"
                 date.write_text(
