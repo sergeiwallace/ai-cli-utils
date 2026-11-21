@@ -1,7 +1,7 @@
 """Unified notification delivery — Notifier class and per-channel drivers.
 
-Provides a single entry point for firing alerts across Discord webhooks,
-ntfy push notifications, and OS-native desktop alerts.
+Provides a single entry point for firing alerts across Discord (or Slack)
+webhooks and OS-native desktop alerts.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .output import Untagged
 class NotificationResult:
     """Delivery result for a single channel."""
 
-    channel: str  # "discord" | "ntfy" | "os"
+    channel: str  # "discord" | "os"
     success: bool
     status_code: int | None = None
     error: str | None = None
@@ -94,7 +94,7 @@ class Notifier:
         results: list[NotificationResult] = []
 
         if active:
-            primary = self._fire_parallel(title, body, priority, _tags, active)
+            primary = self._fire_parallel(title, body, priority, active)
             results.extend(primary)
 
         primary_results = [r for r in results if r.channel != "os"]
@@ -115,25 +115,14 @@ class Notifier:
         if discord_url and self._cfg.get("discord", {}).get("enabled", True):
             available.append("discord")
 
-        ntfy_base = os.environ.get("NTFY_BASE_URL", "") or self._cfg.get("ntfy", {}).get("base_url", "")
-        ntfy_topic = os.environ.get("NTFY_TOPIC", "") or self._cfg.get("ntfy", {}).get("topic", "")
-        if ntfy_base and ntfy_topic and self._cfg.get("ntfy", {}).get("enabled", True):
-            available.append("ntfy")
-
         if requested is not None:
             return [c for c in requested if c in available]
         return available
 
-    def _fire_parallel(
-        self, title: str, body: str, priority: str, tags: list[str], channels: list[str]
-    ) -> list[NotificationResult]:
+    def _fire_parallel(self, title: str, body: str, priority: str, channels: list[str]) -> list[NotificationResult]:
         discord_url = os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "") or self._cfg.get(
             "discord", {}
         ).get("webhook_url", "")
-        ntfy_base = os.environ.get("NTFY_BASE_URL", "") or self._cfg.get("ntfy", {}).get("base_url", "")
-        ntfy_topic = os.environ.get("NTFY_TOPIC", "") or self._cfg.get("ntfy", {}).get("topic", "")
-        ntfy_token = os.environ.get("NTFY_TOKEN", "") or self._cfg.get("ntfy", {}).get("token", "")
-        ntfy_url = f"{ntfy_base.rstrip('/')}/{ntfy_topic}" if ntfy_base and ntfy_topic else ""
 
         results: list[NotificationResult] = []
         with ThreadPoolExecutor(max_workers=max(len(channels), 1)) as pool:
@@ -141,8 +130,6 @@ class Notifier:
             for ch in channels:
                 if ch == "discord":
                     futures[pool.submit(_send_discord, discord_url, title, body, priority)] = ch
-                elif ch == "ntfy":
-                    futures[pool.submit(_send_ntfy, ntfy_url, ntfy_token, title, body, priority, tags)] = ch
 
             for fut, ch_name in futures.items():
                 try:
@@ -182,24 +169,12 @@ class Notifier:
         discord_url = os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "") or self._cfg.get(
             "discord", {}
         ).get("webhook_url", "")
-        ntfy_base = os.environ.get("NTFY_BASE_URL", "") or self._cfg.get("ntfy", {}).get("base_url", "")
-        ntfy_topic = os.environ.get("NTFY_TOPIC", "") or self._cfg.get("ntfy", {}).get("topic", "")
-        ntfy_token = os.environ.get("NTFY_TOKEN", "") or self._cfg.get("ntfy", {}).get("token", "")
 
         return [
             {
                 "name": "discord",
                 "enabled": bool(discord_url) and self._cfg.get("discord", {}).get("enabled", True),
                 "credentials": {"webhook_url": "set" if discord_url else "missing"},
-            },
-            {
-                "name": "ntfy",
-                "enabled": bool(ntfy_base and ntfy_topic) and self._cfg.get("ntfy", {}).get("enabled", True),
-                "credentials": {
-                    "base_url": "set" if ntfy_base else "missing",
-                    "topic": "set" if ntfy_topic else "missing",
-                    "token": "set" if ntfy_token else "not configured",
-                },
             },
             {
                 "name": "os",
@@ -235,32 +210,6 @@ def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> Not
         return NotificationResult(channel="discord", success=False, status_code=exc.code, error=str(exc))
     except Exception as exc:
         return NotificationResult(channel="discord", success=False, error=str(exc))
-
-
-def _send_ntfy(ntfy_url: str, token: str, title: str, body: str, priority: str, tags: list[str]) -> NotificationResult:
-    """POST to a self-hosted or public ntfy server."""
-    try:
-        _validate_https_endpoint(ntfy_url)
-    except ValueError as exc:
-        return NotificationResult(channel="ntfy", success=False, error=str(exc))
-    tags_str = ",".join(tags) if tags else ("rotating_light" if priority == "urgent" else "warning")
-    headers: dict[str, str] = {
-        "Title": title,
-        "Priority": priority,
-        "Tags": tags_str,
-        "Content-Type": "text/plain",
-        "User-Agent": "ai-cli-utils/1.0",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        req = urllib.request.Request(ntfy_url, data=body.encode(), headers=headers, method="POST")
-        resp = _open_no_redirect(req, timeout=5)
-        return NotificationResult(channel="ntfy", success=True, status_code=resp.status)
-    except urllib.error.HTTPError as exc:
-        return NotificationResult(channel="ntfy", success=False, status_code=exc.code, error=str(exc))
-    except Exception as exc:
-        return NotificationResult(channel="ntfy", success=False, error=str(exc))
 
 
 def _send_os_notification(title: str, body: str) -> NotificationResult:

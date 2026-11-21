@@ -33,13 +33,14 @@ def _record_exit(cwd, transcript, *, stamped, title=TITLE):
     launch = root / "launch"
     stamps = root / "boot-stamps"
     launch.mkdir(parents=True)
-    stamps.mkdir()
     identity = {"key": title, "boot_id": "test-boot", "pid": 9000, "pane_id": "%1"}
     ended_at = "2026-01-01T00:00:00Z"
     end = {**identity, "ended_at": ended_at, "session_id": transcript.stem, "reason": "prompt_input_exit"}
-    stamp = {**identity, "cwd": str(cwd), "transcript_path": str(stamped), "ended_at": ended_at}
     (launch / f"{title}.end.json").write_text(json.dumps(end), encoding="utf-8")
-    (stamps / f"{title}.json").write_text(json.dumps(stamp), encoding="utf-8")
+    if stamped is not None:
+        stamps.mkdir()
+        stamp = {**identity, "cwd": str(cwd), "transcript_path": str(stamped), "ended_at": ended_at}
+        (stamps / f"{title}.json").write_text(json.dumps(stamp), encoding="utf-8")
 
 
 def _resolve(cwd, *args):
@@ -54,6 +55,29 @@ def test_given_last_written_transcript_is_registered_bg_when_restarting_then_res
 
     assert code == 0, err
     assert out.strip() == str(latest)
+
+
+def test_given_exit_record_for_latest_bg_transcript_without_stamp_when_restarting_then_resumes_it(transcripts):
+    cwd, _, latest = transcripts
+    _record_exit(cwd, latest, stamped=None)
+
+    code, out, err = _resolve(cwd, "--restart")
+
+    assert code == 0, err
+    assert out.strip() == str(latest)
+
+
+def test_given_exit_record_for_differently_titled_transcript_without_stamp_when_restarting_then_refuses(transcripts):
+    cwd, _, latest = transcripts
+    with latest.open("a", encoding="utf-8") as transcript:
+        transcript.write(json.dumps({"type": "custom-title", "customTitle": "other-session"}) + "\n")
+    _record_exit(cwd, latest, stamped=None)
+
+    code, out, err = _resolve(cwd, "--restart")
+
+    assert code == 1
+    assert not out
+    assert OLD_ID in err and LATEST_ID in err
 
 
 def test_given_no_exit_record_when_restart_candidates_disagree_then_refuses_with_both_ids(transcripts):

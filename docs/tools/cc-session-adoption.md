@@ -566,6 +566,19 @@ it with `ai sessions stop OLD` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
 other parts and hooks still run, and the command exits 1 so it is re-run.
 
+When two registered agent worktrees occupy the same slot under `OLD-agents` and
+`NEW-agents`, the finish reports both paths and leaves the migration partial. To
+keep both checkouts and finish the migration, use
+`ai migrate-session OLD NEW --finish --accept-kept-hold SLOT`. The migration ledger
+records the slot, both paths and HEAD commit IDs, fingerprints of the container
+entries and both checkouts, and the time. The acceptance uses format 2 of the existing ledger so older launchers
+refuse to launch a session whose acceptance they cannot check.
+The plan shows `kept (accepted: SLOT)`. Both checkouts and their Git refs stay in place.
+Status and launch recheck the acceptance against current paths, tips and container
+entries. A change requires fresh acknowledgement if the collision still exists.
+Use `--dry-run` to preview, repeat the flag for multiple holds, or use the absolute
+old worktree path when the same slot name appears in multiple repos.
+
 A running NEW does not refuse the finish. NEW counts as running when a Claude Code
 process is named NEW or runs inside its slot, or when a tmux session hosts it. The
 finish then does every step except the ones that write files the running session holds
@@ -644,13 +657,13 @@ migration finished.
 
 Every writing run, a full migration, `--finish` or `--to-name`, ends with a read-only
 re-plan of the pair: the `--finish -n` plan, read part by part. A part is done when
-it reads `done earlier`, or a skip that finds nothing to carry (`no matching
+it reads `done earlier`, `kept (accepted: SLOT)`, or a skip that finds nothing to carry (`no matching
 artifact`, `informational`, `unconfigured`, `missing`, and the `direct rename` of
 the name registry); a hook is done only when its `--dry-run` prints
 `migrate-status: done`. Anything else, an unreadable store, a hook without a status
 line, or a plan that refuses, is a part left. When nothing is left and this host's
 ledger records the pair, the run appends a row with `"finished": true` and
-`"verified": true` for it. Otherwise it appends nothing, marks each part left
+`"verified": true` for it. Otherwise it marks each part left
 `failed` in the table, warns `NOT finished` naming each one and the `--finish`
 command, and exits 1; `--to-name` then marks the name registry entry incomplete. A
 `finished` row written before this rule carries no `verified` and counts as
@@ -661,9 +674,9 @@ remote side of `-R`, and a detached replay of NEW's recorded recipe by
 before the worktree or the session exists, judges every pair migrated to NEW once.
 A pair with no later `finished` row is finished: the same planner, hooks and Beads
 rule as `--finish -y`, verified by that run's own re-plan. A pair whose
-latest row is a verified `finished` is trusted and not re-planned: that row is the
-proof of record, and `--status -a` or `--finish` re-checks it on demand. A pair
-whose `finished` row carries no `verified` is re-planned read-only. Before each pair
+latest row is a verified `finished` is trusted unless it records an accepted kept
+hold, which triggers a read-only re-plan at launch. `--status -a` or `--finish`
+rechecks every pair on demand. Before each pair
 the launch prints a line naming it and what it is about to do, and while the finish
 or re-plan runs it prints a line as each slow step starts and as it ends with its
 elapsed time: each hook's dry run and live run, each Beads store's read, re-key and
@@ -716,8 +729,8 @@ next `--status` still lists the pair as partial. It does not override the
 newer-format refusal. A dry run (`-d`) finishes and re-plans nothing.
 
 `ai migrate-session -s/--status` lists, without writing anything, every pair this
-host's ledger records whose latest row is not a verified `finished`, so every
-migration recorded before the re-plan rule is listed. It re-plans each one as
+host's ledger records whose latest row is not a verified `finished` or whose ledger
+records an accepted kept hold. It re-plans each one as
 `--finish -n` would and prints one row per pair:
 
 ```text

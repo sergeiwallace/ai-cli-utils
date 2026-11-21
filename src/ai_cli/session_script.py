@@ -1155,7 +1155,7 @@ def get_engine_script(
       # Codex's native clipboard needs a display. Without one in this shell, give this
       # Codex process (never the shell or tmux) the pair of the user's own verified
       # local graphical session; the helper writes why it found none to the launch log.
-      if [[ "$1" == codex ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
+      if [[ "$1" == codex || ( "${{2:-}}" == -m && "${{3:-}}" == ai_cli.codex_session ) ]] && [[ -z "${{DISPLAY:-}}" || -z "${{XAUTHORITY:-}}" ]]; then
         _cx_display="" _cx_authority=""
         _cx_display_reply=$({LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal resolve-codex-display 2>/dev/null) || _cx_display_reply=""
         while IFS= read -r _cx_display_line; do
@@ -1722,6 +1722,25 @@ with open(path, 'w') as f:
       fi
     # END PINNED RESTART
 
+    # BEGIN CODEX THREAD
+      _run_codex() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Codex needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
+        run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "$_ai_state_dir/sessions/$tmux_session.codex.json" "$PWD" "$tmux_session" "$first_run" {"paired-host-tmux" if is_remote else "local-tmux"}
+        if [[ "${{agent_exit_code:-0}}" == 76 ]]; then exit 76; fi
+      }}
+    # END CODEX THREAD
+
     # BEGIN TRANSCRIPT RESTORE session
       # Every resume path below takes $matched_file. Restore the session's transcripts
       # (its sub-agents' included) first; a failed restore stops before claude starts.
@@ -1764,9 +1783,7 @@ with open(path, 'w') as f:
           fi
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       else
         if [[ "$engine" == "c" ]]; then
@@ -1791,9 +1808,7 @@ with open(path, 'w') as f:
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
         else
-          if $first_run; then run_agent codex
-          else run_agent codex resume --last
-          fi
+          _run_codex
         fi
       fi
     # BEGIN BACKGROUND ATTACH prompted-end
