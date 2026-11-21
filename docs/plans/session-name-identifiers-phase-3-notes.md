@@ -131,7 +131,7 @@ non-null hook path still needs exact native-store proof before a later resume.
 Confirmed history proves neither liveness nor commit authority. Live tmux attach
 remains independent of persisted resume proof.
 
-The supported native event contract is pinned to Codex 0.169.0:
+The supported native event contract is pinned to Codex 0.169.0 and 0.171.0:
 [event schema](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/schema.rs)
 and [configuration discovery](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/hooks/src/engine/discovery.rs).
 The launcher owns exactly one session-flags `hooks.SessionStart` override, with one
@@ -167,7 +167,7 @@ A new client version needs verified event and hook fixtures before enablement.
 Launch adapters own the declaration here; the policy installer owns approvals in its
 separate repository. Both sides must replay this fixture. Its fields are
 `schema_version`, `supported_client_versions`, `event`, `command`, `declaration`,
-`position`, `keys` (linux/macos) and `expected_hash`. The hash is pinned to 0.169.0:
+`position`, `keys` (linux/macos) and `expected_hash`. The hash is pinned to both 0.169.0 and 0.171.0:
 
 ```text
 sha256:f48156510f48462d9df8bbeb7f27e892142a567bc35edb0b0505f2716dd6723d
@@ -218,6 +218,37 @@ exited 1 without changing records; missing `ai` also left its record unchanged. 
 started app-server was waited for and exited 0. Only throwaway hook trust was written.
 The TUI, tmux with the real client, paired host, macOS, Windows and authenticated turns
 remain unverified. The synthetic tmux tests do exercise the generated launcher.
+
+Between `rust-v0.169.0` and `rust-v0.171.0`, the fixed command hook's discovery
+identity and normalization, environment replay, and first-turn SessionStart timing
+are unchanged: [discovery.rs:470–486,660–737,983–1009](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/hooks/src/engine/discovery.rs#L470-L1009),
+[command_runner.rs:488–527](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/hooks/src/engine/command_runner.rs#L488-L527),
+[registry.rs:78–87,273–279](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/hooks/src/registry.rs#L78-L279),
+[session.rs:2149–2179](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/session/session.rs#L2149-L2179),
+[turn.rs:409–411](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/session/turn.rs#L409-L411)
+and [hook_runtime.rs:133–190](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/hook_runtime.rs#L133-L190).
+
+The post-bump Linux regression used the real **Codex 0.171.0** runner and callback
+with schema-2 synthetic slot records carrying `client_version = "0.171.0"` at both
+record and in-flight levels, fresh HOME/CODEX_HOME/XDG directories per case,
+no authentication and an inherited guard denying non-Unix sockets. Its `hooks/list`
+returned one enabled `sessionFlags` command hook: key
+`/<session-flags>/config.toml:session_start:0:0`, source path
+`/<session-flags>/config.toml`, event `sessionStart`, command
+`ai internal codex-session-confirm`, timeout 600, display order 0 and the unchanged
+hash `sha256:f48156510f48462d9df8bbeb7f27e892142a567bc35edb0b0505f2716dd6723d`.
+Trust changed from `untrusted` to `trusted` only in throwaway config.
+
+Default-shell, bash and sh positives had zero hook events in the three seconds after
+`thread/start`; SessionStart arrived after `turn/start`. Both
+`AI_CLI_CODEX_LAUNCH_TOKEN` and `AI_CLI_CODEX_SLOT_RECORD` reached the hook unchanged,
+and bare `ai` resolved in the hook shell. Each real callback exited 0 and confirmed
+the exact thread as `live-only`: the event's `transcript_path` was **null**.
+Stale-token and unset-record callbacks exited 1; missing `ai` never invoked the
+callback. All three negatives left their record bytes unchanged. All 12 app-servers
+were waited for and exited 0; none remained running. No transcript or message body
+was retained in the observations. Real TUI/tmux, macOS, Windows, paired-host,
+authenticated turns and directory consent remain unverified.
 
 #### Hook acceptance criteria
 

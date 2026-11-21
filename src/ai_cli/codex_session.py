@@ -26,7 +26,7 @@ from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_clients import PRESENT, Codex
 
 SCHEMA_VERSION = 2
-SUPPORTED_VERSIONS = {"0.169.0"}
+SUPPORTED_VERSIONS = {"0.169.0", "0.171.0"}
 HOOK_COMMAND = "ai internal codex-session-confirm"
 HOOK_DECLARATION = 'hooks.SessionStart=[{hooks=[{type="command",command=' + json.dumps(HOOK_COMMAND) + "}]}]"
 SLOT_RECORD_ENV = "AI_CLI_CODEX_SLOT_RECORD"

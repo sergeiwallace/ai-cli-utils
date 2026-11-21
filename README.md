@@ -370,7 +370,7 @@ history refuses; directory-only slots are never adopted automatically. A live tm
 pane remains attachable independently. The launch trampoline requires POSIX exec;
 Windows refuses because writer identity continuity is unverified there.
 
-The versioned hook contract covers Codex 0.169.0; unsupported versions report unknown.
+The versioned hook contract covers Codex 0.169.0 and 0.171.0; unsupported versions report unknown.
 The stable hook command is `ai internal codex-session-confirm`; launch identity travels
 through the child environment rather than hook arguments. `ai internal codex-hook-contract`
 prints the versioned declaration, key and expected hash for a policy installer to verify

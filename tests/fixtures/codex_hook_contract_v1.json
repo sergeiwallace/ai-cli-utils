@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "supported_client_versions": [
-    "0.169.0"
+    "0.169.0",
+    "0.171.0"
   ],
   "event": "SessionStart",
   "command": "ai internal codex-session-confirm",
