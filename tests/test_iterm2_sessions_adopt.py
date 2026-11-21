@@ -3,11 +3,14 @@
 import json
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from time import monotonic, sleep
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import reap, spawn_owned
 
 from ai_cli import session_registry
 from ai_cli.config import ProjectPrefixError
@@ -66,10 +69,11 @@ def _resolve(name):
 
 
 @contextmanager
-def _live(*, tmux_sessions=(), clients=None, procs=(), panes=None, platform="darwin"):
+def _live(*, tmux_sessions=(), clients=None, procs=(), panes=None, platform="darwin", real_process_table=False):
     """Stand in for tmux, the process table, the project registry and iTerm2's pane listing.
 
     ``clients``: tmux session -> attached client tty. ``panes``: tty -> (window, tab, pane).
+    ``real_process_table``: leave psutil alone and scan this host's real processes.
     """
     clients = clients or {}
     panes = panes or {}
@@ -89,15 +93,15 @@ def _live(*, tmux_sessions=(), clients=None, procs=(), panes=None, platform="dar
 
     me = MagicMock()
     me.username.return_value = _USER
-    with (
-        patch("ai_cli.session_registry.subprocess.run", side_effect=run),
-        patch("psutil.process_iter", return_value=list(procs)),
-        patch("psutil.Process", return_value=me),
-        patch("ai_cli.config.registered_project_names", return_value=dict(_PROJECTS)),
-        patch("ai_cli.config.get_project_aliases", return_value=dict(_PROJECTS)),
-        patch("ai_cli.config.resolve_project_prefix_by_name", side_effect=_resolve),
-        patch.object(sys, "platform", platform),
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch("ai_cli.session_registry.subprocess.run", side_effect=run))
+        if not real_process_table:
+            stack.enter_context(patch("psutil.process_iter", return_value=list(procs)))
+            stack.enter_context(patch("psutil.Process", return_value=me))
+        stack.enter_context(patch("ai_cli.config.registered_project_names", return_value=dict(_PROJECTS)))
+        stack.enter_context(patch("ai_cli.config.get_project_aliases", return_value=dict(_PROJECTS)))
+        stack.enter_context(patch("ai_cli.config.resolve_project_prefix_by_name", side_effect=_resolve))
+        stack.enter_context(patch.object(sys, "platform", platform))
         yield calls
 
 
@@ -239,6 +243,47 @@ def test_given_unreadable_or_unparseable_launcher_argv_when_adopted_then_it_is_s
     assert [r["launcher_pid"] for r in records] == [804]
     assert records[0]["remote"]["session"] is None, "an unresolvable -p never yields a guessed session name"
     assert "-p nosuchproject does not resolve" in out
+
+
+def test_given_other_processes_argv_raising_system_error_when_adopted_then_the_launcher_is_still_recorded(
+    homes, tmp_path, monkeypatch
+):
+    """psutil on macOS can raise SystemError, not AccessDenied, reading another process's argv
+    (``sysctl(KERN_PROCARGS2)``); one such process must not end the scan for launchers."""
+    _, registry = homes
+    entry_point = tmp_path / "ai"
+    entry_point.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    launcher = spawn_owned(
+        [sys.executable, str(entry_point), "c", "-R", "-p", "webapp", "2"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = monotonic() + 10
+        while monotonic() < deadline:
+            try:
+                if psutil.Process(launcher.pid).cmdline()[1:] == launcher.args[1:]:
+                    break
+            except psutil.Error:
+                pass
+            sleep(0.01)
+        real_cmdline = psutil.Process.cmdline
+
+        def cmdline(self):
+            if self.pid != launcher.pid:
+                raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+            return real_cmdline(self)
+
+        monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+        with _live(real_process_table=True):
+            code, out, err = _adopt()
+    finally:
+        reap(launcher)
+
+    assert code == 0, err
+    records = _records(registry)
+    assert [r["launcher_pid"] for r in records] == [launcher.pid]
+    assert records[0]["remote"] == {"alias": "example-box", "session": "c-r-web-2"}
 
 
 # --- idempotence, dry run, config ----------------------------------------------------
