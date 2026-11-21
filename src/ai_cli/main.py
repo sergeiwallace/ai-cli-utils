@@ -6097,6 +6097,13 @@ def _do_session_launch(
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
                 pull, stranded = pull_rebase_autostash(worktree_path)
+                _detail = ""
+                if pull.returncode and not stranded:
+                    _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
+                    # Git can print autostash progress after a fetch or rebase error.
+                    _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
+                    if _lines:
+                        _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
                 if pull.returncode != 0 and not stranded and not _conflicted_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
@@ -6116,12 +6123,6 @@ def _do_session_launch(
                         env=_git_env(),
                         check=False,
                     )
-                    # Quote git's own last line. An exit code alone does not say whether
-                    # this was no network, missing credentials for the remote, or something
-                    # that needs attention, and the user cannot re-run the pull to find out
-                    # once the index has been restored.
-                    _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
-                    _detail = f" Last git error: {_reason[-1]}" if _reason else ""
                     reporter.warning(
                         "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
@@ -6133,7 +6134,7 @@ def _do_session_launch(
                         "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
                         f"(exit {pull.returncode}). Left as-is — this worktree already had "
-                        f"a conflict in progress and nothing here will discard it.",
+                        f"a conflict in progress and nothing here will discard it.{_detail}",
                     )
                 if stranded:
                     # Refuse the launch. Dropping an agent into a worktree whose index

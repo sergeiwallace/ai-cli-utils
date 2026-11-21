@@ -82,6 +82,14 @@ At revision `6e797f42`, the regression assertions failed for missing output
 in the managed, one-shot, bare PTY and remote launch logs. The tests keep the
 agent on a PTY and use fake agent and transport commands.
 
+### Worktree sync warnings
+
+The warning already reached the log, but selecting Git's final stderr line
+could report `Applied autostash.` as the error. The worktree warning now
+prefers Git's explicit error lines. The regression appends that progress
+line after a real failed fetch and checks that the warning still reports
+the error and the launch proceeds.
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->
