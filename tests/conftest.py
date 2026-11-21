@@ -1607,9 +1607,16 @@ def _strip_inherited_supervisor_vars(monkeypatch):
     started by a test then passes the runner's generation to its child, which skips
     acquiring its own, so every ``running`` transition is refused as a stale generation
     and the child never starts its agent (AI-CLI-znml).
+
+    The runner's own launch reason goes too: a fixture supervisor that inherits it treats
+    its first agent launch as a restart of the runner's session.
     """
+    from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
     for var in [
-        name for name in os.environ if name == "AI_CLI_RUN_GENERATION" or name.startswith("AI_CLI_SUPERVISOR_")
+        name
+        for name in os.environ
+        if name in ("AI_CLI_RUN_GENERATION", LAUNCH_REASON_VAR) or name.startswith("AI_CLI_SUPERVISOR_")
     ]:
         monkeypatch.delenv(var, raising=False)
 
