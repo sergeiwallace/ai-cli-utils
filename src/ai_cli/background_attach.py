@@ -28,8 +28,10 @@ from typing import TypeGuard
 
 import psutil
 
+from . import output as _out
 from . import tmux_binary
 from .config import get_xdg_state_home, read_relaunch_config
+from .output import Tag
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
 _DIALOG_OPTION = re.compile(r"❯\s*\d+\.")
@@ -245,19 +247,35 @@ def _capture_pane(tmux_session: str, destination: Path) -> bool:
     return True
 
 
-def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: float) -> tuple[str | None, str | None]:
-    """Run the configured command. Returns (id, None) for an answer, else (None, reason)."""
+@dataclass(frozen=True)
+class _ResolverReply:
+    """What the configured resolver said: an id, a misbehaviour to report, or an ordinary no-answer.
+
+    A non-zero exit is the resolver's documented way to say "no answer" (config.toml:
+    "anything else is no answer"), and the shipped resolver exits 1 whenever no "Move to
+    background" handoff is pending, which is every ordinary launch and restart. That is
+    ``no_answer``, kept for the launch log. ``problem`` is a resolver that could not be run
+    or answered malformed, which a person should hear about.
+    """
+
+    background_id: str | None = None
+    problem: str | None = None
+    no_answer: str | None = None
+
+
+def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: float) -> _ResolverReply:
+    """Run the configured command and classify its reply."""
     try:
         words = shlex.split(command)
     except ValueError as error:
-        return None, f"has an unparsable command ({error})"
+        return _ResolverReply(problem=f"has an unparsable command ({error})")
     if not words:
-        return None, "has an empty command"
+        return _ResolverReply(problem="has an empty command")
     words[0] = str(Path(words[0]).expanduser())
     with tempfile.TemporaryDirectory(prefix="ai-background-resolver-") as scratch:
         capture = Path(scratch) / "pane.txt"
         if not _capture_pane(tmux_session, capture):
-            return None, "was skipped because the session pane could not be captured"
+            return _ResolverReply(problem="was skipped because the session pane could not be captured")
         try:
             completed = subprocess.run(
                 [*words, "--session", session_key, "--pane-capture", str(capture)],
@@ -267,15 +285,16 @@ def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: fl
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return None, f"timed out after {timeout:g}s"
+            return _ResolverReply(problem=f"timed out after {timeout:g}s")
         except OSError as error:
-            return None, f"could not run ({error})"
+            return _ResolverReply(problem=f"could not run ({error})")
     if completed.returncode != 0:
-        return None, f"exited {completed.returncode}"
+        said = (completed.stderr or "").strip().splitlines()
+        return _ResolverReply(no_answer=f"exited {completed.returncode}" + (f": {said[-1]}" if said else ""))
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if len(lines) != 1 or not _BACKGROUND_ID.fullmatch(lines[0]):
-        return None, "did not print exactly one 8-character id"
-    return lines[0], None
+        return _ResolverReply(problem="did not print exactly one 8-character id")
+    return _ResolverReply(background_id=lines[0])
 
 
 def _same_directory(left: object, right: Path) -> bool:
@@ -438,11 +457,20 @@ def _resolve(
 
     command = settings["background_session_resolver"].strip() if settings else ""
     if settings and command:
-        hint, reason = _run_resolver(
-            command, ai_name, tmux_session, settings["background_session_resolver_timeout_seconds"]
-        )
-        if hint is None:
-            notes.append(f"background resolver {reason}")
+        reply = _run_resolver(command, ai_name, tmux_session, settings["background_session_resolver_timeout_seconds"])
+        hint = reply.background_id
+        if reply.no_answer:
+            # An ordinary outcome, so it is kept off the terminal; the launch log says why.
+            _out.emit(
+                Tag.INTERNAL,
+                "resume",
+                f"background resolver gave no answer ({reply.no_answer})",
+                err=True,
+                level=_out.Level.DETAIL,
+                terminal=False,
+            )
+        elif hint is None:
+            notes.append(f"background resolver {reply.problem}")
         elif any(row["id"] == hint for row in rows):
             return _attach_or_hold(next(row for row in rows if row["id"] == hint), prompted, ai_name, cwd)
         else:
