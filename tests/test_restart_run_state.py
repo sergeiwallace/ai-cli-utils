@@ -324,3 +324,20 @@ def test_given_program_whose_terminal_restore_was_otherwise_edited_when_compared
     edited = current.replace("\\033[>4;0m", "\\033[>4;2m")
     assert edited != current
     assert not session_restart._compatible(edited, current)
+
+
+def test_given_program_started_before_the_upgrade_when_restart_is_refused_then_it_names_the_one_time_relaunch(world):
+    from conftest import run_cli
+
+    source = world.script.read_text(encoding="utf-8")
+    world.script.write_text(source.replace("_child_status=$?", "_child_status=0"), encoding="utf-8")
+
+    code, report, _ = world.cli("-X", world.record["sessionId"])
+    relaunch = f"ai c {world.record['name']}"
+    assert code == 1 and report["reason"] == "supervisor-upgrade-required"
+    assert relaunch in report["remedy"] and "relaunch" in report["remedy"]
+    assert not world.signals and not world.injected
+
+    code, out, err = run_cli(["ai", "-X", world.record["sessionId"]], config=world.settings)
+    assert code == 1
+    assert "started before" in out + err and relaunch in out + err
