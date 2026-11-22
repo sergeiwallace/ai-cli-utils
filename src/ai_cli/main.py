@@ -2031,7 +2031,18 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
     return True, output or "current"
 
 
-_REMOTE_ALLOCATION_RETRY_DELAY_S = 1.0
+class _RemoteCallCutOffError(Exception):
+    """A remote call ended without an answer: it overran its timeout or was killed from outside.
+
+    ``result`` is the call's completed process when there is one, so an exhausted retry can
+    still report the call's own exit status.
+    """
+
+    def __init__(self, message: str, result: subprocess.CompletedProcess | None) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 # Platform difference: Python's ``signal`` module on Windows has no SIGKILL, SIGHUP or
 # SIGQUIT, so signal names come from this fixed POSIX table instead. It is also the
 # right table for a remote status: the remote shell numbers signals the POSIX way
@@ -2101,14 +2112,35 @@ def _request_remote_session_allocation(
         + "".join(f" {shlex.quote(arg)}" for arg in naming_args)
     )
     ssh_command = [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"]
-    result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
-    if _remote_call_killed_silently(result):
-        exit_text = _remote_exit_text(result.returncode)
+
+    def attempt(current: _retry.Attempt) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=current.timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise _RemoteCallCutOffError(f"no answer within {current.timeout:g} s", None) from exc
+        if _remote_call_killed_silently(result):
+            raise _RemoteCallCutOffError(_remote_exit_text(result.returncode), result)
+        return result
+
+    def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
         _launch_reporter.active().warning(
-            "session", f"remote session-name allocation was cut off ({exit_text}); retrying once"
+            "session",
+            f"remote session-name allocation was cut off ({exc}); "
+            f"retrying (attempt {current.number + 1} of {current.of}, {next_timeout:g} s)",
         )
-        time.sleep(_REMOTE_ALLOCATION_RETRY_DELAY_S)
-        result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
+
+    try:
+        result = _retry.run(
+            "remote_allocation",
+            attempt,
+            transient=lambda exc: isinstance(exc, _RemoteCallCutOffError),
+            on_retry=retrying,
+        )
+    except _retry.RetryExhaustedError as exhausted:
+        cut_off = exhausted.last
+        if not isinstance(cut_off, _RemoteCallCutOffError) or cut_off.result is None:
+            raise RuntimeError(f"remote session-name allocation failed: {exhausted}") from exhausted
+        result = cut_off.result
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "no output"
         raise RuntimeError(f"remote session-name allocation failed ({_remote_exit_text(result.returncode)}): {detail}")

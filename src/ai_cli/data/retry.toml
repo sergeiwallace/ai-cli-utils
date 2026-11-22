@@ -17,6 +17,11 @@ jitter = 0.5
 timeout_seconds = 5
 max_timeout_seconds = 20
 
+[retry.remote_allocation]
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120
+
 [retry.registry_fetch]
 attempts = 2
 timeout_seconds = 60

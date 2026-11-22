@@ -1604,10 +1604,10 @@ one implicit default machine.
 
 ### Retries
 
-A launch waits on things it does not control: the optional wake sidecar's unit
-manager and a shared name registry's remote. Each of those waits runs under one retry
-policy from the `[retry]` table of `config.toml`, read on every call, so an edit applies
-to the next launch without restarting anything. Attempt *n* may take
+A launch waits on things it does not control, such as a remote host or the optional
+wake sidecar's unit manager. Each such wait, one `[retry.<site>]` table below, runs under
+one retry policy from the `[retry]` table of `config.toml`, read on every call, so an
+edit applies to the next launch without restarting anything. Attempt *n* may take
 `min(timeout_seconds * growth^(n-1), max_timeout_seconds)` seconds; after a failed
 attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`, less a
 random share of up to `jitter` of it. Only a timeout or a lost connection is retried. A
@@ -1628,6 +1628,11 @@ jitter = 0.5
 [retry.wake_sidecar]          # the wake-sidecar ensure before a local launch
 timeout_seconds = 5
 max_timeout_seconds = 20
+
+[retry.remote_allocation]     # asking a remote host which session `-R` attaches to
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120
 
 [retry.registry_fetch]        # every fetch of a shared name registry
 attempts = 2

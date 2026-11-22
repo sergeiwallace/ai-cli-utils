@@ -171,7 +171,7 @@ def run(
     *,
     transient: Callable[[Exception], bool],
     on_retry: Callable[[Attempt, Exception, float], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> _T:
     """``call`` under ``site``'s policy, read now.
 
@@ -193,5 +193,5 @@ def run(
                 raise RetryExhaustedError(site, number, exc) from exc
             if on_retry is not None:
                 on_retry(attempt, exc, current.timeout_for(number + 1))
-            sleep(current.delay_after(number))
+            (sleep or time.sleep)(current.delay_after(number))
     raise AssertionError("unreachable: a policy has at least one attempt")
