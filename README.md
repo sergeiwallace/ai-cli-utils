@@ -1615,7 +1615,10 @@ attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`,
 random share of up to `jitter` of it. The whole wait, delays included, ends within
 `max_total_seconds`, which cuts each retry's timeout to what remains of it, so a hung
 optional step costs a launch no more than that total. The first attempt always gets its
-full timeout, so a total shorter than `timeout_seconds` stretches to it. Only a timeout or a lost connection
+full timeout, so a total shorter than `timeout_seconds` stretches to it. A total too
+short for every attempt it allows, or one a single timeout fills, is reported when read,
+naming the site and the keys. The shipped sidecar policy holds a launch at most 12 s for
+the ensure and 12 s for the show lookup, 24 s together. Only a timeout or a lost connection
 is retried. A
 definite answer, such as a credential the registry's remote refuses, is reported once
 with its cause. When every attempt fails the launch says how many it made and why the
@@ -1633,9 +1636,11 @@ jitter = 0.5
 max_total_seconds = 300
 
 [retry.wake_sidecar]          # the wake-sidecar ensure and show lookup before a local launch
-timeout_seconds = 5
-max_timeout_seconds = 20
-max_total_seconds = 10
+attempts = 2
+timeout_seconds = 4
+growth = 1.5
+max_timeout_seconds = 6
+max_total_seconds = 12
 
 [retry.dolt_server]           # the optional Dolt supervisor's ensure, asked once
 attempts = 1

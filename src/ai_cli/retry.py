@@ -63,6 +63,11 @@ class RetryPolicy:
         """Seconds attempt ``attempt`` (1-based) may take: grown by ``growth`` per attempt, capped."""
         return min(self.timeout_seconds * self.growth ** (attempt - 1), self.max_timeout_seconds)
 
+    def worst_case_seconds(self) -> float:
+        """Seconds every attempt and every full, unjittered delay between them would take together."""
+        timeouts = sum(self.timeout_for(n) for n in range(1, self.attempts + 1))
+        return timeouts + sum(self.delay_after(n, rand=lambda: 0.0) for n in range(1, self.attempts))
+
     def delay_after(self, attempt: int, *, rand: Callable[[], float] = random.random) -> float:
         """Seconds to wait after failed attempt ``attempt``, less a random share of up to ``jitter`` of it."""
         delay = min(self.delay_seconds * self.growth ** (attempt - 1), self.max_delay_seconds)
@@ -169,7 +174,29 @@ def policy(site: str) -> RetryPolicy:
             else:
                 rule = _RULES.get(key, "a positive number of seconds")
                 _out.warning(Tag.CONFIG, "load", f"invalid {name}.{key}: use {rule}; keeping {values[key]}")
-    return RetryPolicy(**values)  # type: ignore[arg-type]
+    current = RetryPolicy(**values)  # type: ignore[arg-type]
+    _warn_if_contradictory(site, current)
+    return current
+
+
+def _warn_if_contradictory(site: str, current: RetryPolicy) -> None:
+    """Say so when the total leaves no room for a retry, or cannot admit every attempt it allows."""
+    if current.attempts > 1 and current.timeout_seconds >= current.max_total_seconds:
+        _out.warning(
+            Tag.CONFIG,
+            "load",
+            f"retry.{site}: timeout_seconds ({current.timeout_seconds:g}) is at or above max_total_seconds "
+            f"({current.max_total_seconds:g}), so no retry can run; raise max_total_seconds or lower "
+            "timeout_seconds",
+        )
+    elif current.worst_case_seconds() > current.max_total_seconds:
+        _out.warning(
+            Tag.CONFIG,
+            "load",
+            f"retry.{site}: max_total_seconds ({current.max_total_seconds:g}) cannot admit all {current.attempts} "
+            f"attempts, whose timeouts and delays need {current.worst_case_seconds():g} s; the later attempts get "
+            "less time or none. Raise max_total_seconds, or lower attempts, timeout_seconds or growth",
+        )
 
 
 def run(
