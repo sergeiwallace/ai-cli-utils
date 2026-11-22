@@ -424,8 +424,14 @@ def _attach_terminal(target: str, *, detach_others: bool = False) -> NoReturn:
     teardown sends it back there, to the shell that ran ``ai`` in its own pane
     (:func:`tmux_ownership.return_switched_client`).
     """
-    if not os.environ.get("TMUX"):
+    if os.environ.get("TMUX"):
+        _switch_tmux_client(target)
+    else:
         _exec_tmux(tmux_binary.argv("attach-session", *(["-d"] if detach_others else []), "-t", target))
+
+
+def _switch_tmux_client(target: str) -> NoReturn:
+    """Switch the tmux client showing this pane to ``target``, recording where it came from; exit."""
     here = _tmux_client_here()
     refusal = here if isinstance(here, str) else ""
     if not refusal:
