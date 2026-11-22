@@ -114,14 +114,14 @@ def _claude_semantic_entries(documents: dict[str, dict], registration=CORE) -> d
         or not isinstance(rows[0], dict)
     ):
         raise ArtifactError("Modified client registration")
-    sources = [setting.get("source"), market.get("source")]
-    if not all(isinstance(source, dict) for source in sources):
+    setting_source, market_source = setting.get("source"), market.get("source")
+    if not isinstance(setting_source, dict) or not isinstance(market_source, dict):
         raise ArtifactError("Modified client registration")
     return {
         "plugin_id": registration.plugin_id,
         "enabled": entries["enabled"],
-        "marketplace_setting": {key: sources[0].get(key) for key in ("source", "path")},
-        "marketplace": {key: sources[1].get(key) for key in ("source", "path")},
+        "marketplace_setting": {key: setting_source.get(key) for key in ("source", "path")},
+        "marketplace": {key: market_source.get(key) for key in ("source", "path")},
         "installLocation": market.get("installLocation"),
         "installed": {key: rows[0].get(key) for key in ("installPath", "version", "scope")},
     }
