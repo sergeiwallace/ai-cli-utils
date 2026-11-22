@@ -438,6 +438,26 @@ def _exec_with_direnv(
         sys.exit(1)
 
 
+def _prepare_project_environment(directory: Path, config: dict, *, no_direnv: bool, reporter: LaunchReporter) -> None:
+    """Approve the session worktree's ``.envrc`` before the handoff, or refuse the launch.
+
+    The launcher's half of :func:`ai_cli.session.prepare_project_environment`; the
+    session script's child body runs the same policy before every agent start through
+    ``ai internal prepare-project-env``. A refusal exits before anything is handed off.
+    """
+    if no_direnv:
+        reporter.detail("direnv", f"{directory / '.envrc'}: approval skipped (-D/--no-direnv)")
+        return
+    result = _session.prepare_project_environment(directory, config=config)
+    if result.level is _out.Level.DETAIL:
+        reporter.detail("direnv", result.message)
+    elif result.ready:
+        reporter.phase("direnv").outcome(result.message)
+    else:
+        reporter.error("direnv", result.message)
+        sys.exit(1)
+
+
 def _direnv_prefix(project_root: Path) -> list[str]:
     """``["direnv", "exec", <root>]`` when direnv can actually run there, else ``[]``.
 
@@ -2287,6 +2307,25 @@ def _dispatch_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
+    if action == "prepare-project-env":
+        if len(argv) not in (2, 3):
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal prepare-project-env <directory> [<tmux_session>]", err=True
+            )
+            sys.exit(1)
+        if len(argv) == 3 and _session_launch_state.launched_with(argv[2], "no_direnv"):
+            _out.emit(Tag.SESSION, "direnv", "approval skipped (-D/--no-direnv)", err=True, level=_out.Level.DETAIL)
+            sys.exit(0)
+        prepared = _session.prepare_project_environment(Path(argv[1]), config=config)
+        _out.emit(
+            Tag.SESSION,
+            "direnv",
+            prepared.message,
+            err=True,
+            level=prepared.level,
+            terminal=prepared.level is not _out.Level.DETAIL,
+        )
+        sys.exit(0 if prepared.ready else _direnv_setup.PROJECT_ENV_REFUSED_EXIT)
     if action == "get-latest-gemini-id":
         _ai_name_arg = argv[1] if len(argv) > 1 else None
         res = _session.get_latest_gemini_session_id(_ai_name_arg)
@@ -2881,7 +2920,17 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: before this launch would otherwise hand the pane a stale environment.
 #: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
 #: both are forwarded only when set, so an ordinary launch is unchanged.
-_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
+#: AI_CLI_SKIP_DIRENV reaches the child body's .envrc approval the same way, so the
+#: documented bypass holds on a tmux server started before it was set.
+_TMUX_FORWARDED_VARS = (
+    "PATH",
+    "XDG_STATE_HOME",
+    "LC_TERMINAL",
+    "TERM_PROGRAM",
+    "FM_HOME",
+    "AI_SESSION_ROLE",
+    _direnv_setup.BYPASS_ENV,
+)
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
 
 
@@ -5962,6 +6011,7 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    _attaching_live = False
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -6162,6 +6212,10 @@ def _do_session_launch(
                         f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     )
                 _sync_phase.outcome("ready")
+
+    if not _attaching_live:
+        # After the sync, which can change the .envrc a direnv approval is keyed on.
+        _prepare_project_environment(worktree_path or Path.cwd(), config, no_direnv=no_direnv, reporter=reporter)
 
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
@@ -7077,7 +7131,9 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
-    func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option(
+        "-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight, auto-install and .envrc approval"
+    )(func)
     func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
     func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
     # MUST be a declared option, not merely handled. SESSION_CONTEXT sets

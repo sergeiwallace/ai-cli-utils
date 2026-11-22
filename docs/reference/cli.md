@@ -269,7 +269,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -466,7 +466,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -507,7 +507,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -612,7 +612,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -978,7 +978,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |

@@ -13,8 +13,9 @@ and a worktree registered from anywhere else are all directories the tool did no
 create, and auto-approving unreviewed shell in one of those would be worse than the
 nagging it replaces.
 
-Provenance of the CONTENT: the file is byte-identical to the repository root's.
-Directory provenance alone is not file provenance -- git writes whatever the
+Provenance of the CONTENT: the file is byte-identical to the repository root's
+working copy or to the ``.envrc`` on ``origin/HEAD``, which is what a freshly synced
+worktree carries. Directory provenance alone is not file provenance -- git writes whatever the
 checked-out branch carries, and anything with write access to the slot can rewrite it
 afterwards, including the agent session running there. Since approval runs again on
 every relaunch, a session could otherwise have its own ``.envrc`` edit approved for
@@ -26,6 +27,7 @@ is approved at all -- the host that needs it most, and the one that reported it
 broken. Identity with the root is a claim about content, not about approval state.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -39,7 +41,8 @@ from unittest.mock import patch
 import pytest
 
 from ai_cli.direnv_setup import BYPASS_ENV
-from ai_cli.session import _authorize_session_worktree_envrc
+from ai_cli.launch_reporter import LaunchReporter
+from ai_cli.main import _prepare_project_environment
 
 _BODY = "export PROJECT_ENV=1\n"
 
@@ -117,19 +120,28 @@ def _which(*, have_direnv: bool):
 
 
 def _authorize(root: Path, directory: Path, fake: FakeDirenv, *, have_direnv: bool = True) -> None:
+    """The launcher's approval step for ``directory``; a refusal's exit is part of what is observed."""
     with (
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=have_direnv)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=fake),
+        contextlib.suppress(SystemExit),
     ):
-        _authorize_session_worktree_envrc(root, directory)
+        _prepare_project_environment(directory, {}, no_direnv=False, reporter=LaunchReporter())
+
+
+def _git_worktree(root: Path, directory: Path) -> None:
+    _git("worktree", "add", "-q", "--detach", str(directory), cwd=root)
 
 
 @pytest.fixture
 def repo(tmp_path):
     """A repo root and one of its session worktree slots, both carrying an .envrc."""
     root = tmp_path / "myproject"
+    root.mkdir()
+    _git("init", "-q", "-b", "main", cwd=root)
+    _git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init", cwd=root)
     worktree = root / ".worktrees" / "myproject-1"
-    worktree.mkdir(parents=True)
+    _git_worktree(root, worktree)
     (root / ".envrc").write_text(_BODY)
     (worktree / ".envrc").write_text(_BODY)
     return root, worktree
@@ -250,18 +262,16 @@ def test_given_the_repository_root_when_authorized_then_nothing_is_allowed(repo)
     assert fake.calls == []
 
 
-def test_given_a_worktree_outside_the_slot_directory_when_authorized_then_nothing_is_allowed(tmp_path):
+def test_given_a_worktree_outside_the_slot_directory_when_authorized_then_nothing_is_allowed(repo, tmp_path):
     """AC-6: a worktree registered somewhere else was created by someone else.
 
     Worktrees living outside ``<repo>/.worktrees`` are a real and common layout,
     so this is the case that decides whether the boundary is "did the tool create
     it" or merely "is it a worktree".
     """
-    root = tmp_path / "myproject"
-    root.mkdir()
-    (root / ".envrc").write_text(_BODY)
+    root, _worktree = repo
     outside = tmp_path / "myproject-worktrees" / "feature"
-    outside.mkdir(parents=True)
+    _git_worktree(root, outside)
     (outside / ".envrc").write_text(_BODY)
     fake = FakeDirenv()
 
@@ -283,14 +293,14 @@ def test_given_a_worktree_envrc_differing_from_the_root_when_authorized_then_not
 
     _authorize(root, worktree, fake)
 
-    assert fake.calls == [], "auto-approved .envrc content that differs from the repository root's"
+    assert fake.allowed_paths == [], "auto-approved .envrc content that differs from the repository root's"
 
 
 def test_given_a_session_that_edited_its_own_envrc_when_relaunched_then_it_is_not_reapproved(repo):
     """Approval runs again on every relaunch, so a self-edit must not approve itself.
 
-    ``_authorize_session_worktree_envrc`` is called from ``_initialize_worktree``,
-    which runs for a REUSED worktree too. Anything with write access to the slot --
+    Approval runs before every agent start, a REUSED worktree's included. Anything
+    with write access to the slot --
     including the agent session running inside it -- can rewrite the file, and that
     edit invalidates direnv's existing approval, so the next launch would re-approve
     it. This needs no push access to ``origin`` and no operator action, which makes
@@ -306,7 +316,7 @@ def test_given_a_session_that_edited_its_own_envrc_when_relaunched_then_it_is_no
 
     _authorize(root, worktree, relaunch)
 
-    assert relaunch.calls == [], "a session's own .envrc edit was approved on relaunch"
+    assert relaunch.allowed_paths == [], "a session's own .envrc edit was approved on relaunch"
 
 
 def test_given_no_root_envrc_to_compare_against_when_authorized_then_nothing_is_allowed(repo):
@@ -317,7 +327,7 @@ def test_given_no_root_envrc_to_compare_against_when_authorized_then_nothing_is_
 
     _authorize(root, worktree, fake)
 
-    assert fake.calls == []
+    assert fake.allowed_paths == []
 
 
 def test_given_a_nested_path_under_a_slot_when_authorized_then_nothing_is_allowed(repo):
@@ -372,7 +382,7 @@ def test_given_direnv_vanishing_mid_call_when_authorized_then_it_does_not_raise(
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=True)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=OSError("direnv vanished")),
     ):
-        _authorize_session_worktree_envrc(root, worktree)
+        _prepare_project_environment(worktree, {}, no_direnv=False, reporter=LaunchReporter())
 
 
 def test_given_a_direnv_too_old_for_status_json_when_authorized_then_it_still_allows(repo):
@@ -393,7 +403,7 @@ def test_given_a_direnv_too_old_for_status_json_when_authorized_then_it_still_al
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=True)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=run),
     ):
-        _authorize_session_worktree_envrc(root, worktree)
+        _prepare_project_environment(worktree, {}, no_direnv=False, reporter=LaunchReporter())
 
     assert [call[2] for call in calls if call[:2] == ["direnv", "allow"]] == [str(worktree)]
 
@@ -442,9 +452,9 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
     direnv is held blocked for the whole launch -- artificial, since a successful
     approval would silence the warning -- precisely so both lines are emitted and
     their order can be read off one stream. The launcher decides that order: the
-    authorization happens inside worktree creation, and the blocked-directory
-    warning comes from the direnv preflight that create_worktree returns into.
-    Move the authorization after the preflight and this test fails.
+    authorization happens once the worktree is synchronized, and the blocked-directory
+    warning comes from the bare handoff's direnv check after it. Move the
+    authorization after that check and this test fails.
     """
     from ai_cli.main import _do_session_launch
 
@@ -483,7 +493,6 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
             project_prefix_override="myapp",
             extra_args=[],
             config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
-            no_direnv=True,
         )
 
     worktree = committed_envrc_repo / ".worktrees" / "myapp-tst-1"
@@ -953,3 +962,21 @@ def test_given_a_relaunch_with_a_resume_notice_when_the_child_body_starts_then_t
     resume = [line for line in run.log.splitlines() if "[internal] resume:" in line]
     assert resume, f"the resume notice never reached the launch log: {run.stderr}"
     assert all(_stamp_within(line, started, finished) for line in resume), resume
+
+
+def test_given_an_edited_envrc_the_operator_approved_when_the_child_body_starts_then_the_agent_starts_with_it(
+    session_repo, stub_direnv, child_body
+):
+    """An approval the operator gave by hand stands, also on a direnv that predates ``status --json``.
+
+    The stand-in answers ``status`` with the text report direnv 2.32 and earlier print
+    whatever the flags, so reading only the JSON would take this approved file for an
+    unapproved one and refuse to start.
+    """
+    worktree = session_repo["worktree"]
+    (worktree / ".envrc").write_text("export PROJECT_ENV=reviewed-by-the-operator\n")
+    stub_direnv.allow(worktree)
+
+    run = child_body(worktree)
+
+    assert [start["PROJECT_ENV"] for start in run.starts] == ["reviewed-by-the-operator"], run.stderr

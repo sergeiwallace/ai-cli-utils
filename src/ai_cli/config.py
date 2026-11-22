@@ -886,9 +886,14 @@ enabled = true
 ## package manager when running as root) and otherwise print per-OS remediation.
 ## A launch is never blocked by this -- direnv only supplies the project
 ## environment, so its absence degrades a session rather than ending it.
+## Before every agent start (launch and restart alike) the .envrc of a session
+## worktree is approved when its content matches the repository root's copy or
+## the one on origin/HEAD; one that cannot be approved stops the start and names
+## the `direnv allow` command to run after reviewing it.
 ##
-## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
-## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Set false to skip the preflight and the approval entirely on this machine.
+## Equivalent one-offs: AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv
+## on the launch.
 ## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
 ## additionally needs bash on PATH (Git for Windows supplies one).
 # enabled = true

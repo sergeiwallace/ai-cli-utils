@@ -3577,6 +3577,18 @@ class TestTmuxEnvForwardingNormalisesXdgStateHome:
         assert self._value_of(flags, "LC_TERMINAL") == "iTerm2"
         assert self._value_of(flags, "TERM_PROGRAM") == "vscode"
 
+    def test_given_the_direnv_bypass_when_flags_are_built_then_the_pane_receives_it(self):
+        """The session script approves .envrc before every agent start; the bypass must reach it.
+
+        A tmux server started before the operator set it would otherwise hand the pane an
+        environment without it, and the session script would approve or refuse anyway.
+        """
+        assert (
+            self._value_of(build_tmux_env_flags({"PATH": "/usr/bin", "AI_CLI_SKIP_DIRENV": "1"}), "AI_CLI_SKIP_DIRENV")
+            == "1"
+        )
+        assert self._value_of(build_tmux_env_flags({"PATH": "/usr/bin"}), "AI_CLI_SKIP_DIRENV") is None
+
     def test_given_a_relaunch_reason_when_flags_are_built_then_the_pane_receives_it(self):
         """``ai iterm2 restore`` sets it on the relaunch; a running tmux server would not pass it on."""
         flags = build_tmux_env_flags({"PATH": "/usr/bin", "AIH_LAUNCH_REASON": "host_reboot"})
