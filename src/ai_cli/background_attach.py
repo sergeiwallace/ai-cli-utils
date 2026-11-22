@@ -247,15 +247,21 @@ def _capture_pane(tmux_session: str, destination: Path) -> bool:
     return True
 
 
+#: The exit status with which a ``[relaunch] background_session_resolver`` says that nothing
+#: is pending for this session: an ordinary no-answer, logged but never shown. Every other
+#: non-zero status (1 included, which is also what an uncaught traceback exits with) can be
+#: an unreadable capture, an ambiguous identity or a crash, so it is shown as a warning.
+RESOLVER_NOTHING_PENDING_EXIT = 3
+
+
 @dataclass(frozen=True)
 class _ResolverReply:
     """What the configured resolver said: an id, a misbehaviour to report, or an ordinary no-answer.
 
-    A non-zero exit is the resolver's documented way to say "no answer" (config.toml:
-    "anything else is no answer"), and the shipped resolver exits 1 whenever no "Move to
-    background" handoff is pending, which is every ordinary launch and restart. That is
-    ``no_answer``, kept for the launch log. ``problem`` is a resolver that could not be run
-    or answered malformed, which a person should hear about.
+    ``no_answer`` is a :data:`RESOLVER_NOTHING_PENDING_EXIT` exit, kept for the launch log
+    only. ``problem`` is everything else that is not an answer (a resolver that could not
+    run, timed out, exited with any other status or printed a malformed id), which a
+    person should hear about; its warning reaches the launch log too.
     """
 
     background_id: str | None = None
@@ -290,7 +296,10 @@ def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: fl
             return _ResolverReply(problem=f"could not run ({error})")
     if completed.returncode != 0:
         said = (completed.stderr or "").strip().splitlines()
-        return _ResolverReply(no_answer=f"exited {completed.returncode}" + (f": {said[-1]}" if said else ""))
+        status = f"exited {completed.returncode}" + (f": {said[-1]}" if said else "")
+        if completed.returncode == RESOLVER_NOTHING_PENDING_EXIT:
+            return _ResolverReply(no_answer=status)
+        return _ResolverReply(problem=status)
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if len(lines) != 1 or not _BACKGROUND_ID.fullmatch(lines[0]):
         return _ResolverReply(problem="did not print exactly one 8-character id")
@@ -464,7 +473,7 @@ def _resolve(
             _out.emit(
                 Tag.INTERNAL,
                 "resume",
-                f"background resolver gave no answer ({reply.no_answer})",
+                f"background resolver has nothing pending ({reply.no_answer})",
                 err=True,
                 level=_out.Level.DETAIL,
                 terminal=False,

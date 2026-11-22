@@ -2427,7 +2427,7 @@ def _dispatch_internal(argv: list[str]) -> None:
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
-            _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
+            _out.warning(Tag.INTERNAL, "resume", resolution.warning)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
         if resolution.timed_out:
