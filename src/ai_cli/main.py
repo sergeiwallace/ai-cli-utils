@@ -285,15 +285,13 @@ def _run_wake_sidecar(script: Path, command: str) -> subprocess.CompletedProcess
         except subprocess.TimeoutExpired as exc:
             raise _WakeSidecarTimeoutError(f"{command} did not finish within {current.timeout:g} s") from exc
 
-    # The output vocabulary names the launch's operations, not the sidecar CLI's commands.
-    op = "ensure" if command == "ensure" else "watch"
-
     def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
-        _out.warning(
-            Tag.DAEMON,
-            op,
-            f"wake sidecar {exc} (attempt {current.number} of {current.of}); retrying with {next_timeout:g} s",
-        )
+        message = f"wake sidecar {exc} (attempt {current.number} of {current.of}); retrying with {next_timeout:g} s"
+        # The output vocabulary names the launch's operations, not the sidecar CLI's commands.
+        if command == "ensure":
+            _out.warning(Tag.DAEMON, "ensure", message)
+        else:
+            _out.warning(Tag.DAEMON, "watch", message)
 
     return _retry.run(
         "wake_sidecar",
