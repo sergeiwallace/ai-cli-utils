@@ -1384,8 +1384,12 @@ goes stale while a change is being tested.
 When a reinstall is needed, the launch runs it quietly and prints one line:
 
 ```
-ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall)
+ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall) in 41.3s: pull 2.1s, install 37.9s, post-install 1.3s
 ```
+
+The times name the slow step: the pull from origin, the `uv` install, or the work after
+it (refreshing live session scripts, deploying bundled config files). Only this
+package is reinstalled (`--reinstall-package`); its dependencies are left as they are.
 
 The version carries a `.post<timestamp>` suffix so uv cannot serve a cached build
 of an already-seen version; the file on disk is restored to its base version
@@ -1397,9 +1401,9 @@ Two escape hatches:
 
 - `AI_CLI_UPDATE_VERBOSE=1` — show the whole transcript at launch instead of the
   one-line summary.
-- `ai update --force` — reinstall on demand, bypassing uv's cache and
-  reinstalling dependencies. It never consults the fingerprint, so it is the way
-  to force a refresh when the installed build is suspect.
+- `ai update --force` — reinstall this package on demand, bypassing uv's cache
+  for it. It never consults the fingerprint, so it is the way to force a refresh
+  when the installed build is suspect.
 
 ### Launch extensions
 
