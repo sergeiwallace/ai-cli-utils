@@ -1,6 +1,7 @@
 """Interrupt the full generated wrapper through an isolated tmux pane."""
 
 import json
+import math
 import os
 import shlex
 import shutil
@@ -64,11 +65,15 @@ def pane_session(request, tmp_path, monkeypatch):
     action = tmp_path / "action"
     binaries = tmp_path / "bin"
     binaries.mkdir()
+    notice_rendering = tmp_path / "notice-rendering"
     # All project/engine services are fakes; terminal, signals, wrapper, lifecycle
     # persistence and tmux remain real. No inherited login files or direnv run.
     (binaries / "ai").write_text(
         '#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
         f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        # Hold the restart notice's render when asked, so a press can land before the wait.
+        'if [ "$2" = emit ] && [ -n "$TEST_HOLD_RESTART_NOTICE" ]; then case "$7" in *"Ctrl+C to stop"*) '
+        f"touch {shlex.quote(str(notice_rendering))}; sleep 2;; esac; fi\n"
         "exit 0\n"
     )
     (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
@@ -125,7 +130,17 @@ def pane_session(request, tmp_path, monkeypatch):
     class Pane:
         name = "c-session-1"
 
-        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_clean=False):
+        def start(
+            self,
+            *,
+            engine="c",
+            remote=False,
+            mode="signal",
+            policy="auto",
+            caller=False,
+            quick_clean=False,
+            hold_restart_notice=False,
+        ):
             if engine == "cx":
                 # Give prepare real, synthetic confirmation and persistence evidence.
                 # Version queries must not count as an interactive engine launch.
@@ -185,6 +200,8 @@ def pane_session(request, tmp_path, monkeypatch):
                 TEST_GENERATION=generation,
                 TEST_AGENT_MODE=mode,
             )
+            if hold_restart_notice:
+                env["TEST_HOLD_RESTART_NOTICE"] = "1"
             result = subprocess.run(
                 [
                     "tmux",
@@ -290,6 +307,19 @@ def pane_session(request, tmp_path, monkeypatch):
             assert _wait(self.output_done.exists)
             assert "KeyboardInterrupt" not in self.output.read_text()
             assert "Traceback" not in self.output.read_text()
+
+        def widen_stop_window(self):
+            # The restart window is read at each clean exit. Its default of three seconds
+            # is shorter than this test's own observe-and-press latency on a loaded host,
+            # so outlast that latency, and this test's own waits: a press ends the window at
+            # once, and a window waited out to its end fails the test.
+            path = Path(config.config_file_text())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            window = 2 * math.ceil(scaled(25))
+            path.write_text(f"[session]\nrestart_stop_window_seconds = {window}\n", encoding="utf-8")
+
+        def notice_rendering(self):
+            return notice_rendering.exists()
 
         def set_policy(self, policy):
             def change(doc):
@@ -485,6 +515,22 @@ def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_re
     pane_session.interrupt()
     pane_session.assert_caller()
     assert pane_session.count() == 1, "an interrupt in the restart window relaunched the engine"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_given_stop_press_while_restart_notice_renders_when_agent_exits_cleanly_then_original_shell_returns(
+    pane_session, remote
+):
+    pane_session.start(remote=remote, caller=True, hold_restart_notice=True)
+    pane_session.widen_stop_window()
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    # The press lands while the notice renders, before the wrapper starts waiting out
+    # the window, as it can on a loaded host. The recorded stop must end the window.
+    assert _wait(pane_session.notice_rendering), pane_session.capture()
+    pane_session.interrupt()
+    pane_session.assert_caller()
+    assert pane_session.count() == 1, "a stop recorded before the window's wait relaunched the engine"
 
 
 @pytest.mark.parametrize(("window", "notice"), [("0", False), ("1", True)])

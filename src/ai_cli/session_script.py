@@ -1952,8 +1952,16 @@ with open(path, 'w') as f:
         # on screen, since rendering it can take seconds on a loaded host.
         printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
         _ai_emit info exit "Agent exited; restarting in ${{_restart_window}}s. Press Ctrl+C to stop."
-        printf '%s\\n' "$(( $(date +%s) + _restart_window ))" > "$_child_int_escape_file"
-        sleep "$_restart_window" 2>/dev/null || true
+        _restart_window_deadline=$(( $(date +%s) + _restart_window ))
+        printf '%s\\n' "$_restart_window_deadline" > "$_child_int_escape_file"
+        # Poll rather than sleep the whole window: a press that lands before the wait
+        # starts has already recorded the stop, and must not wait out the window.
+        while [[ ! -f "$_child_int_exit_file" ]]; do
+          _restart_window_now=$(date +%s 2>/dev/null) || _restart_window_now=""
+          [[ "$_restart_window_now" =~ ^[0-9]+$ ]] || break
+          (( _restart_window_now <= _restart_window_deadline )) || break
+          sleep 0.2 2>/dev/null || true
+        done
         if [[ -f "$_child_int_exit_file" ]]; then
           _ai_final_manual_exit
           exit 77
