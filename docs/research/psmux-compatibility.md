@@ -89,3 +89,24 @@ psmux runs Git Bash panes and runs tmux plugin scripts with Git Bash
 measures cursor shapes in eight terminals, mintty among them
 (<https://github.com/psmux/psmux/blob/master/docs/diagnostics.md>). No psmux doc confirms
 attaching a session from Git Bash's mintty window; that is unconfirmed until measured.
+
+## The session under Git Bash
+
+Under Git Bash the session script runs in an MSYS2 shell while `ai` and `python3` are
+native Windows programs. Three things follow, and the launcher handles each:
+
+- A shell pid is not a Windows pid. `$$` names the shell in MSYS2's own pid table, which
+  native Python cannot see, so a session record built from it failed with
+  `process PID not found` and the session never started. Every shell pid the script
+  hands Python goes through `_ai_native_pid`, which reads MSYS2's `/proc/<pid>/winpid`.
+- A native program has no POSIX process groups. The POSIX session hands the terminal to
+  its child body's process group; under Git Bash the child body runs as the
+  supervisor's foreground command on the pane's console instead, and the stale-session
+  reaper evidence, which needs process groups, stays off.
+- Windows has no exec. CPython emulates it by starting the program and ending the
+  caller, so the shell that ran `ai c` printed its prompt while the tmux client ran on
+  the same console, and the two shared the keyboard. The launcher waits for the program
+  it hands off to instead, and exits with its status.
+
+A session that still cannot start, for any reason, can be launched without a
+multiplexer with `ai c <name> -b`.
