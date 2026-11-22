@@ -1141,18 +1141,12 @@ def _run_on_this_terminal(command: list[str]) -> int:
     The agent inherits stdin, stdout and stderr untouched. An interactive agent decides
     from them whether it is interactive: with stdout captured, Claude Code took the
     launch as ``--print``, refused for want of a prompt and exited at once, so every
-    tmux --once session ended as a bare ``[exited]``.
-
-    Ctrl+C reaches the whole foreground process group, so this process ignores it
-    while the agent runs: the agent decides what an interrupt means, and this owner
-    stays alive to record the exit.
+    tmux --once session ended as a bare ``[exited]``. This process ignores Ctrl+C while
+    the agent runs, so it stays alive to record the exit.
     """
-    proc = subprocess.Popen(command)
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    try:
-        return proc.wait()
-    finally:
-        signal.signal(signal.SIGINT, previous)
+    from .foreground import run_in_foreground
+
+    return run_in_foreground(command)
 
 
 @sessions.command("_run", hidden=True, context_settings={"ignore_unknown_options": True})

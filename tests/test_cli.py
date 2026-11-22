@@ -17,7 +17,8 @@ import psutil
 import pytest
 from process_ownership import owned_sleeper
 
-from ai_cli import direnv_setup
+from ai_cli import direnv_exec, direnv_setup
+from ai_cli import session_script as _session_script
 from ai_cli.main import (
     _auto_update_if_stale,
     _cmd_tunnel_start,
@@ -564,9 +565,10 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "direnv"
-        assert command[:3] == ["direnv", "exec", str(tmp_path)]
-        assert command[3] == "claude"
+        prefix = direnv_exec.prefix(tmp_path)
+        assert executable == prefix[0]
+        assert command[: len(prefix)] == prefix
+        assert command[len(prefix)] == "claude"
 
     def test_given_project_without_envrc_when_bare_gemini_starts_then_execs_engine_directly(
         self, tmp_path, monkeypatch
@@ -1115,7 +1117,7 @@ class TestCliOncePath:
                                                             cli()
                                                     assert mock_exec.call_args[0][0] == "tmux"
                                                     bash_cmd = mock_exec.call_args[0][1][-1]
-                                                    assert "direnv exec" in bash_cmd
+                                                    assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
                                                     assert "--dangerously-skip-permissions" in bash_cmd
 
     def test_cli_when_once_and_claude_root_then_execvp_without_perms(self, tmp_path):
@@ -1142,7 +1144,7 @@ class TestCliOncePath:
                                                         with pytest.raises(SystemExit):
                                                             cli()
                                                     bash_cmd = mock_exec.call_args[0][1][-1]
-                                                    assert "direnv exec" in bash_cmd
+                                                    assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
                                                     assert "--dangerously-skip-permissions" not in bash_cmd
 
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
@@ -1171,7 +1173,7 @@ class TestCliOncePath:
                                                     with pytest.raises(SystemExit):
                                                         cli()
                                                 bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert "direnv exec" in bash_cmd
+                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
                                                 assert "uuid123" in bash_cmd
 
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
@@ -1198,7 +1200,7 @@ class TestCliOncePath:
                                                     with pytest.raises(SystemExit):
                                                         cli()
                                                 bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert "direnv exec" in bash_cmd
+                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
                                                 assert "resume load" in bash_cmd
 
 
@@ -2194,7 +2196,11 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows has no process group to hand the terminal to: a foreground child.
+            assert '"$_supervisor_script" --ai-cli-child-body\n' in script
+        else:
+            assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
         assert '"$_supervisor_script" --ai-cli-child-body &' not in script
         assert "exit 78" in script
         assert f'exec "{shell}" "$_script_stable_path"' not in script

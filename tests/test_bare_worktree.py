@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 from process_ownership import spawn_owned_python
 
+from ai_cli import direnv_exec
 from ai_cli.main import (
     _bare_engine_command,
     _cc_project_dir,
@@ -917,8 +918,9 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
 
     worktree = real_repo / ".worktrees" / "kg-tst-1"
     file, args, cwd_at_exec = execs[0]
-    assert file == "direnv"
-    assert args[:3] == ["direnv", "exec", str(worktree)]
+    prefix = direnv_exec.prefix(worktree)
+    assert file == prefix[0]
+    assert args[: len(prefix)] == prefix
     assert cwd_at_exec == str(worktree)
     assert "--name" in args and args[args.index("--name") + 1] == "kg-tst-1"
 

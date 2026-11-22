@@ -32,6 +32,9 @@ def programs(tmp_path, monkeypatch):
     metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
     metadata = json.loads(shlex.split(metadata_line)[2])
     monkeypatch.setattr(main._session_script, "resolve_session_shell", lambda: "bash")
+    # The fixture is a POSIX program, and a Windows launcher renders a different one by
+    # design (no terminal handoff, native pids); certify like against like on every host.
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: False)
     return legacy, main._engine_script_from_meta(metadata)
 
 
