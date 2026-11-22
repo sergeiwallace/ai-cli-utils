@@ -274,9 +274,7 @@ def test_given_resolver_has_no_answer_when_relaunching_then_no_warning_is_shown_
     terminal, and the launch log records the exit and the resolver's own last stderr line.
     """
     fake_tools([_row("background", LIVE_ID, tmp_path / "elsewhere", name="other")])
-    resolver = _script(
-        tmp_path / "resolver", "echo 'UR-RESTART-WARN session=myproject-1 reason=background-unproven' >&2\nexit 1\n"
-    )
+    resolver = _script(tmp_path / "resolver", "echo 'resolver: no pending handoff for myproject-1' >&2\nexit 1\n")
     log = tmp_path / "launch.log"
     log.write_text("2026-01-01 00:00:00 EST launch log started for session test\n", encoding="utf-8")
     monkeypatch.setenv("AI_CLI_LAUNCH_LOG", str(log))
@@ -287,7 +285,7 @@ def test_given_resolver_has_no_answer_when_relaunching_then_no_warning_is_shown_
     assert "exited 1" not in err
     assert "resuming by title" not in err
     logged = [line for line in log.read_text(encoding="utf-8").splitlines() if "[internal] resume:" in line]
-    assert any("exited 1" in line and "reason=background-unproven" in line for line in logged), logged
+    assert any("exited 1" in line and "no pending handoff for myproject-1" in line for line in logged), logged
 
 
 def test_given_resolver_prints_two_ids_when_resolving_then_it_counts_as_no_answer(
