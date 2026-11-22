@@ -898,6 +898,7 @@ def _run_remote_named_launch(
     """
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "ssh"}}
     failures = list(allocator_failures)
+    real_run = subprocess.run
 
     def remote_ssh(command, **kwargs):
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
@@ -911,7 +912,8 @@ def _run_remote_named_launch(
         if failures:
             failure = failures.pop(0)
             if failure == "hang":
-                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+                # A real process that never answers, run under the call's own timeout.
+                return real_run([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
             return MagicMock(returncode=failure, stdout="", stderr="")
         if allocator_reply is not None:
             return MagicMock(returncode=0, stdout=allocator_reply, stderr="")
@@ -1027,7 +1029,14 @@ def test_given_allocation_killed_once_when_remote_launched_then_retries_and_atta
     assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
 
 
-def test_given_an_allocation_that_overruns_its_timeout_once_when_remote_launched_then_it_is_retried_with_a_longer_one():
+def test_given_an_allocation_that_overruns_its_timeout_once_when_remote_launched_then_it_is_retried_with_a_longer_one(
+    tmp_path, monkeypatch
+):
+    config = tmp_path / "user-config" / "ai-cli-utils" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[retry.remote_allocation]\ntimeout_seconds = 1\nmax_timeout_seconds = 4\ndelay_seconds = 0\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
     calls, timeouts = [], []
     code, handoff, stderr = _run_remote_named_launch(
         ["ai", "c", "chief-1", "-R"],
