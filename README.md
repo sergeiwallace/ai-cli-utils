@@ -207,7 +207,7 @@ after changing a command's help, never edit it by hand.
 | [`ai color`](docs/reference/cli.md#ai-color) | Reassign iTerm2 color for the current ai session |
 | [`ai copier-update`](docs/reference/cli.md#ai-copier-update) | Propagate project-template changes to downstream projects |
 | [`ai cos`](docs/reference/cli.md#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
-| [`ai cx`](docs/reference/cli.md#ai-cx) | Launch a Codex session |
+| [`ai cx`](docs/reference/cli.md#ai-cx) | Launch a Codex session. |
 | [`ai deploy`](docs/reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
