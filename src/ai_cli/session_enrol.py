@@ -13,7 +13,7 @@ import click
 import portalocker
 import psutil
 
-from . import config, output, session_reconcile, tmux_binary
+from . import config, output, session_naming, session_reconcile, tmux_binary
 from . import session_registry as registry
 from . import session_run_state as state
 from .output import Untagged
@@ -164,7 +164,7 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
     cwd, leader_argv = inspect_pane(name)
     if record is not None:
         host = config.load_config().get("machine", {}).get("host_id") or snapshot["machine"]
-        if record.get("owning_host", host) != host:
+        if not session_naming.machine_identity(host).matches(record.get("owning_host", host)):
             raise ValueError("owning host check failed: registry record belongs to another host")
         recipe = _record_recipe(record, engine, host)
     else:
@@ -313,8 +313,10 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
     def local_records(doc):
         return [r for r in doc["sessions"] if r.get("name") == name and r.get("kind") == "local"]
 
+    here = session_naming.machine_identity(host)
+
     def registered(matches):
-        if len(matches) > 1 or any(r.get("owning_host", host) != host for r in matches):
+        if len(matches) > 1 or any(not here.matches(r.get("owning_host", host)) for r in matches):
             raise ValueError("conflicting local registration or owning host")
         return bool(matches and state.valid_boot_recipe(matches[0]))
 

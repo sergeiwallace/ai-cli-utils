@@ -717,7 +717,10 @@ def list_names_command(as_json: bool, pool: bool) -> None:
             sys.exit(EXIT_UNREADABLE)
         _list_pool(snapshot, as_json)
         return
+    from .session_naming import machine_identity
+
     host = _host()
+    here = machine_identity(host)
     live = set(_tmux_session_names())
     rows = sorted(snapshot.rows.values(), key=lambda row: (str(row.get("machine")), row["token"]))
     try:
@@ -730,7 +733,7 @@ def list_names_command(as_json: bool, pool: bool) -> None:
 
     def running(row: dict) -> bool | None:
         """Whether this machine runs the row's session; None for another machine's row or a spare."""
-        if row.get("machine") != host or not row.get("title"):
+        if not here.holds(row) or not row.get("title"):
             return None
         return any(
             f"{engine}{remote}-{row['title']}" in live for engine in ("c", "g", "p", "cx") for remote in ("", "-r")
