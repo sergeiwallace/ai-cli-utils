@@ -154,8 +154,8 @@ elif step == "unresolvable":
     sys.exit(128)
 elif step == "auth":
     sys.stderr.write(
-        "ghp: the default gh config is not authenticated (gh api user exit 1)\\n"
-        "ghp: the personal token is not installed.\\n"
+        "credential-helper: no token is stored for example.com\\n"
+        "credential-helper: the personal token is not installed.\\n"
         "  Restore (about 60 seconds):\\n"
         "    1. open the token settings page\\n"
         "    2. paste the new token\\n"
