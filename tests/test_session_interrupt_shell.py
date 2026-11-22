@@ -1,9 +1,11 @@
 """Interrupt the full generated wrapper through an isolated tmux pane."""
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -133,6 +135,7 @@ def pane_session(request, tmp_path, monkeypatch):
     class Pane:
         name = "c-session-1"
         socket = None
+        launches_path = launches
 
         def start(
             self,
@@ -246,8 +249,17 @@ def pane_session(request, tmp_path, monkeypatch):
             # The launcher's own end-of-session configuration, applied to this session.
             from ai_cli import tmux_ownership
 
-            session_id = tmux("display-message", "-p", "-t", f"={self.name}:", "#{session_id}").stdout.strip()
-            assert tmux_ownership.configure_session_end(session_id, tmux_command=["tmux", "-S", socket]) == []
+            shown = tmux("display-message", "-p", "-t", f"={self.name}:", "#{session_id} #{pane_id}").stdout.split()
+            session_id, self.supervisor_pane = shown
+            assert (
+                tmux_ownership.configure_session_end(
+                    session_id, self.supervisor_pane, tmux_command=["tmux", "-S", socket]
+                )
+                == []
+            )
+
+        def tmux(self, *args):
+            return tmux(*args)
 
         def attach_caller(self, *, remote, wait=True):
             local_dir = tmp_path / "local"
@@ -630,6 +642,50 @@ def test_given_launch_from_inside_tmux_when_session_ends_then_client_returns_to_
     assert _wait(lambda: not pane_session.alive()), pane_session.capture()
     pane_session.assert_caller()
     assert pane_session.client_sessions() == ["caller"], "the client left its own session"
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_a_split_pane_when_it_exits_then_the_session_and_its_agent_survive(pane_session):
+    # A pane the user splits off is theirs: its exit must not end the session it sits in.
+    pane_session.start(caller=True)
+    pane_session.configure_end()
+    split = pane_session.tmux("split-window", "-P", "-F", "#{pane_id}", "-t", f"={pane_session.name}:", "sleep 1")
+    assert split.returncode == 0, split.stderr
+    split_pane = split.stdout.strip()
+
+    def panes():
+        return pane_session.tmux("list-panes", "-t", f"={pane_session.name}:", "-F", "#{pane_id}").stdout.split()
+
+    assert _wait(lambda: split_pane not in panes()), panes()
+    time.sleep(1)
+    assert pane_session.alive(), "a split pane's exit ended the session"
+    assert panes() == [pane_session.supervisor_pane]
+    assert pane_session.client_sessions() == [pane_session.name]
+    agent = int(pane_session.launches_path.read_text().split()[0])
+    os.kill(agent, 0)
+    assert pane_session.count() == 1
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_client_switched_in_when_the_supervisor_is_killed_then_tmux_returns_it_and_ends_the_session(
+    pane_session,
+):
+    pane_session.start()
+    pane_session.configure_end()
+    pane_session.attach_from_inside_tmux()
+    assert _wait(lambda: pane_session.client_sessions() == [pane_session.name]), pane_session.client_sessions()
+    supervisor = int(
+        pane_session.tmux("display-message", "-p", "-t", pane_session.supervisor_pane, "#{pane_pid}").stdout
+    )
+    agent = int(pane_session.launches_path.read_text().split()[0])
+    try:
+        os.kill(supervisor, signal.SIGKILL)
+        assert _wait(lambda: not pane_session.alive()), pane_session.capture()
+        assert _wait(lambda: pane_session.client_sessions() == ["caller"]), pane_session.client_sessions()
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(agent, signal.SIGKILL)
+    pane_session.assert_caller()
 
 
 @pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
