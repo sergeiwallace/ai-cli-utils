@@ -612,6 +612,9 @@ def test_given_launch_from_inside_tmux_when_session_ends_then_client_returns_to_
     time.sleep(3.2)
     pane_session.exit_agent("1")
     assert _wait(lambda: pane_session.client_sessions() == ["caller"]), pane_session.client_sessions()
+    # The caller's shell had its prompt back as soon as the client switched away, so its
+    # stamp says nothing about the session's end: wait for that end itself.
+    assert _wait(lambda: not pane_session.alive()), pane_session.capture()
     pane_session.assert_caller()
     assert pane_session.client_sessions() == ["caller"], "the client left its own session"
 

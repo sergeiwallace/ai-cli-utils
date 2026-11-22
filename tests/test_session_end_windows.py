@@ -16,11 +16,19 @@ import pytest
 from ai_cli.session_script import get_engine_script
 
 
+class _WindowsSys:
+    platform = "win32"
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
 @pytest.mark.parametrize("remote", [False, True])
 def test_given_windows_launcher_when_session_program_is_generated_then_no_ending_leaves_a_shell_in_the_pane(
     monkeypatch, remote
 ):
-    monkeypatch.setattr(sys, "platform", "win32")
+    # Only the generator sees Windows: the test process still resolves programs as itself.
+    monkeypatch.setattr("ai_cli.session_script.sys", _WindowsSys())
 
     script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject", is_remote=remote)
 

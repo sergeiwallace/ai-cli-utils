@@ -1633,13 +1633,15 @@ def attached_caller(tmux_server):
     """
     socket = str(tmux_server.socket_path)
     outer = str(Path(socket).with_name("outer.sock"))
+    # Taken before the launch's tmux calls are patched, so these always reach the real server.
+    run = subprocess.run
 
     def tmux(*args):
-        return subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False, timeout=10)
+        return run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False, timeout=10)
 
     assert tmux("-f", os.devnull, "new-session", "-d", "-s", "caller", _LIVE_CHILD_COMMAND).returncode == 0
     client = f"env -u TMUX tmux -S {socket} attach-session -t =caller"
-    started = subprocess.run(
+    started = run(
         ["tmux", "-S", outer, "-f", os.devnull, "new-session", "-d", "-x", "120", "-y", "30", client],
         capture_output=True,
         check=False,
@@ -1654,7 +1656,7 @@ def attached_caller(tmux_server):
     try:
         yield {"socket": socket, "pane": pane, "session_id": caller_id, "tmux": tmux}
     finally:
-        subprocess.run(["tmux", "-S", outer, "kill-server"], capture_output=True, check=False, timeout=10)
+        run(["tmux", "-S", outer, "kill-server"], capture_output=True, check=False, timeout=10)
 
 
 def _run_ai_c() -> object:
@@ -1712,7 +1714,7 @@ def test_given_a_launch_reason_in_the_environment_when_ai_c_runs_then_only_one_s
 
 
 def test_given_reinstall_continuation_inside_tmux_when_it_hands_off_then_the_client_switches_instead_of_refusing(
-    patched_subprocess, attached_caller, monkeypatch, capsys
+    attached_caller, patched_subprocess, monkeypatch, capsys
 ):
     """The launcher's self-restart after a reinstall re-runs `ai c` in the same pane.
 
