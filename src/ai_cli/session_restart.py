@@ -1763,6 +1763,24 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
     }
 
 
+def _upgrade_remedy(reason: str, record: dict | None) -> dict:
+    """What a refused in-place restart tells the user to do, when the cause is the session's own age.
+
+    ``supervisor-upgrade-required`` means the running session program was started by an
+    older ai-cli-utils than this one can certify, so only a relaunch moves it on: once.
+    """
+    if reason != "supervisor-upgrade-required":
+        return {}
+    name = (record or {}).get("name")
+    command = f"ai c {name}" if isinstance(name, str) and name else "ai c <name>"
+    return {
+        "remedy": (
+            "this session was started before the installed ai-cli-utils, so it cannot be restarted in "
+            f"place until it is relaunched once: exit it (/exit, or ai exit-session), then run: {command}"
+        )
+    }
+
+
 def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> bool:
     """Under the session lock, retire a failed fence only on positive local proof."""
     try:
@@ -2352,6 +2370,7 @@ def restart(
     event_completion: bool = False,
 ) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
+    record: dict | None = None
     try:
         settings = config.read_restart_config(config.load_config())
         commands = load_commands()
@@ -2456,7 +2475,7 @@ def restart(
                             time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"]),
                         )
             except Refusal as exc:
-                report = _report(exc.reason, detail=exc.detail)
+                report = _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                 report = _report("verification-failed", detail="replacement evidence became unavailable")
             succeeded = report["reason"] == "restarted" or (event_completion and report["reason"] == "started")
@@ -2467,6 +2486,6 @@ def restart(
             _atomic_json(request_path, request)
             return report
     except Refusal as exc:
-        return _report(exc.reason, detail=exc.detail)
+        return _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
     except (OSError, ValueError, TypeError) as exc:
         return _report("unavailable", detail=type(exc).__name__)

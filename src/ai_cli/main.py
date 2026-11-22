@@ -7073,7 +7073,13 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None, *, 
     if restart_json:
         _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
     else:
-        _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
+        _out.emit(
+            Tag.SESSION,
+            "session",
+            "restart; " + "; ".join(f"{key}={value}" for key, value in report.items() if key != "remedy"),
+        )
+        if report.get("remedy"):
+            _out.emit(Tag.SESSION, "session", report["remedy"])
     raise SystemExit(
         0
         if report["reason"] in ("restarted", "ready", "detached")
