@@ -212,6 +212,36 @@ def test_given_a_fetch_that_hangs_when_launching_remote_then_it_is_bounded_and_l
     session_launch.assert_called_once()
 
 
+def test_given_a_fetch_that_hangs_once_when_launching_remote_then_it_is_retried_with_a_longer_timeout_and_syncs(
+    origin_and_checkout, tmp_path, monkeypatch
+):
+    config = tmp_path / "user-config" / "ai-cli-utils" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[retry.client_fetch]\ndelay_seconds = 0\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
+    _, publisher, checkout = origin_and_checkout
+    target = _advance_origin(publisher)
+    real_run = subprocess.run
+    fetch_timeouts = []
+
+    def hangs_once(command, **kwargs):
+        if "fetch" in command:
+            fetch_timeouts.append(kwargs.get("timeout"))
+            if len(fetch_timeouts) == 1:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.client_checkout.subprocess.run", side_effect=hangs_once):
+        stderr, execvp, _session_launch = _launch(checkout)
+
+    assert len(fetch_timeouts) == 2
+    assert fetch_timeouts[1] > fetch_timeouts[0]
+    assert _git("rev-parse", "HEAD", cwd=checkout) == target
+    assert "fast-forwarded 1 commit(s) from origin/main; restarting" in _install_line(stderr)
+    execvp.assert_called_once()
+
+
 def test_given_a_checkout_behind_origin_when_launching_locally_then_it_is_not_touched(origin_and_checkout):
     _, publisher, checkout = origin_and_checkout
     _advance_origin(publisher)
