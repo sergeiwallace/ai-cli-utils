@@ -366,17 +366,6 @@ def pane_session(request, tmp_path, monkeypatch):
             assert "KeyboardInterrupt" not in self.output.read_text()
             assert "Traceback" not in self.output.read_text()
 
-        def set_config(self, text):
-            path = Path(config.config_file_text())
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-
-        def hold_restart_window(self):
-            # The stop has to land inside the restart window, and a loaded host can take
-            # longer than the default three seconds between showing the notice and the
-            # press reaching the pane. The wrapper reads the window at each exit.
-            self.set_config("[session]\nrestart_stop_window_seconds = 60\n")
-
         def set_policy(self, policy):
             def change(doc):
                 doc["sessions"][0]["relaunch"] = policy
@@ -513,7 +502,6 @@ def test_given_running_engine_when_terminal_interrupt_exits_then_original_shell_
     # A raw TUI that exits 0 on Ctrl+C after a healthy run looks like /exit, so it
     # restarts unless the next Ctrl+C lands in the wrapper's restart window.
     if mode == "raw-clean":
-        pane_session.hold_restart_window()
         time.sleep(3.2)
     pane_session.interrupt()
     if mode == "raw-clean":
@@ -561,7 +549,6 @@ def test_given_healthy_run_when_agent_exits_cleanly_then_wrapper_restarts_it(pan
 @pytest.mark.parametrize("remote", [False, True])
 def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_returns(pane_session, remote):
     pane_session.start(remote=remote, caller=True)
-    pane_session.hold_restart_window()
     time.sleep(3.2)
     pane_session.exit_agent("0")
     assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
