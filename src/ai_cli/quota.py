@@ -415,12 +415,6 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                         kv = await client.js.key_value("hw_state")
                         kv_key = f"quota.claude.current.{machine}" if machine else "quota.claude.current"
                         await kv.put(kv_key, json.dumps(payload).encode())
-                        # Ack for a downstream mid-run quota monitor.
-                        if machine:
-                            await kv.put(
-                                f"quota.scrape.ack.{machine}",
-                                json.dumps({"scraped_at": time.time()}).encode(),
-                            )
                     except Exception:
                         pass
         finally:
