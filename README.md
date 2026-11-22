@@ -779,10 +779,12 @@ them on one machine:
 # name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
 # min_name_length = 3       # used only where no shared name registry exists
 # max_name_length = 4       # used only where no shared name registry exists
-# registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
 # registry_push_timeout_seconds = 60   # one push to a shared registry
 # registry_clone_timeout_seconds = 60  # a host's first clone of a Dolt registry (300 on Windows)
 ```
+
+A fetch of a shared registry runs under the `[retry.registry_fetch]` policy instead
+(see [Retries](#retries)).
 
 An older release seeded these four keys active. The first `ai` command after an
 upgrade comments out each one that still holds its seeded value, says so on stderr,
