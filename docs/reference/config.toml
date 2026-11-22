@@ -261,6 +261,39 @@ stale_session_timeout = 15
 ## 300 on Windows.
 # registry_clone_timeout_seconds = 60
 
+[retry]
+## One retry policy for the bounded waits a launch performs. Attempt n may take
+## min(timeout_seconds * growth^(n-1), max_timeout_seconds) seconds. After a failed attempt
+## the launch waits min(delay_seconds * growth^(n-1), max_delay_seconds) seconds, less a
+## random share of up to `jitter` of that wait (0 waits it in full; 1 is full jitter). Only
+## a timeout or a lost connection is retried: a definite answer, such as a refused
+## credential, is reported once with its cause. Read on every call, so an edit applies to
+## the next one. A [retry.<site>] table overrides any of these keys for one site. A key
+## your file leaves out takes the shipped value, the one shown here; your own [retry]
+## values apply to every site, ahead of the shipped per-site tables.
+# attempts = 3
+# timeout_seconds = 10
+# growth = 2.0
+# max_timeout_seconds = 60
+# delay_seconds = 1
+# max_delay_seconds = 10
+# jitter = 0.5
+
+[retry.wake_sidecar]
+## The optional wake-sidecar ensure before a local launch, and its `show` lookup. The ensure
+## is idempotent, so a retry cannot start the unit twice. On a loaded host its interpreter
+## start and unit-manager query took about 3 s, the old fixed budget, so it timed out.
+# timeout_seconds = 5
+# max_timeout_seconds = 20
+
+[retry.registry_fetch]
+## Every fetch of a shared name registry, git or Dolt. In a checkout with thousands of refs
+## on a loaded host one fetch measured 16 to 27 s. A timed-out or unreachable fetch is
+## retried; a credential the remote refuses is not.
+# attempts = 2
+# timeout_seconds = 60
+# max_timeout_seconds = 120
+
 [session_relaunch]
 on_boot = false
 causes = ["host_reboot", "terminal_quit_or_crash"]

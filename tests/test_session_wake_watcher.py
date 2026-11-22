@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_cli import main
+from ai_cli import main, retry
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_given_session_mode_when_launching_then_one_detached_watcher_targets_slu
     assert "watch --session myproject-tst-1" in windows[0][-1]
     shows = [(argv, kw) for argv, kw in launch.calls if "show" in argv]
     assert len(shows) == 1
-    assert shows[0][1]["timeout"] == 3
+    assert shows[0][1]["timeout"] == retry.policy("wake_sidecar").timeout_for(1)
     assert shows[0][0][:2] == [sys.executable, str(launch.script)]
 
 
