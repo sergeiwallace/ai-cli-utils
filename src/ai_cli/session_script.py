@@ -125,6 +125,44 @@ while True:
 """
 
 
+# Where an MSYS2 or Cygwin shell (Git Bash) publishes the Windows pid of each of its processes.
+MSYS_PROC_ROOT = "/proc"
+
+
+def _native_windows_launcher() -> bool:
+    """Whether the script is generated for native Windows Python under a POSIX-emulating shell.
+
+    That pairing is what Git Bash gives: the shell is MSYS2, so its pids, process groups and
+    terminal are emulated, while ``ai`` and ``python3`` are native Windows programs that
+    see none of them. The script then translates every shell pid it hands Python, and runs
+    its child body without the terminal-foreground handoff, which has nothing to act on.
+    """
+    return sys.platform == "win32"
+
+
+def _native_pid_function(windows: bool) -> str:
+    """``_ai_native_pid <shell-pid>``: that pid as the Python this script calls sees it.
+
+    Every shell pid the script hands Python goes through it. On POSIX both sides share
+    one pid namespace and it prints its argument. Under Git Bash it reads MSYS2's
+    ``/proc/<pid>/winpid`` and fails, with the reason, when that cannot be read.
+    """
+    if not windows:
+        body = "      printf '%s\\n' \"$1\"\n"
+    else:
+        winpid = shlex.quote(MSYS_PROC_ROOT) + '"/$1/winpid"'
+        body = (
+            '      local _ai_native_pid_value=""\n'
+            f'      {{ read -r _ai_native_pid_value < {winpid}; }} 2>/dev/null || _ai_native_pid_value=""\n'
+            '      if [[ ! "$_ai_native_pid_value" =~ ^[1-9][0-9]*$ ]]; then\n'
+            f'        _ai_emit error session "cannot read the Windows pid of shell process $1 from "{winpid}\n'
+            "        return 1\n"
+            "      fi\n"
+            "      printf '%s\\n' \"$_ai_native_pid_value\"\n"
+        )
+    return f"    # BEGIN RUN STATE native-pid\n    _ai_native_pid() {{\n{body}    }}\n    # END RUN STATE\n"
+
+
 def resolve_session_shell() -> str | None:
     """Absolute path of the shell that should interpret the session script.
 
@@ -267,6 +305,11 @@ def get_engine_script(
     # ``or "bash"`` only guards template *generation* on a host with neither shell;
     # the launch path itself refuses to start in that case, with a real message.
     _session_shell = resolve_session_shell() or "bash"
+    windows = _native_windows_launcher()
+    if windows:
+        # The MSYS2 shell runs this path itself (the child body below); forward slashes
+        # are the spelling both it and Windows accept.
+        _session_shell = _session_shell.replace("\\", "/")
     # The agent reset is the transport's restore sequence, rendered for printf, so the
     # two cannot drift apart again (AI-CLI-no36). Imported here: transport imports
     # this module at load time.
@@ -344,9 +387,103 @@ def get_engine_script(
         }
     )
 
+    _posix_child_run = f"""        # With job control disabled, Bash backgrounds a command with SIGINT and
+        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
+        # dispositions in a short exec wrapper before the child shell starts,
+        # retain stdin explicitly, and then wait interruptibly in this shell.
+        python3 -c '{CHILD_BODY_SHIM}' \
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
+        _child_pid=$!
+        _supervisor_promote_child
+        _promotion_status=$?
+        if (( _promotion_status != 0 )); then
+          # Reported only once the child is gone and the terminal is back: rendering
+          # starts a process, and the stopped child must be released first.
+          if (( _promotion_status == 2 )); then
+            _promotion_failure="interrupted before the session shell reached the terminal foreground"
+          elif [[ -n "${{_child_pgid:-}}" ]]; then
+            _promotion_failure="could not promote the session shell's process group $_child_pgid to the terminal foreground"
+          else
+            _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
+          fi
+          # The child wrapper parks waiting for this promotion to succeed. It
+          # used to SIGSTOP itself, and a stopped process only records a SIGTERM
+          # as pending, so a bare SIGTERM here left the wait below blocked
+          # forever on a child that could never die (AI-CLI-jpnd). Continuing
+          # its whole process group after the TERM still wakes anything in that
+          # group that is stopped, so it sees the pending signal and exits.
+          #
+          # That CONT has to name the group the child REPORTED. It used to name
+          # "-$_child_pid", and when a spawning wrapper sits in between, that
+          # group has no members -- so the signal reached nothing and this wait
+          # blocked forever anyway, which is the wedge that was measured live.
+          kill -TERM "$_child_pid" 2>/dev/null || true
+          if [[ -n "${{_child_pgid:-}}" ]] && [[ "$_child_pgid" =~ ^[0-9]+$ ]]; then
+            kill -CONT -"$_child_pgid" 2>/dev/null || true
+            kill -TERM -"$_child_pgid" 2>/dev/null || true
+          fi
+          kill -CONT "$_child_pid" 2>/dev/null || true
+          _supervisor_wait_for_child || true
+          # Leave the terminal owned by this supervisor. Exiting with the
+          # foreground group pointing at something that never existed is why the
+          # wedged pane could not deliver Ctrl+C to anything.
+          _supervisor_restore_terminal || true
+          rm -f "$_supervisor_child_ready_path"
+          _ai_emit info terminal "$_promotion_failure"
+          # A Ctrl+C while a child is still starting (a reload, a restart) is a
+          # deliberate stop, so it ends the session the way a final exit does. An
+          # `exit 1` here skipped the fenced teardown below, and the window's
+          # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
+          # A real promotion failure still exits 1 and leaves its error on screen.
+    # BEGIN RUN STATE promotion-interrupt
+          (( _promotion_status == 2 )) && _ai_final_manual_exit
+    # END RUN STATE
+          (( _promotion_status == 2 )) && break
+          exit 1
+        fi
+        _supervisor_wait_for_child
+        _child_status=$?
+        _supervisor_restore_terminal
+        _supervisor_foreground=$?"""
+    # Git Bash: the shell's process groups and terminal are emulated and the Python it
+    # calls is native, so there is no group to hand the terminal to (AI-CLI-4bhw). The
+    # child body runs as the supervisor's foreground command on the pane's console.
+    _windows_child_run = f"""        # Native Windows: the child body runs as this shell's foreground command,
+        # on the pane's console, and its exit status drives the loop below. There
+        # is no process group to promote, and a foreground command keeps its SIGINT
+        # disposition, so the child's own double Ctrl+C handling still applies.
+        _child_pid=""
+        {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body
+        _child_status=$?
+        _supervisor_foreground=0"""
+    _child_run = _windows_child_run if windows else _posix_child_run
+    _windows_prelude = ""
+    _signal_model_windows = ""
+    _restore_terminal_windows = ""
+    _watcher_lock_pid = "echo $$"
+    _suspend_watchdog_start = f"""    if [[ -t 0 ]]; then
+      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
+      _suspend_watchdog_pid=$!
+    fi
+"""
+    if windows:
+        # `python3` on a Git Bash PATH is often missing or the Microsoft Store alias, and
+        # the generation token below needs one: run this script's own snippets on the
+        # launcher's interpreter.
+        _windows_prelude = f'python3() {{ {shlex.quote(sys.executable.replace(chr(92), "/"))} "$@"; }}\n'
+        _signal_model_windows = (
+            '        _supervisor_signal_model_reason="native Windows programs have no POSIX process groups"\n'
+            "        return 1\n"
+        )
+        # Nothing took the terminal from this shell, so there is nothing to restore.
+        _restore_terminal_windows = "        return 0\n"
+        _watcher_lock_pid = '_ai_native_pid "$$"'
+        # Ctrl+Z stops no process group on a Windows console, and the watchdog's
+        # os.kill(pid, 0) would send that pid a Ctrl+C there rather than probe it.
+        _suspend_watchdog_start = ""
     # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
     # so PATH decides as before); baked in at generation like the session shell above.
-    return f"""{shell_prelude()}
+    return f"""{shell_prelude()}{_windows_prelude}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.
@@ -431,7 +568,7 @@ def get_engine_script(
       fi
     }}
     {session_state_functions(session)}
-    if ! $_ai_cli_child_mode; then
+{_native_pid_function(windows)}    if ! $_ai_cli_child_mode; then
       # Preserve interactive stderr while recording supervisor-only diagnostics.
       # Child bodies restore fd 2 below so normal agent output does not grow this log.
       if [[ -n "$_ai_launch_log" ]]; then
@@ -469,7 +606,8 @@ def get_engine_script(
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
     # BEGIN RUN STATE supervisor-generation
-      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
+      _ai_supervisor_pid=$(_ai_native_pid "$$") || exit 1
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$_ai_supervisor_pid" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
       export AI_CLI_RUN_GENERATION
     # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
@@ -489,7 +627,7 @@ def get_engine_script(
       _reaper_lease_fd=""
       _supervisor_signal_model_reason=""
       _verify_supervisor_signal_model() {{
-        # The supervisor must begin in the pane foreground group so it can
+{_signal_model_windows}        # The supervisor must begin in the pane foreground group so it can
         # promote each separately grouped child to the terminal foreground.
         if ! set +m 2>/dev/null; then
           _supervisor_signal_model_reason="could not disable shell job control"
@@ -702,7 +840,7 @@ def get_engine_script(
         return 1
       }}
       _supervisor_restore_terminal() {{
-        [[ -t 0 ]] || return 0
+{_restore_terminal_windows}        [[ -t 0 ]] || return 0
         trap '' TTOU
         python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
@@ -811,64 +949,7 @@ def get_engine_script(
     # BEGIN RUN STATE promotion-int-baseline
         _supervisor_spawn_int_count=$_supervisor_int_count
     # END RUN STATE
-        # With job control disabled, Bash backgrounds a command with SIGINT and
-        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
-        # dispositions in a short exec wrapper before the child shell starts,
-        # retain stdin explicitly, and then wait interruptibly in this shell.
-        python3 -c '{CHILD_BODY_SHIM}' \
-          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
-        _child_pid=$!
-        _supervisor_promote_child
-        _promotion_status=$?
-        if (( _promotion_status != 0 )); then
-          # Reported only once the child is gone and the terminal is back: rendering
-          # starts a process, and the stopped child must be released first.
-          if (( _promotion_status == 2 )); then
-            _promotion_failure="interrupted before the session shell reached the terminal foreground"
-          elif [[ -n "${{_child_pgid:-}}" ]]; then
-            _promotion_failure="could not promote the session shell's process group $_child_pgid to the terminal foreground"
-          else
-            _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
-          fi
-          # The child wrapper parks waiting for this promotion to succeed. It
-          # used to SIGSTOP itself, and a stopped process only records a SIGTERM
-          # as pending, so a bare SIGTERM here left the wait below blocked
-          # forever on a child that could never die (AI-CLI-jpnd). Continuing
-          # its whole process group after the TERM still wakes anything in that
-          # group that is stopped, so it sees the pending signal and exits.
-          #
-          # That CONT has to name the group the child REPORTED. It used to name
-          # "-$_child_pid", and when a spawning wrapper sits in between, that
-          # group has no members -- so the signal reached nothing and this wait
-          # blocked forever anyway, which is the wedge that was measured live.
-          kill -TERM "$_child_pid" 2>/dev/null || true
-          if [[ -n "${{_child_pgid:-}}" ]] && [[ "$_child_pgid" =~ ^[0-9]+$ ]]; then
-            kill -CONT -"$_child_pgid" 2>/dev/null || true
-            kill -TERM -"$_child_pgid" 2>/dev/null || true
-          fi
-          kill -CONT "$_child_pid" 2>/dev/null || true
-          _supervisor_wait_for_child || true
-          # Leave the terminal owned by this supervisor. Exiting with the
-          # foreground group pointing at something that never existed is why the
-          # wedged pane could not deliver Ctrl+C to anything.
-          _supervisor_restore_terminal || true
-          rm -f "$_supervisor_child_ready_path"
-          _ai_emit info terminal "$_promotion_failure"
-          # A Ctrl+C while a child is still starting (a reload, a restart) is a
-          # deliberate stop, so it ends the session the way a final exit does. An
-          # `exit 1` here skipped the fenced teardown below, and the window's
-          # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
-          # A real promotion failure still exits 1 and leaves its error on screen.
-    # BEGIN RUN STATE promotion-interrupt
-          (( _promotion_status == 2 )) && _ai_final_manual_exit
-    # END RUN STATE
-          (( _promotion_status == 2 )) && break
-          exit 1
-        fi
-        _supervisor_wait_for_child
-        _child_status=$?
-        _supervisor_restore_terminal
-        _supervisor_foreground=$?
+{_child_run}
         rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
     # BEGIN RUN STATE supervisor-interrupt
@@ -990,7 +1071,8 @@ def get_engine_script(
         printf 'session %s: %s; not retrying\\n' "$tmux_session" "$1" >&2
         exit 77
       }}
-      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}); then
+      _ai_supervisor_pid=$(_ai_native_pid "$$") || _begin_stop "cannot name this shell to the session record"
+      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$_ai_supervisor_pid" --launch-metadata {shlex.quote(_generation_meta)}); then
         printf '0\\n' > "$_begin_failures_file" || _begin_stop "cannot reset generation failure counter"
       else
         _begin_failures=$((10#$_begin_failures + 1))
@@ -1319,7 +1401,7 @@ def get_engine_script(
       fi
       rm -f "$lock_file"
 
-      (echo $$ > "$lock_file"
+      ({_watcher_lock_pid} > "$lock_file"
       trap 'rm -f "$lock_file"' EXIT
       counter=0
       while true; do
@@ -1467,11 +1549,7 @@ def get_engine_script(
     # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
     # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
     # reload carries it into a running session at its next agent restart.
-    if [[ -t 0 ]]; then
-      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
-      _suspend_watchdog_pid=$!
-    fi
-
+{_suspend_watchdog_start}
     agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do
       # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
