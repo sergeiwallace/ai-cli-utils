@@ -12,7 +12,7 @@ import sys
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
 from .direnv_setup import PROJECT_ENV_REFUSED_EXIT
-from .iterm2_restore import LAUNCH_REASON_VAR
+from .iterm2_restore import INHERITED_LAUNCH_REASON_VAR, LAUNCH_REASON_VAR
 from .launch_logging import AGENT_DIAGNOSTIC_ENV, LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
@@ -1309,6 +1309,17 @@ def get_engine_script(
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
+    # BEGIN RUN STATE launch-reason
+    # The launch reason belongs to the launch that set it, and only its first agent start reads
+    # it. That agent keeps it, marked as this session's, so an `ai c` run from inside the
+    # session starts fresh; a later agent and a new pane in this tmux session never get it.
+    if $first_run && [[ -n "${{{LAUNCH_REASON_VAR}:-}}" ]]; then
+      export {INHERITED_LAUNCH_REASON_VAR}="${LAUNCH_REASON_VAR}"
+    elif ! $first_run; then
+      unset {LAUNCH_REASON_VAR} {INHERITED_LAUNCH_REASON_VAR}
+    fi
+    tmux set-environment -t "=$tmux_session" -r {LAUNCH_REASON_VAR} 2>/dev/null || true
+    # END RUN STATE
     _template_version={shlex.quote(_template_version)}
     _template_commit={shlex.quote(_template_commit)}
     uuid={shell["uuid"]}

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
@@ -2985,9 +2985,10 @@ _TMUX_FORWARDED_VARS = (
     _direnv_setup.BYPASS_ENV,
 )
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
+_INHERITED_LAUNCH_REASON_VAR = _iterm2_restore.INHERITED_LAUNCH_REASON_VAR
 
 
-def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+def build_tmux_env_flags(env: "Mapping[str, str]", *, launch_reason: str = "") -> list[str]:
     """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
 
     ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
@@ -3013,9 +3014,11 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AIH_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
-    forwarded, empty when unset: the first relaunch after a reboot starts the tmux
-    server, whose global environment then holds that reason for every later session.
+    ``AIH_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
+    this launch gave it, and never a value read from ``env``: a shell or agent inside a
+    session relaunched after a reboot still carries that session's reason, and a new
+    session must not inherit it. It is always emitted, empty when there is none, so a
+    value left in a tmux server's global environment reaches no session either.
     """
     flags: list[str] = []
     for var in _TMUX_FORWARDED_VARS:
@@ -3024,8 +3027,23 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
             value = value or str(Path.home() / ".local" / "state")
         if value:
             flags += ["-e", f"{var}={value}"]
-    flags += ["-e", f"{_LAUNCH_REASON_VAR}={env.get(_LAUNCH_REASON_VAR, '')}"]
+    flags += ["-e", f"{_LAUNCH_REASON_VAR}={launch_reason}"]
     return flags
+
+
+def _take_launch_reason(env: "MutableMapping[str, str]") -> str:
+    """Remove the launch reason from ``env`` and return it when it was set for this launch.
+
+    A relaunch hands ``ai c`` its reason in the environment of that one command
+    (``AIH_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
+    hands its reason to its first agent the same way, marked with
+    ``AI_CLI_INHERITED_LAUNCH_REASON``, so an ``ai c`` run from inside that session sees a
+    reason equal to the mark and starts fresh. Both are removed, so nothing this launch
+    starts, the tmux server included, inherits either.
+    """
+    reason = env.pop(_LAUNCH_REASON_VAR, "")
+    inherited = env.pop(_INHERITED_LAUNCH_REASON_VAR, None)
+    return "" if inherited is not None and reason == inherited else reason
 
 
 def _install_is_editable(venv: "Path") -> bool:
@@ -5048,6 +5066,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    launch_reason: str = "",
 ) -> None:
     agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
@@ -6402,7 +6421,7 @@ def _do_session_launch(
     # a server created before this launch cannot select a stale script or agent.
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
-    _tmux_env_flags = build_tmux_env_flags(os.environ)
+    _tmux_env_flags = build_tmux_env_flags(os.environ, launch_reason=launch_reason)
     if agent_diagnostic_path:
         _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
 
@@ -6801,6 +6820,7 @@ def _session_command(engine: str):
         # process's stderr and log never outlives the launch that created it.
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
+        launch_reason = _take_launch_reason(os.environ)
         try:
             mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
@@ -6837,6 +6857,9 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_reason:
+                        # The continuation is this same launch, so it takes this reason again.
+                        os.environ[_LAUNCH_REASON_VAR] = launch_reason
                     if launch_log.mirror_path:
                         # The re-run launch is the one that may refuse, so it keeps the copy.
                         os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
@@ -6871,6 +6894,7 @@ def _session_command(engine: str):
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                launch_reason=launch_reason,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
