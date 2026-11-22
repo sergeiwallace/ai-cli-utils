@@ -58,10 +58,25 @@ def test_given_windows_when_handing_off_then_the_program_starts_with_ctrl_c_and_
     monkeypatch.setattr(main.os, "execvp", Mock(side_effect=AssertionError("Windows has no exec")))
     seen = tmp_path / "child-sigint"
     program = "import pathlib, signal, sys; pathlib.Path(sys.argv[1]).write_text(str(signal.getsignal(signal.SIGINT)))"
+    during_wait = []
+    real_popen = main.subprocess.Popen
+
+    def recording(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        wait = child.wait
+
+        def recorded_wait(timeout=None):
+            during_wait.append(signal.getsignal(signal.SIGINT))
+            return wait(timeout)
+
+        child.wait = recorded_wait
+        return child
+
+    monkeypatch.setattr(main.subprocess, "Popen", recording)
     with pytest.raises(SystemExit):
         main._exec_handoff(sys.executable, [sys.executable, "-c", program, str(seen)])
     assert seen.read_text() == str(signal.default_int_handler)
-    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+    assert during_wait == [signal.SIG_IGN]
 
 
 def test_given_windows_when_program_is_missing_then_the_error_surfaces_and_ctrl_c_is_untouched(

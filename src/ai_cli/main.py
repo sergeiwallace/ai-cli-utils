@@ -364,16 +364,10 @@ def _exec_handoff(file: str, args: list[str], *, detach_on_windows: bool = False
 
 
 def _run_on_this_console(file: str, args: list[str]) -> int:
-    """Run ``file`` as a child on this process's console and return its exit status.
+    """Run ``file`` as a child on this process's console and return its exit status."""
+    from .foreground import run_in_foreground
 
-    Ctrl+C is ignored only once the child exists, so the child never starts with it
-    ignored, whatever a platform passes on to a child.
-    """
-    import signal
-
-    child = subprocess.Popen(args, executable=shutil.which(file) or file)
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    return child.wait()
+    return run_in_foreground(args, executable=shutil.which(file) or file)
 
 
 def _exec_tmux(args: list[str]) -> NoReturn:
