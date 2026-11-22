@@ -484,7 +484,7 @@ ai cx [OPTIONS] [NAME]
 
 Launch a Codex session.
 
-For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch with `ai cx NAME -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
+For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch from the session's worktree with the slot's original launch flags (--is-remote, --project-prefix, --project); for example `ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
 
 Arguments:
 
