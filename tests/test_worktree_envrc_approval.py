@@ -583,7 +583,9 @@ if sys.argv[1:2] in (["agents"], ["plugin"], ["mcp"], ["--version"]):
     print("[]" if sys.argv[1:2] == ["agents"] else "")
     sys.exit(0)
 with open(os.environ["FAKE_AGENT_STARTS"], "a") as out:
-    out.write(json.dumps({"agent": Path(sys.argv[0]).name, "PROJECT_ENV": os.environ.get("PROJECT_ENV")}) + "\\n")
+    started = {"agent": Path(sys.argv[0]).name, "PROJECT_ENV": os.environ.get("PROJECT_ENV")}
+    started["launch_log"] = os.environ.get("AI_CLI_LAUNCH_LOG")
+    out.write(json.dumps(started) + "\\n")
 """
 
 # The real `ai` for the commands these tests are about; every other service the child body
@@ -999,3 +1001,13 @@ def test_given_an_approval_helper_that_cannot_run_when_the_child_body_starts_the
     assert f"exited {status}" in run.stderr and "ai internal prepare-project-env" in run.stderr, run.stderr
     errors = [line for line in _session_lines(run.log, "direnv") if "Error:" in line]
     assert errors and f"exited {status}" in errors[0], run.log
+
+
+def test_given_a_child_body_with_a_launch_log_when_the_agent_starts_then_the_agent_cannot_write_to_it(
+    session_repo, stub_direnv, child_body
+):
+    """The log variable reaches the child body's own `ai internal` calls, never the agent or its hooks."""
+    run = child_body(session_repo["worktree"])
+
+    assert run.starts and run.starts[0]["launch_log"] is None, run.starts
+    assert _session_lines(run.log, "direnv"), "the child body's own records must still reach the log"

@@ -487,7 +487,8 @@ Phase 3, T-5, as built:
   bracketed `LAUNCH LOG` insertion) and `_handle_internal` attaches that log as the file
   sink once, for every action. A restart's `.envrc` approval, resume lookup and
   migration lines therefore reach the launch log, stamped when they are emitted, the
-  same way the launcher's own lines do.
+  same way the launcher's own lines do. run_agent unsets the variable just before the
+  agent starts, so the agent and the hooks it runs never write into that log.
 - **Enforcement.** `test_given_the_package_source_when_scanned_then_every_output_call_passes_a_vocabulary_operation`
   scans every `ai_cli.output` call and every launch-reporter call. The operation must be
   a string literal in the shipped vocabulary. Three named adapters may pass a variable:

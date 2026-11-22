@@ -974,7 +974,8 @@ def get_engine_script(
     # BEGIN LAUNCH LOG child
     # This body's stderr is the pane, not the supervisor's log relay, so every `ai internal`
     # it runs (the resume lookup, the .envrc approval, migrations) records into the launch log
-    # itself, stamped as it emits: `ai internal` attaches the log this variable names.
+    # itself, stamped as it emits: `ai internal` attaches the log this variable names. run_agent
+    # removes it again from the agent's environment.
     if [[ -n "${{_ai_launch_log:-}}" ]]; then
       export {LAUNCH_LOG_ENV}="$_ai_launch_log"
     else
@@ -1189,6 +1190,13 @@ def get_engine_script(
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
       fi
     # END PINNED RESTART
+    # BEGIN LAUNCH LOG agent
+      # The launch log variable is for this body's own `ai internal` calls; the agent and the
+      # hooks it runs must not write into the session's launch log. Unset in the shell, not with
+      # `env -u`, so starting the agent needs no program beyond the agent itself. The calls this
+      # body makes after the agent exits name the log themselves where they report.
+      unset {LAUNCH_LOG_ENV}
+    # END LAUNCH LOG
     # BEGIN RUN STATE agent-start-clock
       # The quick-exit and healthy-run checks measure the agent's own run time. The setup
       # above (direnv, plugin refresh) can take seconds on a loaded host, so start the
