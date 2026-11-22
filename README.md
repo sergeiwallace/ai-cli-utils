@@ -1634,6 +1634,11 @@ timeout_seconds = 5
 max_timeout_seconds = 20
 max_total_seconds = 10
 
+[retry.dolt_server]           # the optional Dolt supervisor's ensure, asked once
+attempts = 1
+timeout_seconds = 120
+max_timeout_seconds = 120
+
 [retry.remote_allocation]     # asking a remote host which session `-R` attaches to
 attempts = 2
 timeout_seconds = 60

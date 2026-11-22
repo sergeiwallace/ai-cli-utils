@@ -19,6 +19,11 @@ timeout_seconds = 5
 max_timeout_seconds = 20
 max_total_seconds = 10
 
+[retry.dolt_server]
+attempts = 1
+timeout_seconds = 120
+max_timeout_seconds = 120
+
 [retry.remote_allocation]
 attempts = 2
 timeout_seconds = 60
