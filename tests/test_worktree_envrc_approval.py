@@ -596,6 +596,8 @@ real = ("prepare-project-env", "emit", "progress", "resolve-background-target")
 broken = os.environ.get("FAKE_AI_PREPARE_EXIT")
 if broken and sys.argv[1:3] == ["internal", "prepare-project-env"]:
     sys.exit(int(broken))
+if os.environ.get("FAKE_AI_NO_RENDERER") and sys.argv[1:3] == ["internal", "emit"]:
+    sys.exit(127)
 if sys.argv[1:2] == ["internal"] and sys.argv[2:3] and sys.argv[2] in real:
     os.execv(sys.executable, [sys.executable, "-m", "ai_cli.main", *sys.argv[1:]])
 sys.exit(0)
@@ -1043,3 +1045,25 @@ def test_given_a_shell_working_directory_when_it_reaches_the_approval_step_then_
 
     assert exited.value.code == 0
     assert received == [Path(expected)]
+
+
+@pytest.mark.parametrize("renderer", [True, False], ids=["rendered", "plain-fallback"])
+def test_given_a_child_body_start_when_it_prints_to_the_pane_then_every_stamp_is_the_clock_of_that_line(
+    session_repo, stub_direnv, child_body, renderer
+):
+    """The pane's own stamps, not only the launch log's, carry the time each line was printed.
+
+    A relaunch's pane lines were reported stamped eight days and two hours off the real
+    time. Both stamp sources the child body has are pinned here: the `ai internal emit`
+    renderer, and the plain line `_ai_emit` falls back to when the renderer cannot run.
+    """
+    started = datetime.now(UTC)
+
+    run = child_body(session_repo["worktree"], env={} if renderer else {"FAKE_AI_NO_RENDERER": "1"})
+
+    finished = datetime.now(UTC)
+    stamped = [line for line in run.stderr.splitlines() if _LOG_STAMP.match(line)]
+    # The direnv line comes from the approval helper, the host line from `_ai_emit`.
+    assert any("[session] direnv:" in line for line in stamped), run.stderr
+    assert any("[session] host:" in line for line in stamped), run.stderr
+    assert all(_stamp_within(line, started, finished) for line in stamped), stamped
