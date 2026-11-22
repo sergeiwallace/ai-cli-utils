@@ -264,6 +264,7 @@ print(json.dumps({"enabled": True, "mode": "session"}))
 """
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the session wake watcher is POSIX-only")
 def test_given_a_show_lookup_that_times_out_once_when_resolving_the_watcher_then_it_is_retried_and_found(
     tmp_path, monkeypatch
 ):
