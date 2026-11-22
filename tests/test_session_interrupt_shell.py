@@ -125,7 +125,7 @@ def pane_session(request, tmp_path, monkeypatch):
     class Pane:
         name = "c-session-1"
 
-        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_clean=False):
+        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_exit=False):
             if engine == "cx":
                 # Give prepare real, synthetic confirmation and persistence evidence.
                 # Version queries must not count as an interactive engine launch.
@@ -153,7 +153,7 @@ def pane_session(request, tmp_path, monkeypatch):
                 doc["in_flight"]["writer"]["pid"] = 99999999
                 record.write_text(json.dumps(doc))
                 monkeypatch.setenv("TEST_CODEX_ROLLOUT", str(rollout))
-            if quick_clean:
+            if quick_exit:
                 date = binaries / "date"
                 date.write_text(
                     '#!/bin/sh\nif [ "$1" = +%s ]; then echo 1000000000; '
@@ -386,7 +386,7 @@ def test_given_attached_launcher_when_interrupted_then_original_shell_survives(p
 def test_given_early_raw_interrupt_when_remote_agent_exits_cleanly_then_original_shell_survives(pane_session, engine):
     # Pin elapsed time below the startup guard even on a busy host. A TUI can
     # consume Ctrl+C and return zero immediately after it starts.
-    pane_session.start(engine=engine, remote=True, mode="raw-clean", caller=True, quick_clean=True)
+    pane_session.start(engine=engine, remote=True, mode="raw-clean", caller=True, quick_exit=True)
     pane_session.interrupt()
     assert _wait(lambda: pane_session.after.exists() or "close this session" in pane_session.capture())
     if pane_session.alive():
@@ -414,9 +414,11 @@ def test_given_unregistered_session_when_interrupted_then_original_shell_survive
 
 @pytest.mark.parametrize("engine", ["c", "cx"])
 def test_given_remote_recovery_shell_when_exited_then_original_shell_survives(pane_session, engine):
-    pane_session.start(engine=engine, remote=True, caller=True)
+    # Exercise the quick-failure path even if launching and attaching the caller takes seconds.
+    pane_session.start(engine=engine, remote=True, caller=True, quick_exit=True)
     pane_session.exit_agent("1")
     assert _wait(lambda: "close this session" in pane_session.capture()), pane_session.capture()
+    assert _wait(lambda: "test-shell>" in pane_session.capture()), pane_session.capture()
     pane_session.type_line("exit")
     pane_session.assert_caller()
     assert pane_session.count() == 1
