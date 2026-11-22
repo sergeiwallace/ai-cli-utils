@@ -3602,6 +3602,7 @@ def _print_launch_plan(
     worktree_enabled: bool,
     sandbox: bool,
     extra_args: "list[str]",
+    probe: bool = False,
 ) -> None:
     """Report what a launch would do, having done none of it.
 
@@ -3613,8 +3614,9 @@ def _print_launch_plan(
     # Each of these is a git call, seconds apiece on a loaded host, so the lookup is a timed phase.
     with _launch_reporter.active().phase("worktree", "looking up the session worktree") as lookup:
         repo_root = _session.detect_repo_root()
-        worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
-        branch = f"wt-{ai_name}" if worktree else "n/a"
+        slot = _session.session_worktree_slot(Path(repo_root), ai_name, probe=probe) if repo_root else None
+        worktree = str(slot[0]) if worktree_enabled and slot else None
+        branch = slot[1] if worktree and slot else "n/a"
         reused = None
         if worktree and repo_root:
             # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
@@ -5926,6 +5928,7 @@ def _do_session_launch(
             worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
             sandbox=use_sandbox,
             extra_args=extra_args,
+            probe=probe,
         )
         return
 
@@ -7709,7 +7712,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "Without -r, a NAME that is not an existing title labels a NEW session, and the "
         "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.\n\n"
         "For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a "
-        "session home, and it can be removed like any scratch worktree once it exits."
+        "session home, and `ai retire-session TITLE` removes it once it exits."
     ),
 )
 @_session_options
@@ -9819,8 +9822,8 @@ def _print_retirement(result) -> None:
 @_cli_group.command(
     "retire-session",
     help=(
-        "Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the "
-        "checkout and its registry entry.\n\n"
+        "Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its "
+        "branch tips, then remove the checkout and its registry entry.\n\n"
         "\b\nTo rename a slot instead, use `ai migrate-session`."
     ),
 )
@@ -9835,7 +9838,10 @@ def _print_retirement(result) -> None:
 @click.option("-n", "--dry-run", is_flag=True, help="Print what would be removed and preserved without writing")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
 def cmd_retire_session(name, repo, dry_run, yes):
-    """Retire the session in slot NAME (``.worktrees/NAME``), losing no commit.
+    """Retire session NAME's worktree, losing no commit.
+
+    The worktree is the one NAME's run-state record names (a probe's lives outside the
+    repository), else the slot ``.worktrees/NAME``.
 
     Refused, before anything is written and with ``--dry-run`` too, while the
     session is running (a Claude Code process, its tmux session or a fresh

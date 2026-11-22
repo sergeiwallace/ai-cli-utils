@@ -139,7 +139,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai register`](../reference/cli.md#ai-register) | Register a repository root and its task prefix |
 | [`ai release-name`](../reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](../reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
-| [`ai retire-session`](../reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai retire-session`](../reference/cli.md#ai-retire-session) | Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry. |
 | [`ai seed-name-verdicts`](../reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](../reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](../reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |

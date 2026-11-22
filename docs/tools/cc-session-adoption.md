@@ -816,7 +816,11 @@ a machine-specific source path. If the rewrite fails, the command warns and
 
 A session home is never reaped automatically: the reaper refuses it by design,
 because only its owner knows the session is finished. `ai retire-session NAME`
-is that owner's route for `.worktrees/NAME`.
+is that owner's route. The worktree it retires is the one NAME's run-state record names
+(`c-NAME` or another engine's variant), which is how an exited `ai c -t` probe, whose
+worktree lives under the probe directory, is retired; with no such record it is
+`.worktrees/NAME`. A record naming the repository's own checkout (a `-W/--no-worktree`
+session) never counts.
 
 ```bash
 ai retire-session myrepo-3 -n   # what would be removed and preserved, nothing written
@@ -828,7 +832,8 @@ Refused before anything is written, `-n` included, with every blocking item name
 
 | Refusal | Why |
 |---|---|
-| `.worktrees/NAME` is not a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
+| neither NAME's run-state record nor `.worktrees/NAME` names a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
+| NAME's record and `.worktrees/NAME` (or two records) name different worktrees | it cannot tell which one is the session's |
 | a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `migrate-session` |
 | a heartbeat in `session-heartbeats/` for one of those tmux sessions, written in this boot within the reaper's `[stale_session_reaper] stale_after_seconds` | the reaper's own freshness rule; an unreadable record or one that cannot be dated counts as fresh |
 | an uncommitted change, or an untracked file that is not ignored | removing the checkout would lose it (ignored files are removed with it) |

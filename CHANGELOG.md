@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `ai c -t` probe now restarts after `/exit` inside tmux like any session. Its default relaunch
+  policy `never` keeps it from boot relaunch only; a `never` set with `ai sessions policy` still stops
+  the restart, and the exit now says so.
+- `ai retire-session NAME` reads the session's worktree from its run-state record, so an exited
+  `ai c -t` probe, whose worktree lives outside the repository, is retired by name. `ai c -t -d`
+  now plans the probe's real worktree and `probe-` branch.
 - A failed remote session-name allocation (`ai c NAME -R`) now names its exit code and the signal
   that ended it, instead of failing with no detail when the call printed nothing. A call cut off by
   SIGKILL or SIGTERM before it answered is retried once.
