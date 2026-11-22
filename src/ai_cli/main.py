@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 import uuid as uuid_module
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -3193,6 +3194,15 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
 # --- Command implementations (invoked by Click handlers below) ---
 
 
+def _project_name(pyproject: bytes) -> str | None:
+    """``[project] name`` from pyproject.toml's bytes, or None when it cannot be read."""
+    try:
+        name = tomllib.loads(pyproject.decode("utf-8")).get("project", {}).get("name")
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+    return name if isinstance(name, str) and name.strip() else None
+
+
 def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False) -> None:
     """Pull, bump the version so uv cannot serve a cached build, and install.
 
@@ -3212,6 +3222,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             Tag.UPDATE, "update", f"pyproject.toml not found at {project_path}. Set [deploy] project_path in config."
         )
         sys.exit(1)
+    started = time.monotonic()
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
     restored = subprocess.run(
         ["git", "checkout", "--", "pyproject.toml"], cwd=project_path, capture_output=True, text=True, check=False
@@ -3290,6 +3301,13 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         _out.error(Tag.UPDATE, "update", "could not find version in pyproject.toml")
         sys.exit(1)
     old_version = m.group(2).decode("utf-8", "replace")
+    pulled = time.monotonic()
+    # The bumped version already defeats uv's cache for this package, so "cache-bypassing"
+    # reinstalls this package alone. uv's --reinstall reinstalls every dependency too and
+    # implies --refresh, which revalidates each one against the index: work and network
+    # round trips that change nothing installed.
+    package = _project_name(original) or "ai-cli-utils"
+    reinstall = ["--reinstall-package", package] if force_reinstall else []
     base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
     if not quiet:
@@ -3319,14 +3337,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                     _out.emit(Tag.UPDATE, "update", "Preserving editable install.")
                 uv_cmd.append("-e")
             uv_cmd.append(str(project_path))
-            if force_reinstall:
-                uv_cmd.append("--force-reinstall")
+            uv_cmd += reinstall
             if _should_use_uv_link_mode_copy(uv_bin, self_venv):
                 uv_cmd.append("--link-mode=copy")
         else:
-            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
-            if force_reinstall:
-                uv_cmd.append("--reinstall")
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force", *reinstall]
             if _should_use_uv_link_mode_copy(uv_bin):
                 uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path, capture_output=True, text=True, check=False)
@@ -3343,9 +3358,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         for venv_path_str in extra_venvs:
             venv_path = Path(venv_path_str).expanduser()
             if venv_path.exists():
-                pip_cmd = [uv_bin, "pip", "install", str(project_path)]
-                if force_reinstall:
-                    pip_cmd.append("--force-reinstall")
+                pip_cmd = [uv_bin, "pip", "install", str(project_path), *reinstall]
                 if _should_use_uv_link_mode_copy(uv_bin, venv_path):
                     pip_cmd.append("--link-mode=copy")
                 pip_result = subprocess.run(
@@ -3364,8 +3377,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                         f"installing into {venv_path} failed (exit {pip_result.returncode}):\n"
                         f"{(pip_result.stdout or '') + (pip_result.stderr or '')}".rstrip(),
                     )
-        # Clear pycache (cross-platform)
-        for _cache_dir in project_path.rglob("__pycache__"):
+        installed = time.monotonic()
+        # Clear the package's own stale bytecode (cross-platform). Only under src/: the
+        # checkout root also holds .worktrees/, every other session's tree and virtualenv,
+        # whose caches are theirs, and walking them cost a cold 10 s on one host.
+        for _cache_dir in (project_path / "src").rglob("__pycache__"):
             if _cache_dir.is_dir():
                 shutil.rmtree(_cache_dir, ignore_errors=True)
         # Record HEAD hash so session start (and each running wrapper's self-update)
@@ -3409,7 +3425,14 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             # The whole quiet path's output: one line, naming what is now installed
             # and why it was rebuilt.
             reason = "cache-bypassing reinstall" if force_reinstall else "fresh build"
-            _out.emit(Tag.UPDATE, "update", f"ai-cli-utils {new_version} installed ({reason})")
+            done = time.monotonic()
+            _out.emit(
+                Tag.UPDATE,
+                "update",
+                f"ai-cli-utils {new_version} installed ({reason}) in {done - started:.1f}s: "
+                f"pull {pulled - started:.1f}s, install {installed - pulled:.1f}s, "
+                f"post-install {done - installed:.1f}s",
+            )
     sys.exit(exit_code)
 
 

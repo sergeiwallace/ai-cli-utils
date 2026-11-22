@@ -2933,10 +2933,10 @@ class TestAutoUpdateIfStale:
             with pytest.raises(SystemExit) as exc:
                 cli()
         assert exc.value.code == 0
-        assert any("--reinstall" in c for c in calls if isinstance(c, list))
+        assert any("--reinstall-package" in c for c in calls if isinstance(c, list))
 
-    def test_when_force_and_extra_venvs_then_adds_force_reinstall_to_pip(self, tmp_path):
-        """line 2511: --force + extra_venvs → --force-reinstall in pip install command."""
+    def test_when_force_and_extra_venvs_then_pip_reinstalls_the_package(self, tmp_path):
+        """--force + extra_venvs → --reinstall-package in the pip install command."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.1"\n')
         extra_venv = tmp_path / "my-tool" / ".venv"
@@ -2959,7 +2959,7 @@ class TestAutoUpdateIfStale:
             with pytest.raises(SystemExit) as exc:
                 cli()
         assert exc.value.code == 0
-        assert any("pip" in c and "--force-reinstall" in c for c in calls if isinstance(c, list))
+        assert any("pip" in c and "--reinstall-package" in c for c in calls if isinstance(c, list))
 
     def test_deploy_writes_commit_hash_stamp_on_success(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
