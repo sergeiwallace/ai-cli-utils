@@ -1694,6 +1694,11 @@ Some waits stay outside the policy, each for its own reason:
   retrying the first would only delay the answer.
 - The session watcher's tmux window is created in one call, because a second call would
   open a second watcher.
+- A boot relaunch waits up to `[session_relaunch] network_wait_seconds` for the session's
+  directory and the network probe to come up. It polls the host's own readiness until a
+  deadline rather than calling something that could answer differently when asked again;
+  when the deadline passes, the reason (no directory, or no network) is recorded as why
+  that session was not relaunched.
 - The relaunch hold, final-exit persistence and the ssh reconnect loop have their own
   configured bounds in `[relaunch]`, `[session_relaunch.exit_persistence]` and `[remote]`.
 
