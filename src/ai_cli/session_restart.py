@@ -1003,6 +1003,50 @@ def _compatible(source: str, expected: str) -> bool:
             r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
             text,
         )
+        # Antigravity launches through the bracketed _run_agy function; for non-g engines
+        # map its definition, call sites, and session-type tag back to the legacy g-engine
+        # form so running Claude Code / Pi / Codex supervisors remain certifiable across the
+        # client switch while edits inside _run_agy on an active g supervisor are still caught.
+        if not re.search(r"(?m)^    engine=g$", text):
+            text = re.sub(r"(?ms)^    # BEGIN AGY THREAD[^\n]*\n.*?^    # END AGY THREAD\n", "", text)
+            sandbox_flag = "-s" if '"sandbox": true' in text else "--no-sandbox"
+            text = re.sub(
+                r'(?m)^          _run_agy --prompt-interactive "\$resume_msg"\n',
+                '          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n'
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = re.sub(
+                r"(?m)^          _run_agy\n",
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = text.replace(
+                '[[ "$stype" == "gemini" || "$stype" == "agy" ]] && type_sym="✦ "',
+                '[[ "$stype" == "gemini" ]] && type_sym="✦ "',
+            ).replace(
+                '[[ "$engine" == "g" ]] && _session_type="agy"',
+                '[[ "$engine" == "g" ]] && _session_type="gemini"',
+            )
+            if 'get-latest-gemini-id "$ai_name"' not in text:
+                text = text.replace(
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    '      if [[ "$engine" == "g" ]]; then\n'
+                    '        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)\n'
+                    '        if [[ -n "$new_uuid" ]]; then\n'
+                    '          uuid="$new_uuid"\n'
+                    '          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null\n'
+                    "        fi\n"
+                    "      fi\n"
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    1,
+                )
         # The background-attach branch is the head of the launch if/elif chain, so it
         # cannot be bracketed; dropping it leaves the pre-feature chain.
         text = re.sub(

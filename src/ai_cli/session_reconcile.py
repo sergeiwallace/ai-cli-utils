@@ -26,6 +26,7 @@ def _could_run_session(executable: str | None) -> bool:
     return executable.startswith("python") or executable in {
         "claude",
         "codex",
+        "agy",
         "gemini",
         "pi",
         "node",
@@ -90,7 +91,7 @@ def _process_alive(record: dict) -> bool | None:
                     continue
                 # Interpreters also run unrelated helpers with inherited markers.
                 # Require an agent entry point before interpreting those markers.
-                agents = {"claude", "codex", "gemini", "pi"}
+                agents = {"claude", "codex", "agy", "gemini", "pi"}
                 entry = argv[1].replace("\\", "/") if len(argv) > 1 else ""
                 interpreted_agent = Path(entry).stem in agents or any(
                     package in entry
@@ -111,6 +112,8 @@ def _process_alive(record: dict) -> bool | None:
                 if (
                     environment.get("AI_TMUX_SESSION") == name
                     or environment.get("CLAUDE_CODE_TASK_LIST_ID") == agent_name
+                    or environment.get("AI_SESSION_NAME") == agent_name
+                    or (name.startswith("g-") and environment.get("AI_CLI_SESSION_NAME") == agent_name)
                 ):
                     return True
             except psutil.NoSuchProcess:

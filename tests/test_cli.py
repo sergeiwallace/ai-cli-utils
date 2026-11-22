@@ -517,6 +517,14 @@ class TestCliDispatchBranches:
 
 @pytest.mark.usefixtures("tmux_available")
 class TestCliSessionSetupBranches:
+    @pytest.fixture(autouse=True)
+    def _agy_ready(self, monkeypatch):
+        real_which = shutil.which
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda home=None: None)
+        monkeypatch.setattr(
+            "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
+        )
+
     def test_given_missing_engine_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
         """A missing *engine* is fatal; a missing direnv is not.
 
@@ -598,11 +606,11 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "gemini"
-        assert command[0] == "gemini"
+        assert executable == sys.executable
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
 
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self, tmp_path, monkeypatch):
-        """Gemini must be launched with --no-sandbox unless -s is passed.
+        """Antigravity must be launched without --sandbox unless -s is passed.
 
         ``create_worktree`` is stubbed out: without it this test created a real
         ``.worktrees/session-tst-1`` worktree (and branch) inside the developer's own
@@ -625,8 +633,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "--no-sandbox" in command
-        assert "-s" not in command
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+        assert "--sandbox" not in command
 
     def test_cli_when_sandbox_flag_then_sandbox_true(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -646,8 +654,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "-s" in command
-        assert "--no-sandbox" not in command
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+        assert "--sandbox" in command
 
     def test_given_owned_session_when_sandbox_launch_runs_then_kills_and_recreates(self, tmp_path):
         killed = []
@@ -1148,60 +1156,56 @@ class TestCliOncePath:
                                                     assert "--dangerously-skip-permissions" not in bash_cmd
 
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
-        with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch(
-                                "ai_cli.session.build_session_name",
-                                return_value=("g-session-research", "session-research"),
-                            ):
-                                with patch(
-                                    "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
-                                ):
-                                    with patch(
-                                        "ai_cli.config.get_session_map", return_value={"session-research": "uuid123"}
-                                    ):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
-                                                bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
-                                                assert "uuid123" in bash_cmd
+        real_which = shutil.which
+        with (
+            patch("sys.argv", ["ai", "g", "-o", "research"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.agy_session.subscription_refusal", return_value=None),
+            patch(
+                "shutil.which",
+                side_effect=lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw),
+            ),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
+            patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        bash_cmd = mock_exec.call_args[0][1][-1]
+        assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+        assert "ai_cli.agy_session" in bash_cmd
+        assert "g-session-research.agy.json" in bash_cmd
 
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
-        with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch(
-                                "ai_cli.session.build_session_name",
-                                return_value=("g-session-research", "session-research"),
-                            ):
-                                with patch(
-                                    "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
-                                ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
-                                                bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
-                                                assert "resume load" in bash_cmd
+        real_which = shutil.which
+        with (
+            patch("sys.argv", ["ai", "g", "-o", "research"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.agy_session.subscription_refusal", return_value=None),
+            patch(
+                "shutil.which",
+                side_effect=lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw),
+            ),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
+            patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        bash_cmd = mock_exec.call_args[0][1][-1]
+        assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+        assert "ai_cli.agy_session" in bash_cmd
+        assert "--command agy" in bash_cmd
 
 
 class TestConfigureTmuxForIterm2:
@@ -2152,8 +2156,8 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_no_sandbox_then_explicit_no_sandbox_flag(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session", sandbox=False)
-        assert "--no-sandbox" in script
-        assert "gemini -y --no-sandbox" in script
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--sandbox" not in script
 
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
@@ -3203,6 +3207,14 @@ class TestTunnel:
 
 @pytest.mark.usefixtures("tmux_available")
 class TestLocalProjectChdir:
+    @pytest.fixture(autouse=True)
+    def _agy_ready(self, monkeypatch):
+        real_which = shutil.which
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda home=None: None)
+        monkeypatch.setattr(
+            "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
+        )
+
     def test_when_local_project_flag_then_chdirs_to_project_dir(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproject"
         project_dir.mkdir(parents=True)

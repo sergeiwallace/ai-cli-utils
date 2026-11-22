@@ -414,9 +414,9 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
-            if "claude" not in name and "gemini" not in name and "node" not in name:
+            if not any(tok in name for tok in ("claude", "agy", "codex", "gemini", "pi", "node")):
                 cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                if "claude" not in cmdline and "gemini" not in cmdline:
+                if not any(tok in cmdline for tok in ("claude", "agy", "codex", "gemini")):
                     continue
             if proc.cwd() == target:
                 return True

@@ -25,6 +25,7 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import agy_session as _agy_session
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
 from . import compact_transport as _compact_transport
@@ -1186,6 +1187,10 @@ def _bare_engine_command(
     extra_args: list[str],
     resume: bool = False,
     pi_provider: str = "openai-codex",
+    *,
+    session_id: str | None = None,
+    agy_cmd: str | None = None,
+    sandbox: bool | None = None,
 ) -> list[str]:
     """Build the argv for a bare (no-tmux) engine launch.
 
@@ -1242,12 +1247,21 @@ def _bare_engine_command(
             command += ["resume", "--last"]
         return [*command, *extra_args]
 
-    command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-    if uuid:
-        command += ["-r", uuid]
-    else:
-        command += ["-i", f"/resume load {ai_name}"]
-    return command + extra_args
+    effective_agy_cmd = agy_cmd if agy_cmd is not None else ("agy" if gemini_cmd == "gemini" else gemini_cmd)
+    effective_sandbox = (sandbox_flag == "-s") if sandbox is None else sandbox
+    slot = session_id or f"g-{ai_name}"
+    record = _config.get_xdg_state_home() / "sessions" / f"{slot}.agy.json"
+    return _agy_session.launch_command(
+        effective_agy_cmd,
+        record,
+        target_root,
+        slot,
+        ai_name,
+        fresh=not resume,
+        route="bare",
+        sandbox=effective_sandbox,
+        extra_args=extra_args,
+    )
 
 
 def _is_root() -> bool:
@@ -1267,7 +1281,7 @@ def _is_root() -> bool:
 
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
-    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+    return {"c": "Claude Code", "g": "Antigravity (agy)", "p": "Pi", "cx": "Codex"}[engine]
 
 
 def _launch_mode_label(*, remote: bool, bare: bool) -> str:
@@ -1764,6 +1778,9 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
     fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
     """
     _session_naming.validate_script_metadata(meta, expected_session=expected_session)
+    agy_cmd = meta.get("agy_cmd")
+    if meta["engine"] == "g" and not agy_cmd:
+        agy_cmd = _config.load_config().get("agy", {}).get("command", "agy")
     # Resolve through the session_script module (not the name imported into main) so
     # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
     return _session_script.get_engine_script(
@@ -1781,6 +1798,8 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
         gemini_cmd=meta.get("gemini_cmd", "gemini"),
+        agy_cmd=agy_cmd,
+        agy_args=meta.get("agy_args"),
         pi_provider=meta.get("pi_provider", "openai-codex"),
         launch_log_path=meta.get("launch_log_path") or None,
     )
@@ -2295,6 +2314,10 @@ def _handle_internal(argv: list[str]) -> None:
     action = argv[0]
     if action == "codex-session-confirm":
         from .codex_session import confirm_from_environment
+
+        sys.exit(confirm_from_environment(argv[1:]))
+    if action == "agy-session-confirm":
+        from .agy_session import confirm_from_environment
 
         sys.exit(confirm_from_environment(argv[1:]))
     if action == "codex-hook-contract" and len(argv) == 1:
@@ -5410,6 +5433,7 @@ def _do_session_launch(
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
+    agy_cmd = config.get("agy", {}).get("command") or ("agy" if gemini_cmd == "gemini" else gemini_cmd)
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
@@ -5418,6 +5442,24 @@ def _do_session_launch(
     if engine == "cx" and not shutil.which("codex"):
         reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
+    if engine == "g" and not remote and not dry_run:
+        agy_argv = shlex.split(agy_cmd)
+        if not agy_argv or not shutil.which(agy_argv[0]):
+            reporter.error(
+                "request",
+                f"Antigravity executable {agy_cmd!r} not found on PATH. "
+                "Install agy or set [agy] command in config.toml, then retry.",
+            )
+            sys.exit(1)
+        refusal = _agy_session.subscription_refusal()
+        if refusal:
+            reporter.error("request", refusal)
+            sys.exit(1)
+        try:
+            _agy_session.validate_launch_args([*agy_argv[1:], *extra_args])
+        except _agy_session.IdentityError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
 
     if not name and extra_args:
         name = extra_args[0]
@@ -6271,17 +6313,8 @@ def _do_session_launch(
                     )
                 _sync_phase.outcome("ready")
 
-    # For Gemini, always check the chats directory for the latest session — the
-    # session map may be stale if the user exited and restarted directly via gemini CLI.
+    # Antigravity (engine "g") resolves its confirmed conversation ID inside agy_session.
     uuid = None
-    if engine == "g":
-        d = _config.get_session_map(engine)
-        uuid = d.get(ai_name)
-        latest = _session._find_latest_gemini_uuid(ai_name)
-        if latest and latest != uuid:
-            uuid = latest
-            d[ai_name] = uuid
-            _config.save_session_map(d, engine)
 
     def _register_run_state(*, new_start):
         try:
@@ -6339,6 +6372,9 @@ def _do_session_launch(
                 extra_args,
                 resume=resume,
                 pi_provider=pi_provider,
+                session_id=session_id,
+                agy_cmd=agy_cmd,
+                sandbox=use_sandbox,
             )
         except _transcript_restore.TranscriptRestoreError as exc:
             reporter.error("resume", str(exc))
@@ -6420,6 +6456,9 @@ def _do_session_launch(
                 sandbox_flag,
                 extra_args,
                 pi_provider=pi_provider,
+                session_id=session_id,
+                agy_cmd=agy_cmd,
+                sandbox=use_sandbox,
             )
         elif engine == "c":
             command = ["claude"]
@@ -6427,11 +6466,17 @@ def _do_session_launch(
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
         elif engine == "g":
-            command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-            if uuid:
-                command += ["-r", uuid]
-            else:
-                command += ["-i", f"/resume load {ai_name}"]
+            command = _agy_session.launch_command(
+                agy_cmd,
+                _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json",
+                target_root,
+                session_id,
+                ai_name,
+                fresh=not resume,
+                route="paired-host-tmux" if is_remote else "local-tmux",
+                sandbox=use_sandbox,
+                extra_args=extra_args,
+            )
         elif engine == "p":
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
@@ -6519,6 +6564,8 @@ def _do_session_launch(
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
         gemini_cmd=gemini_cmd,
+        agy_cmd=agy_cmd if engine == "g" else None,
+        agy_args=list(extra_args) if engine == "g" and extra_args else None,
         pi_provider=pi_provider,
         launch_log_path=launch_log_path,
     )
@@ -7762,7 +7809,20 @@ def cmd_c(ctx, **options):
     _dispatch_session("c", ctx, options)
 
 
-@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
+@_cli_group.command(
+    "g",
+    context_settings=SESSION_CONTEXT,
+    help=(
+        "Launch an Antigravity (agy) session.\n\n"
+        "Requires Google account sign-in (`~/.gemini/antigravity-cli/antigravity-oauth-token`) and refuses "
+        "API-billed `modelProvider` settings so launches never fall back to API billing. "
+        "Confirmed sessions bind to their native conversation ID and resume with `--conversation`. "
+        "For a stopped legacy or manual slot with no identity record, owner-approved recovery is available "
+        "through `python -m ai_cli.agy_session prepare RECORD CWD SESSION AI_NAME false local-tmux "
+        "--start-fresh SESSION` (short form: -F SESSION) or `--adopt-conversation UUID SESSION` (short form: "
+        "-A UUID SESSION)."
+    ),
+)
 @_session_options
 def cmd_g(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
@@ -7974,8 +8034,8 @@ def cmd_doctor(dry_run):
     if _direnv_setup.find_envrc(root) is not None and not _direnv_setup.is_bypassed(config):
         agent_env, agent_env_failure = loaded_environment(root, agent_env)
     where = "the project environment's PATH" if not agent_env_failure else f"PATH ({agent_env_failure})"
-    gemini = (shlex.split(config.get("gemini", {}).get("command", "gemini")) or ["gemini"])[0]
-    for agent in ("claude", "codex", gemini, "pi"):
+    agy = (shlex.split(config.get("agy", {}).get("command", "agy")) or ["agy"])[0]
+    for agent in ("claude", "codex", agy, "pi"):
         found = shutil.which(agent, path=agent_env.get("PATH"))
         note = found or f"not found on {where}; a launch of this engine cannot start it"
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if found else 'MISS'}  {agent:<8} {note}")

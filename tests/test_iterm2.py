@@ -464,12 +464,13 @@ class TestGetEngineScriptIterm2Slot:
 
     def test_gemini_engine_when_default_cmd_then_uses_gemini(self):
         script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj")
-        assert "gemini -y" in script
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--command agy" in script
 
     def test_gemini_engine_when_custom_cmd_then_uses_custom_cmd(self):
-        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj", gemini_cmd="npx @google/gemini-cli")
-        assert "npx @google/gemini-cli -y" in script
-        assert "gemini -y" not in script
+        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj", agy_cmd="/opt/bin/agy")
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--command /opt/bin/agy" in script
 
     def test_script_cleanup_session_files_in_exit_trap(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
