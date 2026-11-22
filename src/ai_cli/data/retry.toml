@@ -12,10 +12,12 @@ max_timeout_seconds = 60
 delay_seconds = 1
 max_delay_seconds = 10
 jitter = 0.5
+max_total_seconds = 300
 
 [retry.wake_sidecar]
 timeout_seconds = 5
 max_timeout_seconds = 20
+max_total_seconds = 10
 
 [retry.remote_allocation]
 attempts = 2

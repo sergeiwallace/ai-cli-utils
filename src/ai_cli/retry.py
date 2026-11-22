@@ -1,4 +1,4 @@
-"""One retry policy for every bounded wait: attempts, a per-attempt timeout that grows, and a jittered delay.
+"""One retry policy for every bounded wait: attempts, a growing per-attempt timeout, a jittered delay, a total.
 
 A launch waits on things it does not control: an optional sidecar's unit manager, a name
 registry's remote, an installer. Each used to carry its own fixed budget and gave up on the
@@ -11,7 +11,9 @@ with jitter" pattern from the AWS Architecture Blog. tenacity itself is not a de
 grows the *sleep* between attempts, while these waits also need the *timeout* of each attempt
 to grow, which tenacity leaves to the wrapped function; and its policy is fixed when the
 ``Retrying`` object is built, where this one is read from config.toml on every call. What is
-left is a frozen dataclass and one loop.
+left is a frozen dataclass and one loop. ``max_total_seconds`` is tenacity's ``stop_after_delay``:
+however many attempts the policy allows, the whole wait, delays included, ends inside it, and
+each attempt's timeout is cut to what remains.
 
 Configuration is the ``[retry]`` table of config.toml, read from the file on every call, never
 captured at launch and never taken from an environment variable. ``[retry]`` holds the default
@@ -54,6 +56,7 @@ class RetryPolicy:
     delay_seconds: float
     max_delay_seconds: float
     jitter: float
+    max_total_seconds: float
 
     def timeout_for(self, attempt: int) -> float:
         """Seconds attempt ``attempt`` (1-based) may take: grown by ``growth`` per attempt, capped."""
@@ -77,11 +80,13 @@ class Attempt:
 class RetryExhaustedError(Exception):
     """Every attempt failed transiently; ``last`` is the final cause."""
 
-    def __init__(self, site: str, attempts: int, last: Exception) -> None:
+    def __init__(self, site: str, attempts: int, last: Exception, *, total: float | None = None) -> None:
         self.site = site
         self.attempts = attempts
         self.last = last
-        super().__init__(f"{last} after {attempts} attempt{'s' if attempts != 1 else ''}")
+        self.total = total
+        within = f" within its {total:g} s total" if total is not None else ""
+        super().__init__(f"{last} after {attempts} attempt{'s' if attempts != 1 else ''}{within}")
 
 
 def _positive(value: object) -> bool:
@@ -100,6 +105,7 @@ _VALID: dict[str, Callable[[object], bool]] = {
     "delay_seconds": _non_negative,
     "max_delay_seconds": _non_negative,
     "jitter": lambda value: _non_negative(value) and value <= 1,  # type: ignore[operator]
+    "max_total_seconds": _positive,
 }
 _RULES = {
     "attempts": "a whole number of at least 1",
@@ -179,11 +185,14 @@ def run(
     retried with the next attempt's longer timeout; any other is re-raised at once, because a
     definite answer does not change by asking again. ``on_retry`` hears each retried failure
     with the next attempt's timeout, so the caller can say what it is doing. When the attempts
-    run out, :class:`RetryExhaustedError` carries the count and the last cause.
+    or ``max_total_seconds`` run out, :class:`RetryExhaustedError` carries the count and the
+    last cause, and names the total when that is what stopped it.
     """
     current = policy(site)
+    deadline = time.monotonic() + current.max_total_seconds
     for number in range(1, current.attempts + 1):
-        attempt = Attempt(number, current.attempts, current.timeout_for(number))
+        timeout = min(current.timeout_for(number), deadline - time.monotonic())
+        attempt = Attempt(number, current.attempts, timeout)
         try:
             return call(attempt)
         except Exception as exc:
@@ -191,7 +200,11 @@ def run(
                 raise
             if number == current.attempts:
                 raise RetryExhaustedError(site, number, exc) from exc
+            delay = current.delay_after(number)
+            left = deadline - time.monotonic() - delay
+            if left <= 0:
+                raise RetryExhaustedError(site, number, exc, total=current.max_total_seconds) from exc
             if on_retry is not None:
-                on_retry(attempt, exc, current.timeout_for(number + 1))
-            (sleep or time.sleep)(current.delay_after(number))
+                on_retry(attempt, exc, min(current.timeout_for(number + 1), left))
+            (sleep or time.sleep)(delay)
     raise AssertionError("unreachable: a policy has at least one attempt")
