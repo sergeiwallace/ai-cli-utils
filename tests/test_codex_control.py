@@ -1,6 +1,7 @@
 """A fake client exercises the launch trampoline and its live control bridge."""
 
 import hashlib
+import io
 import json
 import os
 import select
@@ -9,8 +10,10 @@ import sys
 import time
 from pathlib import Path
 
+import portalocker
 import pytest
 
+from ai_cli import codex_control, codex_session
 from ai_cli.codex_control import contract, request
 
 THREAD = "11111111-2222-4333-8444-555555555555"
@@ -106,6 +109,102 @@ def test_given_launched_slot_when_hook_confirms_then_live_bridge_binds_only_that
     # Same-user callers outside the client tree cannot confirm, even with its token.
     assert request(metadata["path"], {"method": "confirm", "token": token}) == {"confirmed": False}
     assert request(metadata["path"], {"method": "confirm", "token": "stale"}) == {"confirmed": False}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Live bridge requires Unix-domain sockets")
+@pytest.mark.parametrize("entry", ["confirm", "confirm_from_environment"])
+@pytest.mark.parametrize("transcript", [None, "rollout.jsonl"])
+@pytest.mark.parametrize("restore_write_fails", [False, True])
+def test_given_nonancestor_hook_when_bridge_refuses_then_confirmation_is_rolled_back(
+    slot, monkeypatch, capsys, entry, transcript, restore_write_fails
+):
+    process, _, record, metadata = slot
+    before = record.read_bytes()
+    original = json.loads(before)
+    token = original["in_flight"]["token"]
+    event = {
+        "hook_event_name": "SessionStart",
+        "session_id": THREAD,
+        "cwd": original["cwd"],
+        "transcript_path": str(record.parent / transcript) if transcript else None,
+    }
+    notify = codex_control.notify
+    lock_held = False
+
+    def fail_write(*args, **kwargs):
+        raise OSError("record writes unavailable")
+
+    def rejecting_notify(path, current_token):
+        nonlocal lock_held
+        assert json.loads(path.read_text())["phase"] == "confirmed"
+        try:
+            with portalocker.Lock(str(path) + ".lock", timeout=0):
+                pass
+        except portalocker.LockException:
+            lock_held = True
+        try:
+            notify(path, current_token)
+        except ValueError:
+            if restore_write_fails:
+                # A rejected confirmation must not need another record write.
+                patch.setattr(codex_session, "_write", fail_write)
+                patch.setattr(Path, "write_bytes", fail_write)
+                patch.setattr(Path, "write_text", fail_write)
+            raise
+
+    with monkeypatch.context() as patch:
+        patch.setattr(codex_control, "notify", rejecting_notify)
+        if entry == "confirm":
+            with pytest.raises(ValueError, match=r"^live control confirmation refused$"):
+                codex_session.confirm(record, token, event)
+        else:
+            patch.setenv(codex_session.SLOT_RECORD_ENV, str(record))
+            patch.setenv(codex_session.LAUNCH_TOKEN_ENV, token)
+            patch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+            assert codex_session.confirm_from_environment([]) == 1
+            assert "launch confirmation refused" in capsys.readouterr().err
+
+    after = json.loads(record.read_text())
+    assert after["phase"] == "unconfirmed"
+    assert after["thread_id"] is None and after["result"] == "unconfirmed"
+    assert after["in_flight"] == original["in_flight"]
+    assert record.read_bytes() == before
+    assert lock_held
+    snapshot = request(metadata["path"], {"method": "get"})
+    assert snapshot["binding"] is None and snapshot["phase"] == "unconfirmed"
+    with pytest.raises(codex_session.IdentityError, match="writer is live"):
+        codex_session.prepare(
+            record,
+            Path(original["cwd"]),
+            original["slot"],
+            fresh=False,
+            route="local-tmux",
+            client_version="0.171.0",
+        )
+    process.communicate("exit\n", timeout=10)
+    target, _, _, next_token = codex_session.prepare(
+        record,
+        Path(original["cwd"]),
+        original["slot"],
+        fresh=False,
+        route="local-tmux",
+        client_version="0.171.0",
+    )
+    assert target == "new" and next_token != token
+    assert "abandoned-unconfirmed" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Live bridge requires Unix-domain sockets")
+def test_given_bound_bridge_when_record_is_rolled_back_then_get_discards_binding(slot):
+    process, reply, record, metadata = slot
+    before = record.read_bytes()
+    process.stdin.write("confirm\n")
+    process.stdin.flush()
+    assert reply() == "confirmed"
+    assert request(metadata["path"], {"method": "get"})["binding"]["thread_id"] == THREAD
+    record.write_bytes(before)
+    snapshot = request(metadata["path"], {"method": "get"})
+    assert snapshot["binding"] is None and snapshot["phase"] == "unconfirmed"
 
 
 def test_given_control_contract_when_serialized_then_matches_reciprocal_fixture():
