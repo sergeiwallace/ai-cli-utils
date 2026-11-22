@@ -98,8 +98,10 @@ failed resume, a restart policy of `never`, `[session] auto_restart = false`, an
 failed remote launch alike. No shell is left inside the tmux pane. A failed remote
 launch ends the remote session too; fix the login on that host, then run `ai c -R`
 again. When the supervisor cannot end the session itself (it died, or stopped before
-it owned the session), tmux ends it for any attached terminal; a dead pane is kept only
-while nothing is attached, and attaching to it ends it.
+it owned the session), tmux ends it for any attached terminal, first sending a terminal that
+`ai c` switched in from another tmux session back there. Only the supervisor's own pane counts:
+its dead pane is kept only while nothing is attached, and attaching to it ends it, while a pane
+you split off closes on its own, as tmux panes do, and leaves the session running.
 
 When `ai c` runs inside a tmux pane, it switches that terminal's tmux client to the
 new session instead of refusing to nest a second client, and when the new session

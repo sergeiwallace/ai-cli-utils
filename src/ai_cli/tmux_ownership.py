@@ -6,6 +6,7 @@ import contextlib
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -148,30 +149,73 @@ def _tmux(args: Sequence[str], tmux_command: Sequence[str] | None) -> subprocess
         return None
 
 
-def configure_session_end(session_id: str, *, tmux_command: Sequence[str] | None = None) -> list[str]:
-    """Make tmux end session ``session_id`` for whoever is looking at it once its pane is dead.
+_PANE_ID_RE = re.compile(r"^%\d+$")
+#: Characters a path can carry through both tmux quoting layers of a hook command unchanged.
+_HOOK_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./:+@~-]+$")
 
-    The session's supervisor ends its own tmux session on every ending it reaches. These
-    settings end it when the supervisor cannot: it exited before it owned the session, or
-    it was killed. ``remain-on-exit`` keeps a dead pane for diagnosis only while no client
-    is attached. The ``pane-died`` hook ends the session if one is, and ``client-attached``
-    ends it when one attaches to a dead pane later. A destroyed session detaches its clients
-    (``detach-on-destroy on``) whatever the tmux configuration says, so a client is never
-    moved into an unrelated session; one switched in from another session is sent back by
-    :func:`return_switched_client` first. Hooks need tmux 2.2 or later, and the delayed end on
-    attach tmux 3.2 (``run-shell -d -C``).
 
-    Returns the names of the settings tmux refused, empty when every one applied.
+def _return_client_command(session_id: str) -> str | None:
+    """The shell command a hook runs to send a switched-in client back, or None if unsafe to embed.
+
+    The same step the supervisor's teardown runs (``ai internal return-tmux-client``), by
+    this interpreter's own path so a hook does not depend on the tmux server's ``PATH``.
+    tmux gives a ``run-shell`` job ``TMUX``, so the step reaches the same server.
+    """
+    interpreter = sys.executable.replace("\\", "/")
+    if not _HOOK_SAFE_PATH_RE.fullmatch(interpreter):
+        return None
+    return f"{interpreter} -m ai_cli.main internal return-tmux-client '{session_id}'"
+
+
+def configure_session_end(
+    session_id: str, pane_id: str | None, *, tmux_command: Sequence[str] | None = None
+) -> list[str]:
+    """Make tmux end session ``session_id`` for whoever is looking at it once pane ``pane_id`` is dead.
+
+    ``pane_id`` is the session's own supervisor pane, captured at creation. The supervisor
+    ends its tmux session on every ending it reaches; these settings end it when the
+    supervisor cannot (it exited before it owned the session, or it was killed). Every one
+    is scoped to that pane, so a pane the user splits off closes on its own, as tmux panes
+    do, and never takes the session with it:
+
+    - ``remain-on-exit`` is set on that pane only (``set-option -p``, tmux 3.0), keeping it
+      for diagnosis while no client is attached. A tmux without pane options gets the
+      window option instead, which keeps a dead split too, but the hooks below still act on
+      the supervisor pane alone.
+    - ``pane-died`` acts only when that pane is the one dead and a client is attached: it
+      first sends a client ``ai c`` switched in from another session back there (the step
+      the teardown runs, :func:`return_switched_client`), then ends the session.
+    - ``client-attached`` ends the session a second after a client attaches to it with that
+      pane dead (``run-shell -d -C``, tmux 3.2): the delay lets the new client read its
+      terminal's replies to the queries it sends on attach, which arrive at the shell as
+      typed text if it ends at once.
+    - ``detach-on-destroy on`` detaches every other client of a destroyed session whatever
+      the tmux configuration says, so none is moved into an unrelated session.
+
+    Hooks need tmux 2.2 or later. With no pane id (tmux would not name the pane) the hooks
+    cannot be scoped, so they are not set, and the window keeps ``remain-on-exit`` as before.
+    Returns the names of the settings tmux refused or that could not be set, empty when every
+    one applied.
     """
     if not _SESSION_ID_RE.fullmatch(session_id):
         return ["session id"]
+    scoped = pane_id is not None and _PANE_ID_RE.fullmatch(pane_id) is not None
     end = f"kill-session -t '{session_id}'"
+    returning = _return_client_command(session_id)
+    on_death = f'run-shell \\"{returning}\\" ; {end}' if returning else end
+    supervisor_dead = f"if-shell -F -t '{pane_id}'"
     settings = (
-        ("remain-on-exit", ("set-window-option", "-t", session_id, "remain-on-exit", "on")),
         ("detach-on-destroy", ("set-option", "-t", session_id, "detach-on-destroy", "on")),
-        ("pane-died", ("set-hook", "-t", session_id, "pane-died", f"if-shell -F '#{{session_attached}}' \"{end}\"")),
-        # A second's delay lets the new client read its terminal's replies to the queries it
-        # sends on attach; ended at once, those replies arrive at the shell as typed text.
+        (
+            "pane-died",
+            (
+                "set-hook",
+                "-t",
+                session_id,
+                "pane-died",
+                f"{supervisor_dead} '#{{&&:#{{session_attached}},#{{pane_dead}}}}' \"{on_death}\"",
+            ),
+        ),
         (
             "client-attached",
             (
@@ -179,12 +223,20 @@ def configure_session_end(session_id: str, *, tmux_command: Sequence[str] | None
                 "-t",
                 session_id,
                 "client-attached",
-                f'if-shell -F \'#{{pane_dead}}\' "run-shell -d 1 -C \\"{end}\\""',
+                f'{supervisor_dead} \'#{{pane_dead}}\' "run-shell -d 1 -C \\"{end}\\""',
             ),
         ),
     )
     refused = []
+    pane_option = _tmux(("set-option", "-p", "-t", pane_id, "remain-on-exit", "on"), tmux_command) if scoped else None
+    if pane_option is None or pane_option.returncode != 0:
+        window_option = _tmux(("set-window-option", "-t", session_id, "remain-on-exit", "on"), tmux_command)
+        if window_option is None or window_option.returncode != 0:
+            refused.append("remain-on-exit")
     for name, args in settings:
+        if name != "detach-on-destroy" and not scoped:
+            refused.append(name)
+            continue
         result = _tmux(args, tmux_command)
         if result is None or result.returncode != 0:
             refused.append(name)
@@ -202,6 +254,13 @@ def session_id_of(target: str, *, tmux_command: Sequence[str] | None = None) -> 
     result = _tmux(("display-message", "-p", "-t", target, "#{session_id}"), tmux_command)
     value = result.stdout.strip() if result is not None and result.returncode == 0 else ""
     return value if _SESSION_ID_RE.fullmatch(value) else None
+
+
+def pane_id_of(target: str, *, tmux_command: Sequence[str] | None = None) -> str | None:
+    """The id (``%N``) of the active pane of ``target``, or None: a new session's only pane."""
+    result = _tmux(("display-message", "-p", "-t", target, "#{pane_id}"), tmux_command)
+    value = result.stdout.strip() if result is not None and result.returncode == 0 else ""
+    return value if _PANE_ID_RE.fullmatch(value) else None
 
 
 def record_return(

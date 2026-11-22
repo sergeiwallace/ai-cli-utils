@@ -6848,7 +6848,9 @@ def _do_session_launch(
         # How the session ends when its supervisor cannot end it (tmux_ownership.configure_session_end).
         # remain-on-exit is required, as it always was; the rest backs up the supervisor's own
         # teardown, so a tmux that refuses it (one older than 2.2) is reported and the launch goes on.
-        _end_refused = _tmux_ownership.configure_session_end(identity.session_id)
+        # Captured before anything else can split it: the session's only pane is its supervisor's.
+        _supervisor_pane = _tmux_ownership.pane_id_of(f"{identity.session_id}:")
+        _end_refused = _tmux_ownership.configure_session_end(identity.session_id, _supervisor_pane)
         tmux_options = (
             tmux_binary.argv("set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode),
             tmux_binary.argv("set-option", "-s", "set-clipboard", "on"),

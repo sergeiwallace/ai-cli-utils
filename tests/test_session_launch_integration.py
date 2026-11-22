@@ -190,7 +190,8 @@ def patched_subprocess(tmux_server, tmp_path):
                     check=False,
                 )
 
-            if sub == "set-window-option":
+            if "remain-on-exit" in cmd:
+                # The first configuration step; either form of it (pane or window option).
                 after_configuration_failure = getattr(server, "_after_configuration_failure", None)
                 if after_configuration_failure is not None:
                     return _FAIL_AFTER_RETURN_CODE_OBSERVED()
@@ -1150,14 +1151,16 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
     server = patched_subprocess
     original_id = None
     original_name = None
+    original_pane = None
     replacement_id = None
     post_capture_command_index = None
 
     def replace_created_session_name() -> None:
-        nonlocal original_id, original_name, replacement_id, post_capture_command_index
+        nonlocal original_id, original_name, original_pane, replacement_id, post_capture_command_index
         original = next(iter(server.sessions))
         original_id = original.id
         original_name = original.name
+        original_pane = original.panes[0].id
         assert server.cmd("rename-session", "-t", original_id, f"{original_name}-renamed").returncode == 0
         replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         replacement_id = replacement.id
@@ -1191,8 +1194,10 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         for command in server._tmux_commands[post_capture_command_index:]
         if "-t" in command
     ]
+    # Every target is the captured session or its own pane, by opaque id, never the name.
     assert post_capture_targets == [
-        ("set-window-option", original_id),
+        ("display-message", f"{original_id}:"),
+        ("set-option", original_pane),
         ("set-option", original_id),
         ("set-hook", original_id),
         ("set-hook", original_id),
