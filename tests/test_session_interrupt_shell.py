@@ -125,7 +125,7 @@ def pane_session(request, tmp_path, monkeypatch):
     class Pane:
         name = "c-session-1"
 
-        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_clean=False):
+        def start(self, *, engine="c", remote=False, mode="signal", probe=False, caller=False, quick_clean=False):
             if engine == "cx":
                 # Give prepare real, synthetic confirmation and persistence evidence.
                 # Version queries must not count as an interactive engine launch.
@@ -160,9 +160,10 @@ def pane_session(request, tmp_path, monkeypatch):
                     f'else exec {shlex.quote(shutil.which("date"))} "$@"; fi\n'
                 )
                 date.chmod(0o755)
-            state.register(self.name, recipe={"argv": ["ai", engine, "1"], "cwd": str(tmp_path)}, host="host-a")
+            state.register(
+                self.name, recipe={"argv": ["ai", engine, "1"], "cwd": str(tmp_path)}, host="host-a", probe=probe
+            )
             generation = state.begin(self.name)
-            self.set_policy(policy)
             script = tmp_path / "session.sh"
             script.write_text(
                 get_engine_script(
@@ -291,9 +292,11 @@ def pane_session(request, tmp_path, monkeypatch):
             assert "KeyboardInterrupt" not in self.output.read_text()
             assert "Traceback" not in self.output.read_text()
 
-        def set_policy(self, policy):
+        def set_policy(self, policy, *, by=None):
             def change(doc):
                 doc["sessions"][0]["relaunch"] = policy
+                if by is not None:
+                    doc["sessions"][0]["relaunch_set_by"] = by
                 return True
 
             registry._mutate(change)
@@ -510,6 +513,27 @@ def test_given_policy_changed_to_never_when_engine_exits_then_same_pane_returns_
     pane_session.exit_agent("1")
     pane_session.assert_shell()
     assert pane_session.count() == 1
+
+
+def test_given_a_probe_when_agent_exits_cleanly_then_wrapper_restarts_it(pane_session):
+    # A probe is never relaunched at boot, but its default policy says nothing about an exit.
+    pane_session.start(probe=True)
+    assert registry.load_registry()["sessions"][0]["relaunch"] == "never"
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+
+
+def test_given_a_probe_its_owner_set_to_never_when_agent_exits_then_same_pane_returns_to_shell_naming_why(
+    pane_session,
+):
+    pane_session.start(probe=True)
+    pane_session.set_policy("never", by="owner")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    pane_session.assert_shell()
+    assert pane_session.count() == 1
+    assert "not restarting: relaunch policy never" in pane_session.capture()
 
 
 @pytest.mark.parametrize("remote", [False, True])

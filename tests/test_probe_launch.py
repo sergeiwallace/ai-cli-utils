@@ -292,6 +292,33 @@ def test_given_a_probe_launch_when_dry_run_then_the_plan_names_the_probe_and_wri
     assert env.canonical_paths() == [] and env.session_rows() == []
 
 
+def test_given_a_probe_launch_when_dry_run_then_the_plan_names_its_worktree_outside_the_repository(env):
+    from ai_cli.session import probe_worktree_base
+
+    code, out, err = run_cli([*LAUNCH, "-t", "-d"])
+
+    assert code == 0, err
+    assert f"worktree   {probe_worktree_base(env.repo) / f'{STEM}-probe-1'}" in out
+    assert f"branch     probe-{STEM}-probe-1" in out
+    assert str(env.repo / ".worktrees") not in out
+
+
+def test_given_an_exited_probe_when_retired_by_name_then_its_worktree_is_removed_and_its_tip_anchored(env):
+    code, _out, err = run_cli([*LAUNCH, "-t"])
+    assert code == 0, err
+    worktree = env.started[0][0]
+    branch = f"probe-{STEM}-probe-1"
+    tip = git(env.repo, "rev-parse", f"refs/heads/{branch}").strip()
+
+    code, out, err = run_cli(["ai", "retire-session", f"{STEM}-probe-1", "-r", str(env.repo), "-y"])
+
+    assert code == 0, out + err
+    assert not worktree.exists()
+    assert worktree.resolve().as_posix() not in git(env.repo, "worktree", "list", "--porcelain").replace("\\", "/")
+    assert git(env.repo, "rev-parse", f"refs/preserved/retire-session/{branch}").strip() == tip
+    assert env.session_rows() == []
+
+
 @pytest.mark.parametrize("flags", [[], ["-t"]], ids=["ordinary", "probe"])
 def test_given_a_user_supplied_probe_segment_when_launched_then_it_is_refused(env, flags):
     code, _out, err = run_cli([*LAUNCH, *flags, "probe-1"])

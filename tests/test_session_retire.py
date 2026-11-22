@@ -383,3 +383,36 @@ def test_given_its_tmux_session_still_exists_when_retiring_then_its_session_row_
     _session_rows(f"c-{NAME}")
     _refused(slot, "-y", tmux=[f"c-{NAME}"])
     assert _session_row_names() == [f"c-{NAME}"]
+
+
+def _session_row_at(name: str, cwd: Path) -> None:
+    path = session_registry.registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "id": f"id-{name}",
+        "kind": "local",
+        "name": name,
+        "run_state": "exited",
+        "cwd": str(cwd),
+        "boot_recipe": {"session_name": name, "cwd": str(cwd)},
+    }
+    path.write_text(json.dumps({"schema": 2, "machine": "box", "sessions": [row]}), encoding="utf-8")
+
+
+def test_given_a_record_naming_the_repository_root_when_retiring_a_name_with_no_slot_then_it_is_refused(slot):
+    # A --no-worktree session records the directory it started in; that is never a slot to remove.
+    _session_row_at("c-myrepo-9", slot["repo"])
+    before = _everything(slot)
+    code, out, err = run_cli(["ai", "retire-session", "myrepo-9", "-r", str(slot["repo"]), "-y"])
+    assert code == 1, out + err
+    assert "is not a registered worktree" in err
+    assert _everything(slot) == before
+
+
+def test_given_a_record_naming_another_worktree_than_the_slot_when_retiring_then_it_is_refused_naming_both(slot):
+    other = slot["repo"].parent / "elsewhere"
+    _git("worktree", "add", "-q", "--no-track", str(other), "-b", "probe-elsewhere", "origin/main", cwd=slot["repo"])
+    _session_row_at(f"c-{NAME}", other.resolve())
+    err = _refused(slot, "-y")
+    assert str(slot["wt"]) in err and str(other.resolve()) in err
+    assert other.is_dir()
