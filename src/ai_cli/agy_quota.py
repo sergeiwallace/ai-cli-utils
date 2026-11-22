@@ -29,23 +29,24 @@ from pathlib import Path
 from typing import Any
 
 from . import output as _out
+from . import quota as _quota
 from .output import Untagged
+
+_RESET = _quota._STATUSLINE_RESET
+_DIM = _quota._STATUSLINE_DIM
+_BOLD = _quota._STATUSLINE_BOLD
+_GREEN = _quota._STATUSLINE_GREEN
+_YELLOW = _quota._STATUSLINE_YELLOW
+_RED = _quota._STATUSLINE_RED
+_CYAN = _quota._STATUSLINE_CYAN
+_MAGENTA = _quota._STATUSLINE_MAGENTA
+_GOOGLE_BLUE = _quota._STATUSLINE_GOOGLE_BLUE
 
 _AGY_QUOTA_STATE_FILE_DEFAULT = "~/.local/state/ai-cli/agy-quota.json"
 _AGY_QUOTA_MAX_AGE_SECONDS_DEFAULT = 1800
 _AGY_PUBLISH_THROTTLE_SECONDS = 60
 _FIVE_HOUR_SECONDS = 5 * 60 * 60
 _WEEKLY_SECONDS = 7 * 24 * 60 * 60
-
-_RESET = "\033[0m"
-_DIM = "\033[2m"
-_BOLD = "\033[1m"
-_GREEN = "\033[32m"
-_YELLOW = "\033[33m"
-_RED = "\033[31m"
-_CYAN = "\033[36m"
-_MAGENTA = "\033[35m"
-_GOOGLE_BLUE = "\033[1;38;2;66;133;244m"
 
 
 def agy_quota_settings() -> tuple[Path, float]:
