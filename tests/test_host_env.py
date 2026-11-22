@@ -293,3 +293,51 @@ def test_given_a_login_shell_whose_child_holds_its_output_when_the_probe_times_o
     assert child_pid is not None, "the login shell never started its child"
     assert completed.stdout == "('inherited', '')\n", completed.stderr
     assert _wait_until(lambda: not _alive(child_pid), 5), "the login shell's child outlived the timed-out probe"
+
+
+_LEAVES_ITS_GROUP = (
+    'exec "' + sys.executable + '" -c "import os, sys, time; os.setpgid(0, 0); '
+    "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)\" PID_FILE"
+)
+
+
+def test_given_a_login_shell_that_leaves_the_probe_group_when_the_caller_is_killed_then_it_does_not_survive(
+    stalled_login_shell,
+):
+    configure, stalled_pid = stalled_login_shell
+    env = configure(_LEAVES_ITS_GROUP)
+    caller = subprocess.Popen([sys.executable, "-c", _PROBE_CALLER, "60"], env=env, stdout=subprocess.DEVNULL)
+    try:
+        shell_pid = stalled_pid()
+        assert shell_pid is not None, "the login shell never started"
+        assert os.getpgid(shell_pid) == shell_pid, "the stand-in did not leave the probe's process group"
+        caller.kill()
+        caller.wait(timeout=10)
+        assert _wait_until(lambda: not _alive(shell_pid), 5), (
+            "a login shell in its own group outlived its killed caller"
+        )
+    finally:
+        if caller.poll() is None:
+            caller.kill()
+            caller.wait()
+
+
+def test_given_a_login_shell_that_leaves_the_probe_group_when_the_probe_times_out_then_it_is_killed(
+    stalled_login_shell,
+):
+    configure, stalled_pid = stalled_login_shell
+    env = configure(_LEAVES_ITS_GROUP)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _PROBE_CALLER, "5"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        shell_pid = stalled_pid(seconds=0)
+    assert shell_pid is not None, "the login shell never started"
+    assert completed.stdout == "('inherited', '')\n", completed.stderr
+    assert _wait_until(lambda: not _alive(shell_pid), 5), "a login shell in its own group outlived the timed-out probe"
