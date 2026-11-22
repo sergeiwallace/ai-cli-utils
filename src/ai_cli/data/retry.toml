@@ -22,6 +22,10 @@ attempts = 2
 timeout_seconds = 60
 max_timeout_seconds = 120
 
+[retry.client_fetch]
+timeout_seconds = 20
+max_timeout_seconds = 60
+
 [retry.registry_fetch]
 attempts = 2
 timeout_seconds = 60

@@ -1629,6 +1629,10 @@ attempts = 2
 timeout_seconds = 60
 max_timeout_seconds = 120
 
+[retry.client_fetch]          # fetching this machine's own checkout before `-R`
+timeout_seconds = 20
+max_timeout_seconds = 60
+
 [retry.registry_fetch]        # every fetch of a shared name registry
 attempts = 2
 timeout_seconds = 60
