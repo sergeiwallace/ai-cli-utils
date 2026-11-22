@@ -115,6 +115,28 @@ correcting the lifecycle expectation, this command returned `1 passed in 0.26s`:
 uv run --no-sync pytest -n 0 tests/test_session_lifecycle_script.py::test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written
 ```
 
+### Remote dial regression assertion
+
+The registry test compared two independent SSH launches byte for byte when
+checking that tracking does not alter their arguments. Each launch already
+allocated a diagnostic UUID for mosh. Commit `d52505c9` also put that path in
+the SSH command, so the comparison failed on the UUID even with identical
+tracking behavior. The later client stderr relay did not introduce the path.
+
+Keep per-launch paths unique so concurrent launches cannot share diagnostics.
+The test now requires distinct commands, normalizes exactly one UUID in each
+remote diagnostic path, and compares every remaining argument unchanged.
+Missing diagnostics or changes to SSH options, destinations, path structure,
+or remote commands still fail. This contained test correction needs no shared
+abstraction or public API change.
+
+After both assertion corrections, the original two-test reproduction returned
+`2 passed in 2.25s`:
+
+```sh
+uv run --no-sync pytest -n 0 tests/test_session_lifecycle_script.py::test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written tests/test_session_registry.py::test_remote_dial_argv_is_unchanged_by_tracking
+```
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->

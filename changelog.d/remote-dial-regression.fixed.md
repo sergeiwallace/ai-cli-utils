@@ -1,0 +1,1 @@
+- Preserve unique launch diagnostics while checking that session tracking leaves remote connection arguments unchanged.
