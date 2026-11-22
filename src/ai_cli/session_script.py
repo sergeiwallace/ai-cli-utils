@@ -471,6 +471,20 @@ def get_engine_script(
         # the generation token below needs one: run this script's own snippets on the
         # launcher's interpreter.
         _windows_prelude = f'python3() {{ {shlex.quote(sys.executable.replace(chr(92), "/"))} "$@"; }}\n'
+        # direnv is a native program, so `direnv export bash` hands this MSYS2 shell
+        # PATH in its Windows spelling (`C:\...;C:\...`), and after the eval the shell
+        # finds no command at all. Every export the script evaluates ends by putting
+        # PATH back in the shell's own spelling, through a cygpath named by the path it
+        # had before the eval, since the Windows spelling cannot find it.
+        _windows_prelude += (
+            "direnv() {\n"
+            '  if [[ "${1:-} ${2:-}" != "export bash" ]]; then command direnv "$@"; return; fi\n'
+            '  local _ai_cygpath=""\n'
+            "  _ai_cygpath=$(command -v cygpath) || _ai_cygpath=/usr/bin/cygpath\n"
+            '  command direnv "$@" || return\n'
+            '  printf \'[[ "$PATH" == *";"* ]] && PATH=$(%q -u -p "$PATH")\\n\' "$_ai_cygpath"\n'
+            "}\n"
+        )
         _signal_model_windows = (
             '        _supervisor_signal_model_reason="native Windows programs have no POSIX process groups"\n'
             "        return 1\n"
