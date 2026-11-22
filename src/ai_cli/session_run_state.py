@@ -12,7 +12,7 @@ from pathlib import Path
 
 import portalocker
 
-from . import config
+from . import config, session_naming
 from . import session_registry as registry
 
 LOGGER = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def boot_recipe_problem(record: dict) -> str | None:
         return f"session_name {name!r} does not start with the engine prefix {engine + '-'!r}"
     if not host:
         return "owning_host is missing"
-    if host != record.get("owning_host"):
+    if not session_naming.machine_identity(host).matches(record.get("owning_host")):
         return f"owning_host {host!r} differs from the record's owning_host {record.get('owning_host')!r}"
     if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return f"cwd {cwd!r} is not an absolute path"
@@ -171,7 +171,7 @@ def boot_veto(
     """Return the first winning boot veto; every policy obeys the same safety order."""
     if not cfg["on_boot"]:
         return "session_relaunch.on_boot is off"
-    if record.get("kind") != "local" or record.get("owning_host") != host:
+    if record.get("kind") != "local" or not session_naming.machine_identity(host).matches(record.get("owning_host")):
         return "foreign or remote session"
     if tombstone_path(record["name"], host).exists():
         return "deny-boot safety file exists"
@@ -305,13 +305,14 @@ def begin(
     def change(doc):
         if recovery_recipe is not None:
             host = recovery_recipe["owning_host"]
+            here = session_naming.machine_identity(host)
             matches = [r for r in doc["sessions"] if r.get("kind") == "local" and r.get("name") == name]
             # Existing recipes retain the normal begin contract; ownership checks
             # constrain reconstruction, never a re-labeling of registered sessions.
             if (
                 matches
                 and not matches[0].get("boot_recipe")
-                and any(r.get("owning_host", host) != host for r in matches)
+                and any(not here.matches(r.get("owning_host", host)) for r in matches)
             ):
                 raise ValueError("session belongs to another host; recovery refused")
             if not matches:
@@ -483,7 +484,11 @@ def request_manual_exit(name: str, *, host: str, generation: str, targets: dict)
 
     def change(doc):
         record = _find(doc, name)
-        if not generation or record.get("generation") != generation or record.get("owning_host") != host:
+        if (
+            not generation
+            or record.get("generation") != generation
+            or not session_naming.machine_identity(host).matches(record.get("owning_host"))
+        ):
             raise ValueError("session host or generation mismatch")
         previous = exit_teardown(record)
         if previous.get("generation") == generation:

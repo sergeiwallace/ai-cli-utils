@@ -11,6 +11,7 @@ from pathlib import Path
 
 import psutil
 
+from . import session_naming
 from . import session_registry as registry
 from . import session_run_state as state
 
@@ -149,7 +150,7 @@ def liveness_blocker(record: dict) -> str | None:
         pass
     host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
     boot = registry.current_boot_id()
-    if record.get("owning_host", host) != host:
+    if not session_naming.machine_identity(host).matches(record.get("owning_host", host)):
         return f"liveness is unprovable on this host: the session belongs to host {record['owning_host']}"
     unanswered = [probe for probe, alive in (("tmux", tmux), ("process table", process)) if alive is None]
     if unanswered:
@@ -173,12 +174,13 @@ def reconcile(*, names: set[str] | None = None) -> None:
         if not boot:
             return
         host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
+        here = session_naming.machine_identity(host)
         settled = []
         candidates = []
         for record in registry.load_registry()["sessions"]:
             if (
                 record.get("kind") != "local"
-                or record.get("owning_host", host) != host
+                or not here.matches(record.get("owning_host", host))
                 or record.get("boot_id") != boot
                 or (names is not None and record.get("name") not in names)
                 or state.run_state(record) not in {"running", "unknown"}

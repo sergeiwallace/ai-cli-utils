@@ -44,7 +44,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import portalocker
 
-from . import __version__, name_list
+from . import __version__, name_list, session_naming
 from . import config as _config
 from .git_repair import _GIT_TARGETING_VARS
 
@@ -463,9 +463,8 @@ class Snapshot:
         return f"{row.get('title') or 'a spare'}@{row.get('machine')}"
 
     def rows_of(self, machine: str, kind: str | None = None) -> list[dict]:
-        return [
-            row for row in self.rows.values() if row.get("machine") == machine and (kind is None or row["kind"] == kind)
-        ]
+        here = session_naming.machine_identity(machine)
+        return [row for row in self.rows.values() if here.holds(row) and (kind is None or row["kind"] == kind)]
 
 
 def parse_tree(files: dict[str, bytes], blobs: dict[str, str], tip: str | None, *, fetched: bool = True) -> Snapshot:
@@ -1001,7 +1000,9 @@ def rejecting_scope(snapshot: Snapshot, name: str, slot: Slot, session: str | No
     for (kind, value), entry in sorted(snapshot.verdicts_for(name).items()):
         if entry.get("verdict") != "rejected":
             continue
-        if (kind == "repo" and value == slot.repo) or (kind == "host" and value == slot.machine):
+        if (kind == "repo" and value == slot.repo) or (
+            kind == "host" and session_naming.machine_identity(slot.machine).matches(value)
+        ):
             return f"{kind} {value}"
         if kind == "session" and value in sessions:
             return f"session {value}"
@@ -1095,9 +1096,10 @@ def _spare_writes(
 
     policy = snapshot.policy
     approved = snapshot.approved()
+    here = session_naming.machine_identity(slot.machine)
     host_rejected = frozenset(
         held for (held, kind, value), row in (snapshot.verdicts or {}).items()
-        if kind == "host" and value == slot.machine and row.get("verdict") == "rejected"
+        if kind == "host" and here.matches(value) and row.get("verdict") == "rejected"
     )  # fmt: skip
     shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
     writes: dict[str, bytes | None] = {}
@@ -1236,7 +1238,12 @@ def check_hand_chosen(
 
 def _is_own_spare(snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict]) -> bool:
     row = snapshot.rows.get(name)
-    return row is not None and row["kind"] == "spare" and row.get("machine") == slot.machine and name not in spool
+    return (
+        row is not None
+        and row["kind"] == "spare"
+        and session_naming.machine_identity(slot.machine).holds(row)
+        and name not in spool
+    )
 
 
 def _take_own_spare(
@@ -1687,6 +1694,7 @@ def publish_spool(registry: Registry, machine: str) -> list[str]:
     writer could have caused is left in the spool and reported, never overwritten.
     """
     published: list[str] = []
+    here = session_naming.machine_identity(machine)
     for token, entry in read_spool().items():
         activation = {key: value for key, value in entry.items() if key != "op"}
 
@@ -1694,7 +1702,7 @@ def publish_spool(registry: Registry, machine: str) -> list[str]:
             row = snapshot.rows.get(token)
             if row == activation:
                 return None
-            if row is None or row["kind"] != "spare" or row["machine"] != machine:
+            if row is None or row["kind"] != "spare" or not here.holds(row):
                 raise WriteRefusedError(
                     f"the spool activates {token}, but the registry's row for it is no longer this machine's spare"
                 )
@@ -2003,9 +2011,10 @@ def reconcile(
             if recover is not None:
                 report.recovered = recover()
     tested = registry.snapshot()
+    here = session_naming.machine_identity(machine)
     candidates: dict[str, str] = {}
     for token, row in tested.rows.items():
-        if row.get("machine") != machine or row["kind"] == "spare":
+        if not here.holds(row) or row["kind"] == "spare":
             continue
         if title is not None and row.get("title") != title:
             continue
@@ -2052,7 +2061,7 @@ def reconcile(
                 if (
                     row is not None
                     and tip.blobs.get(token) == blob
-                    and row.get("machine") == machine
+                    and here.holds(row)
                     and row.get("state") != "migration-incomplete"
                     and not _renaming(tip, row)
                 ):
@@ -2066,7 +2075,7 @@ def reconcile(
                     and row["kind"] == "spare"
                     and row.get("state") != QUARANTINED
                     and tip.blobs.get(token) == blob
-                    and row.get("machine") == machine
+                    and here.holds(row)
                     and token not in current_spool
                     and _over_limits(token, policy)
                 ):
@@ -2115,7 +2124,7 @@ def _release_spare(registry: Registry, name: str, machine: str) -> None:
             if (
                 current is None
                 or current.get("kind") != "spare"
-                or current.get("machine") != machine
+                or not session_naming.machine_identity(machine).holds(current)
                 or tip.blobs.get(name) != blob
             ):
                 raise WriteRefusedError(f"the row for {name} changed since it was tested; nothing was released")
@@ -2132,7 +2141,7 @@ def release_name(
     row = snapshot.rows.get(name)
     if row is None:
         raise WriteRefusedError(f"no session holds {name}")
-    if row.get("machine") != machine:
+    if not session_naming.machine_identity(machine).holds(row):
         raise WriteRefusedError(
             f"{name} is held by {snapshot.holder(name)}; only {row.get('machine')} can test its worktree and transcript"
         )
@@ -2328,7 +2337,8 @@ def complete_migration(registry: Registry, old_title: str, machine: str) -> bool
             raise WriteRefusedError(f"no rename of {old_title} is recorded")
         if record.get("status") == "complete":
             return None
-        if record.get("machine") != machine:
+        here = session_naming.machine_identity(machine)
+        if not here.holds(record):
             raise WriteRefusedError(f"the rename of {old_title} belongs to {record.get('machine')}")
         new_token = str(record["new_title"]).rsplit("-", 1)[-1]
         row = snapshot.rows.get(new_token)
@@ -2340,7 +2350,7 @@ def complete_migration(registry: Registry, old_title: str, machine: str) -> bool
         }
         old_token = old_title.rsplit("-", 1)[-1]
         old_row = snapshot.rows.get(old_token)
-        if old_row is not None and old_row.get("title") == old_title and old_row.get("machine") == machine:
+        if old_row is not None and old_row.get("title") == old_title and here.holds(old_row):
             writes[row_path(old_token)] = None
         return Change(writes, f"session-names: complete the rename of {old_title} to {record['new_title']}")
 
@@ -2352,7 +2362,8 @@ def release_failed_migration(registry: Registry, old_title: str, machine: str) -
 
     def build(snapshot: Snapshot) -> Change:
         record = snapshot.migrations.get(old_title)
-        if record is None or record.get("status") != "intent" or record.get("machine") != machine:
+        here = session_naming.machine_identity(machine)
+        if record is None or record.get("status") != "intent" or not here.holds(record):
             raise WriteRefusedError(f"the intent record for {old_title} is not as this migration wrote it")
         new_token = str(record["new_title"]).rsplit("-", 1)[-1]
         writes: dict[str, bytes | None] = {migration_path(old_title): None}
@@ -2362,7 +2373,7 @@ def release_failed_migration(registry: Registry, old_title: str, machine: str) -
                 f"{new_token} is migration-incomplete: its recorded survivors are under {record['new_title']}, so it "
                 "is not released; run the same `ai migrate-session` command again"
             )
-        if row is not None and row.get("title") == record["new_title"] and row.get("machine") == machine:
+        if row is not None and row.get("title") == record["new_title"] and here.holds(row):
             writes[row_path(new_token)] = None
         return Change(writes, f"session-names: release {new_token} after the failed rename of {old_title}")
 
@@ -2374,7 +2385,7 @@ def mark_migration_incomplete(registry: Registry, old_title: str, machine: str, 
 
     def build(snapshot: Snapshot) -> Change:
         record = snapshot.migrations.get(old_title)
-        if record is None or record.get("machine") != machine:
+        if record is None or not session_naming.machine_identity(machine).holds(record):
             raise WriteRefusedError(f"no rename of {old_title} is recorded for {machine}")
         new_token = str(record["new_title"]).rsplit("-", 1)[-1]
         row = snapshot.rows.get(new_token)

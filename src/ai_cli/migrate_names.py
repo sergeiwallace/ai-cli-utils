@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import name_list, session_clients
+from . import name_list, session_clients, session_naming
 from . import name_registry as reg
 from .session_migrate import MigrationError, MigrationResult, PartialMigrationError, migrate_session
 
@@ -171,8 +171,9 @@ def recover_intents(
     """
     snapshot = registry.snapshot()
     settled: list[str] = []
+    here = session_naming.machine_identity(machine)
     for old, record in snapshot.migrations.items():
-        if record.get("status") != "intent" or record.get("machine") != machine:
+        if record.get("status") != "intent" or not here.holds(record):
             continue
         new = str(record["new_title"])
         token = new.rsplit("-", 1)[-1]

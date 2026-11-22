@@ -888,6 +888,21 @@ invented alias. Sessions named before the host alias joined the name
 (`myrepo-3`) still resolve by slot until they are moved with
 `ai migrate-session myrepo-3 myrepo-box-3`; nothing new is created in that form.
 
+A machine whose host id changed keeps its older name-registry rows under the old
+id, and their titles under its old alias. List the old ids in any of those files
+so the machine still owns them:
+
+```toml
+[former_host_ids]
+my-host = ["my-host-old"]
+```
+
+Every id in one entry is the same machine, whichever is current. `ai c NAME` then
+reattaches a session recorded under `my-host-old` by its recorded title, and every
+other check of whether a session is this machine's (exit, relaunch at boot,
+reconcile, audit) reads the same table. A malformed entry is refused at launch,
+naming the file.
+
 Choosing between the two verbs: `ai migrate-session OLD NEW` renames a session
 already registered in an `ai` slot (worktree, branch, transcript, tasks, memory,
 resume state, and its agent worktrees and `wt/OLD/*` branches in every repo

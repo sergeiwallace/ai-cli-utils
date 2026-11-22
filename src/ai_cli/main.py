@@ -4591,7 +4591,11 @@ def _title_held_here(snapshot, naming_prefix: str, positional, host: str) -> str
         return None
     row = snapshot.rows.get(positional.name) or {}
     held = row.get("title") or ""
-    if row.get("machine") == host and held.startswith(f"{naming_prefix}-") and held.endswith(f"-{positional.name}"):
+    if (
+        _session_naming.machine_identity(host).holds(row)
+        and _session_naming.row_stem_is_this_repo(row, naming_prefix)
+        and held.endswith(f"-{positional.name}")
+    ):
         return held
     return None
 
@@ -4618,7 +4622,7 @@ def _held_title(naming_prefix: str, clean: str):
     host = _session_naming.host_id()
     title = _session_naming.compose_session_name(naming_prefix, positional.value)
     row = snapshot.rows.get(positional.name) or {}
-    if row.get("title") == title and row.get("machine") == host:
+    if row.get("title") == title and _session_naming.machine_identity(host).holds(row):
         return title, positional
     return _title_held_here(snapshot, naming_prefix, positional, host), positional
 
@@ -4821,7 +4825,8 @@ def _reattach_title(
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(positional.name)
-    if row and row.get("title") == title and row.get("machine") == host:
+    here = _session_naming.machine_identity(host)
+    if row and row.get("title") == title and here.holds(row):
         return _session._new_session_display_name(engine, naming_prefix, positional.value, is_remote), title
     held_title = _title_held_here(snapshot, naming_prefix, positional, host)
     if held_title:
@@ -4831,7 +4836,7 @@ def _reattach_title(
     held_here = [
         str(row.get("title") or "")
         for row in snapshot.rows.values()
-        if row.get("machine") == host and str(row.get("title") or "").startswith(f"{naming_prefix}-")
+        if here.holds(row) and _session_naming.row_stem_is_this_repo(row, naming_prefix)
     ]
     pool = sorted(set(_resumable_titles(engine, (naming_prefix,), None)) | set(held_here))
     close = _closest_titles(positional.value, pool, naming_prefix)
@@ -4883,7 +4888,11 @@ def _reserve_label_title(
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(token)
     if row is not None:
-        if row.get("kind") == "label" and row.get("title") == title and row.get("machine") == slot.machine:
+        if (
+            row.get("kind") == "label"
+            and row.get("title") == title
+            and _session_naming.machine_identity(slot.machine).holds(row)
+        ):
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
@@ -8721,7 +8730,11 @@ def _adoption_title(repo_root: Path, name: str, human: str):
         def release():
             def build(snapshot):
                 row = snapshot.rows.get(human)
-                if row is None or row.get("title") != title or row.get("machine") != slot.machine:
+                if (
+                    row is None
+                    or row.get("title") != title
+                    or not _session_naming.machine_identity(slot.machine).holds(row)
+                ):
                     return None
                 return _names.Change(
                     {_names.row_path(human): None}, f"session-names: release {human} (adoption failed)"
@@ -9067,7 +9080,7 @@ def _migrate_one_to_name(
     name = name.lower() if name else None
     try:
         pending = snapshot.migrations.get(old)
-        if pending and pending.get("machine") == host:
+        if pending and _session_naming.machine_identity(host).holds(pending):
             new = str(pending["new_title"])
             if name and new != slot.title_for(name):
                 raise AdoptionError(f"{old} already has a migration to {new}; refusing a different target")
@@ -9189,11 +9202,12 @@ def _migrate_all_to_names(
         return 2
     if over_limit:
         limit = _name_list.limits(snapshot.policy)[1]
+        here = _session_naming.machine_identity(host)
         over = {
             row["title"]
             for row in snapshot.rows.values()
             if row["kind"] == "session"
-            and row.get("machine") == host
+            and here.holds(row)
             and len(row["token"]) > limit
             and row.get("repo") == repo_root.name
         }
