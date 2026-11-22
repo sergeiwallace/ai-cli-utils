@@ -64,10 +64,10 @@ install target directory (tool dir for `uv tool install`, venv path for
 
 Three call sites updated:
 
-1. `src/ai_cli/main.py:_do_update` — the main `ai update` path: `uv tool install ... --force [--reinstall] [--link-mode=copy]`
+1. `src/ai_cli/main.py:_do_update` — the main `ai update` path: `uv tool install ... --force [--reinstall-package <name>] [--link-mode=copy]`
 2. `src/ai_cli/main.py:trigger_background_update` — auto-update at session launch: `uv tool upgrade ai-cli-utils [--link-mode=copy]`
 3. `src/ai_cli/main.py:cmd_upgrade` — explicit `ai upgrade`: `os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli-utils", ...])`
-4. `src/ai_cli/main.py:_do_update` extra_venvs loop — `uv pip install` into configured venvs: `uv pip install ... [--force-reinstall] [--link-mode=copy]`
+4. `src/ai_cli/main.py:_do_update` extra_venvs loop — `uv pip install` into configured venvs: `uv pip install ... [--reinstall-package <name>] [--link-mode=copy]`
 
 Detection is automatic and portable:
 

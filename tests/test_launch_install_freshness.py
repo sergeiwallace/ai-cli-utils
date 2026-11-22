@@ -229,7 +229,7 @@ class TestInstalledCodeIsTheNewCode:
         # And it was rebuilt under a unique version, so uv could not serve its cache.
         bumped = [p for p in launch.install_versions if ".post" in p]
         assert bumped, f"no cache-defeating version was written: {launch.install_versions}"
-        assert any("--reinstall" in cmd for cmd in launch.installs)
+        assert any("--reinstall-package" in cmd for cmd in launch.installs)
 
     def test_given_the_source_was_just_installed_when_a_second_launch_happens_then_it_does_not_reinstall(
         self, project, state, tmp_path
@@ -357,7 +357,7 @@ class TestEscapeHatches:
                 )
 
         assert exc.value.code == 0
-        assert any("--reinstall" in cmd for cmd in launch.installs)
+        assert any("--reinstall-package" in cmd for cmd in launch.installs)
 
 
 class TestFingerprintScope:
