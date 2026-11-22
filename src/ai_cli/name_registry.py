@@ -1835,10 +1835,15 @@ def sync_names(
     digest = name_list.policy_digest(local_policy)
     commit = committed_at = None
     if isinstance(registry, FleetRegistry):
+
+        def fetch_policy_history(timeout: float) -> None:
+            result = registry._git("fetch", "--no-tags", "--quiet", registry.remote, timeout=timeout, check=False)
+            if result.returncode != 0:
+                raise fetch_failure(f"could not fetch {registry.remote}", result.stderr.decode(errors="replace"))
+
+        # Best effort, as before: the ancestry test then reads the last fetched history.
         with contextlib.suppress(RegistryError):
-            registry._git(
-                "fetch", "--no-tags", "--quiet", registry.remote, timeout=registry.fetch_timeout_s(), check=False
-            )
+            registry.retrying_fetch(fetch_policy_history)
         commit, committed_at = policy_revision(registry)
     generated: dict[str, name_list.Generation] = {}
 

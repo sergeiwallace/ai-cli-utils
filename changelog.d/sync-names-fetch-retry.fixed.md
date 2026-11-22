@@ -1,0 +1,1 @@
+- `ai sync-names` retries a policy-history fetch that times out or loses its connection, under `[retry.registry_fetch]`, instead of deciding from stale history after one attempt.
