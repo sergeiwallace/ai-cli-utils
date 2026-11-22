@@ -136,6 +136,7 @@ class _Launch:
                     force_reinstall="--force" in cmd,
                     config={"deploy": {"project_path": str(self.project)}},
                     quiet=quiet,
+                    package_only="--package-only" in cmd,
                 )
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else 0
@@ -357,7 +358,7 @@ class TestEscapeHatches:
                 )
 
         assert exc.value.code == 0
-        assert any("--reinstall-package" in cmd for cmd in launch.installs)
+        assert any("--reinstall" in cmd for cmd in launch.installs)
 
 
 class TestFingerprintScope:

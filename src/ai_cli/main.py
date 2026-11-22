@@ -1676,9 +1676,18 @@ def _auto_update_if_stale(config: dict) -> bool:
         # remembered as done.
         verbose = _update_verbose_requested()
         ai_bin = shutil.which("ai") or "ai"
-        cmd = [ai_bin, "update", "--force"] + ([] if verbose else ["--quiet"])
+        # --package-only: the bumped version already defeats uv's cache for this package, so
+        # the launch reinstalls it alone and leaves the dependencies as they are.
+        cmd = [ai_bin, "update", "--force", "--package-only"] + ([] if verbose else ["--quiet"])
         # Captured even when verbose: the child's lines are replayed through the
         # tagged relay below rather than inherited raw.
+        # Deliberately unbounded, not on the retry policy: the child runs `uv pip install`
+        # or `uv tool install --force` into this launcher's own environment, and uv is not
+        # atomic about it. Killed part way it can leave the environment with no packages and
+        # `ai` unable to start (see the repair message below), so a timeout here would turn a
+        # slow launch into a broken install. A retry would repeat a whole pull and install.
+        # The launch reports progress with its "still checking" heartbeat instead, and the
+        # one-line summary times the pull, the install and the work after it.
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=False, env=_out.record_relay_env()
         )
@@ -3258,7 +3267,7 @@ def _project_name(pyproject: bytes) -> str | None:
     return name if isinstance(name, str) and name.strip() else None
 
 
-def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False) -> None:
+def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False, package_only: bool = False) -> None:
     """Pull, bump the version so uv cannot serve a cached build, and install.
 
     ``quiet`` captures git's and uv's output instead of streaming it, and reports
@@ -3357,12 +3366,20 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         sys.exit(1)
     old_version = m.group(2).decode("utf-8", "replace")
     pulled = time.monotonic()
-    # The bumped version already defeats uv's cache for this package, so "cache-bypassing"
-    # reinstalls this package alone. uv's --reinstall reinstalls every dependency too and
-    # implies --refresh, which revalidates each one against the index: work and network
-    # round trips that change nothing installed.
+    # The bumped version already defeats uv's cache for this package. The launch's own update
+    # (package_only) reinstalls this package alone; a hand-typed `ai update --force` keeps uv's
+    # full --reinstall, which also reinstalls every dependency and revalidates each against the
+    # index (--refresh), so it can repair a damaged dependency. On one Linux host, warm cache,
+    # an editable install of this package took 0.87 to 0.91 s with --reinstall and 0.52 to
+    # 0.69 s with --reinstall-package, three runs each: a saving, but not the cost of a slow
+    # launch-time reinstall, which the one-line summary's step times now name.
     package = _project_name(original) or "ai-cli-utils"
-    reinstall = ["--reinstall-package", package] if force_reinstall else []
+    if not force_reinstall:
+        reinstall, full_reinstall = [], []
+    elif package_only:
+        reinstall = full_reinstall = ["--reinstall-package", package]
+    else:
+        reinstall, full_reinstall = ["--force-reinstall"], ["--reinstall"]
     base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
     if not quiet:
@@ -3396,7 +3413,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             if _should_use_uv_link_mode_copy(uv_bin, self_venv):
                 uv_cmd.append("--link-mode=copy")
         else:
-            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force", *reinstall]
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force", *full_reinstall]
             if _should_use_uv_link_mode_copy(uv_bin):
                 uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path, capture_output=True, text=True, check=False)
@@ -10447,21 +10464,35 @@ def cmd_ssh(alias):
 
 
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    help="Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them",
+)
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-def cmd_update(force, quiet, verbose):
+# Hidden and machine-to-machine: only the launch-time auto-update passes it.
+@click.option("--package-only", is_flag=True, hidden=True)
+def cmd_update(force, quiet, verbose, package_only):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose, package_only=package_only)
 
 
 @_cli_group.command("deploy", help="Alias for update (historical)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    help="Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them",
+)
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-def cmd_deploy(force, quiet, verbose):
+# Hidden and machine-to-machine: only the launch-time auto-update passes it.
+@click.option("--package-only", is_flag=True, hidden=True)
+def cmd_deploy(force, quiet, verbose, package_only):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose, package_only=package_only)
 
 
 @_cli_group.command(

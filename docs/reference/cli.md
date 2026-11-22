@@ -528,7 +528,7 @@ Alias for update (historical)
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-f` | `--force` |  | Pass --reinstall to uv tool install (bypass uv's cache and deps) |
+| `-f` | `--force` |  | Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them |
 | `-q` | `--quiet` |  | Capture git/uv output; report one line naming the new version |
 | `-v` | `--verbose` |  | Show the full git/uv transcript even when --quiet is passed |
 | `-h` | `--help` |  | Show this message and exit. |
@@ -1927,7 +1927,7 @@ Update ai-cli-utils from the source tree (git pull + uv tool install)
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-f` | `--force` |  | Pass --reinstall to uv tool install (bypass uv's cache and deps) |
+| `-f` | `--force` |  | Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them |
 | `-q` | `--quiet` |  | Capture git/uv output; report one line naming the new version |
 | `-v` | `--verbose` |  | Show the full git/uv transcript even when --quiet is passed |
 | `-h` | `--help` |  | Show this message and exit. |

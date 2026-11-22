@@ -1401,9 +1401,11 @@ Two escape hatches:
 
 - `AI_CLI_UPDATE_VERBOSE=1`: show the whole transcript at launch instead of the
   one-line summary.
-- `ai update --force`: reinstall this package on demand, bypassing uv's cache
-  for it. It never consults the fingerprint, so it is the way to force a refresh
-  when the installed build is suspect.
+- `ai update --force`: reinstall on demand with uv's `--reinstall`, bypassing its
+  cache and reinstalling every dependency too, which repairs a damaged one. It
+  never consults the fingerprint, so it is the way to force a refresh when the
+  installed build is suspect. Only the launch's own automatic update narrows the
+  reinstall to this package.
 
 ### Launch extensions
 
