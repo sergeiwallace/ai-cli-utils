@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ai_cli import direnv_exec
 from ai_cli.git_repair import pull_rebase_autostash
 from ai_cli.main import _do_session_launch, _exec_with_direnv
 from ai_cli.session import _resolve_is_remote
@@ -106,7 +107,8 @@ def test_given_usable_envrc_when_exec_then_goes_through_direnv(tmp_path):
         with pytest.raises(SystemExit):
             _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
-    assert execs[0][0] == "direnv"
+    # `direnv exec`, or on Windows, where direnv cannot exec a native program, its stand-in.
+    assert execs[0][0] == direnv_exec.prefix(tmp_path)[0]
     assert "claude" in execs[0]
 
 

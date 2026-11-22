@@ -1923,7 +1923,12 @@ def exec_replacement(session: str, argv: list[str]) -> int:
         port = event["port"]
         # Windows starts a new PID rather than replacing this one through exec.
         # Keep its foreground wrapper waiting on the native child-exit event.
-        child = subprocess.Popen(argv) if sys.platform == "win32" else None
+        if sys.platform == "win32":
+            from .foreground import resolve_program
+
+            child = subprocess.Popen(argv, executable=resolve_program(argv[0]))
+        else:
+            child = None
         try:
             pid = child.pid if child is not None else os.getpid()
             birth = psutil.Process(pid).create_time()
