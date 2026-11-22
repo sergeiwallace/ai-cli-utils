@@ -340,14 +340,40 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
 
 
-def _exec_handoff(file: str, args: list[str]) -> NoReturn:
+def _exec_handoff(file: str, args: list[str], *, detach_on_windows: bool = False) -> NoReturn:
     """Replace this process with ``file``; the one exec in the package (AI-CLI-8h3u).
 
     An exec skips ``atexit``, so an open line would stay open and buffered output
     would be lost: both are settled here first.
+
+    Windows has no exec. CPython emulates it by starting ``file`` as a new process and
+    ending this one at once, so the shell that ran ``ai`` sees it exit and prints its
+    prompt while ``file`` still runs on the same console. The shell and ``file`` then
+    take turns reading the keyboard, and a tmux client or agent there gets almost none
+    of what is typed. So on Windows ``file`` runs on this console as a child, and this
+    process waits and exits with its status. Ctrl+C reaches every process on the
+    console, so this one ignores it and leaves it to the child.
+
+    ``detach_on_windows`` keeps the emulated exec, for a ``file`` that must not have this
+    program still running: an upgrade replacing this program's own files.
     """
     _out.flush_sinks()
-    os.execvp(file, args)
+    if sys.platform != "win32" or detach_on_windows:
+        os.execvp(file, args)
+    sys.exit(_run_on_this_console(file, args))
+
+
+def _run_on_this_console(file: str, args: list[str]) -> int:
+    """Run ``file`` as a child on this process's console and return its exit status."""
+    import signal
+
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        child = subprocess.Popen(args, executable=shutil.which(file) or file)
+    except OSError:
+        signal.signal(signal.SIGINT, previous)
+        raise
+    return child.wait()
 
 
 def _exec_tmux(args: list[str]) -> NoReturn:
@@ -7794,7 +7820,7 @@ def cmd_upgrade():
     upgrade_args = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
-    _exec_handoff(uv_bin, upgrade_args)
+    _exec_handoff(uv_bin, upgrade_args, detach_on_windows=True)
 
 
 @_cli_group.command("list-capabilities", help="Print the optional behaviours this launcher has enabled, one per line")
