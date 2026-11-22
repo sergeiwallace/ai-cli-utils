@@ -481,6 +481,10 @@ class TestCmdCdpStartMacOS:
         assert pid_file.exists()
         assert json.loads(pid_file.read_text()) == {"pid": 55555, "port": 9222}
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="spawns and reaps a real process under the class's darwin patch; reap needs a real POSIX host",
+    )
     def test_given_other_processes_argv_raising_system_error_when_started_then_the_browser_pid_is_still_found(
         self, tmp_path, monkeypatch
     ):

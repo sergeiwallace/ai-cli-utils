@@ -243,6 +243,10 @@ def test_given_unreadable_or_unparseable_launcher_argv_when_adopted_then_it_is_s
     assert "-p nosuchproject does not resolve" in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="scans the real process table as macOS; psutil on Windows has no terminal attribute",
+)
 def test_given_other_processes_argv_raising_system_error_when_adopted_then_the_launcher_is_still_recorded(
     homes, tmp_path, monkeypatch
 ):
