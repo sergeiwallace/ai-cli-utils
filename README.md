@@ -1453,8 +1453,10 @@ Each phase is the line's operation (see
   operation, level and text (see [Output configuration](#output-configuration)). A log
   directory that cannot be written is skipped; the launch carries on. Once the session
   is running, the lines its session script prints join the same launch's log, and
-  its warnings and errors, such as a failed direnv load, also reach telemetry. A reload
-  row is stored only once it has escalated.
+  its warnings and errors, such as a failed direnv load, also reach telemetry. That
+  includes every restart: its `.envrc` approval, resume lookup and restart lines are
+  logged with the time each was printed, as the launcher's own are. A reload row is
+  stored only once it has escalated.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a
