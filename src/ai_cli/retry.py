@@ -219,16 +219,22 @@ def run(
     current = policy(site)
     total = max(current.max_total_seconds, current.timeout_for(1))
     deadline = time.monotonic() + total
+    last: Exception | None = None
     for number in range(1, current.attempts + 1):
         timeout = current.timeout_for(number)
-        if number > 1:
+        if last is not None:
             timeout = min(timeout, deadline - time.monotonic())
+            # The delay can overrun its estimate (a loaded host, a suspended clock): an attempt
+            # with no time left is never called, so the caller only ever sees a real timeout.
+            if timeout <= 0:
+                raise RetryExhaustedError(site, number - 1, last, total=total) from last
         attempt = Attempt(number, current.attempts, timeout)
         try:
             return call(attempt)
         except Exception as exc:
             if not transient(exc):
                 raise
+            last = exc
             if number == current.attempts:
                 raise RetryExhaustedError(site, number, exc) from exc
             delay = current.delay_after(number)
