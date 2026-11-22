@@ -263,17 +263,31 @@ def test_given_resolver_fails_and_one_name_and_directory_match_when_resolving_th
     assert out == OTHER_ID
 
 
-def test_given_resolver_fails_and_no_match_when_resolving_then_warns_with_the_reason(
-    workdir, fake_tools, tmp_path, capsys
+def test_given_resolver_has_no_answer_when_relaunching_then_no_warning_is_shown_and_the_log_says_why(
+    workdir, fake_tools, tmp_path, capsys, monkeypatch
 ):
-    fake_tools([])
-    resolver = _script(tmp_path / "resolver", "exit 3\n")
+    """A non-zero exit is the resolver's documented "no answer", not a fault.
+
+    The shipped resolver exits 1 whenever no "Move to background" handoff is pending, which
+    is every ordinary launch and restart, so warning about it printed "background resolver
+    exited 1; resuming by title instead" on nearly every start. It is now silent on the
+    terminal, and the launch log records the exit and the resolver's own last stderr line.
+    """
+    fake_tools([_row("background", LIVE_ID, tmp_path / "elsewhere", name="other")])
+    resolver = _script(
+        tmp_path / "resolver", "echo 'UR-RESTART-WARN session=myproject-1 reason=background-unproven' >&2\nexit 1\n"
+    )
+    log = tmp_path / "launch.log"
+    log.write_text("2026-01-01 00:00:00 EST launch log started for session test\n", encoding="utf-8")
+    monkeypatch.setenv("AI_CLI_LAUNCH_LOG", str(log))
 
     out, err = _resolve(workdir, _resolver_config(resolver), capsys)
 
     assert out == ""
-    assert "background resolver exited 3" in err
-    assert "resuming by title" in err
+    assert "exited 1" not in err
+    assert "resuming by title" not in err
+    logged = [line for line in log.read_text(encoding="utf-8").splitlines() if "[internal] resume:" in line]
+    assert any("exited 1" in line and "reason=background-unproven" in line for line in logged), logged
 
 
 def test_given_resolver_prints_two_ids_when_resolving_then_it_counts_as_no_answer(
