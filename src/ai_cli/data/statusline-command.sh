@@ -683,6 +683,25 @@ EOF_PACE
   fi
 fi
 
+# --- Antigravity (agy) quota segment (only when local state file exists, 30s cache) ---
+agy_quota_part=""
+if [ -f "$HOME/.local/state/ai-cli/agy-quota.json" ]; then
+  _agyqcache="${TMPDIR:-/tmp}/.ai-sl-agy-quota-${UID:-0}"
+  _agyq_valid=0
+  _agyq_now=$(date +%s)
+  if [ -f "$_agyqcache" ]; then
+    { IFS= read -r _agyq_ts && IFS= read -r agy_quota_part; } < "$_agyqcache" 2>/dev/null
+    if [[ "$_agyq_ts" =~ ^[0-9]+$ ]] && (( _agyq_now - _agyq_ts < 30 )); then
+      _agyq_valid=1
+    fi
+  fi
+  if (( ! _agyq_valid )); then
+    agy_quota_part=$(ai quota statusline-part -p agy 2>/dev/null)
+    agy_quota_part="${agy_quota_part//$'\n'/ }"
+    printf '%d\n%s\n' "$_agyq_now" "$agy_quota_part" > "$_agyqcache" 2>/dev/null
+  fi
+fi
+
 # --- Assemble ---
 sep="\033[2m│\033[0m"
 if [[ -n "$worktree_name" ]]; then
@@ -697,11 +716,12 @@ fi
 # session name (e.g. "c-myproject-2" vs worktree "myproject-2") is redundant — drop it to free space.
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
-# Quota-gauge segments grouped together: cc+Fable (quota_part) -> cxWk (Codex
-# weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part) that
-# used to render here was removed by explicit request (2026-07-19) — see the cxWk block
+# Quota-gauge segments grouped together: cc+Fable (quota_part) -> agy (agy_quota_part) ->
+# cxWk (Codex weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part)
+# that used to render here was removed by explicit request (2026-07-19) — see the cxWk block
 # above for why.
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
+[ -n "$agy_quota_part" ] && line="${line} ${sep} ${agy_quota_part}"
 [ -n "$codex_weekly_part" ] && line="${line} ${sep} ${codex_weekly_part}"
 [ -n "$reset_part" ] && line="${line} ${sep} ${reset_part}"
 [ -n "$codex_weekly_reset_part" ] && line="${line} ${sep} ${codex_weekly_reset_part}"
