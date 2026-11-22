@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -11,9 +12,11 @@ from pathlib import Path
 
 import psutil
 import pytest
-from conftest import tmux_runnable
+from conftest import TEST_BOOT_ID, tmux_runnable
 from process_wait import scaled
 
+from ai_cli import session_lifecycle_script
+from ai_cli import session_run_state as state
 from ai_cli.session_script import get_engine_script
 
 pytestmark = [
@@ -85,20 +88,41 @@ def _still_running(entry):
 
 
 @pytest.fixture
-def session_home(tmp_path):
+def session_home(tmp_path, monkeypatch):
     runnable, reason = tmux_runnable()
     if not runnable:
         pytest.skip(reason)
     shell = shutil.which("bash")
     if shell is None:
         pytest.skip("bash is unavailable")
+    # The session records its run state through the real lifecycle CLI, which needs the
+    # registered row and generation below and the boot identity pytest pins. Without them
+    # the agent never starts and the session ends only when exit persistence gives up,
+    # 30 s later, which raced the wait for it.
+    lifecycle_command = session_lifecycle_script.lifecycle_command
+
+    def fixed_boot_command(path):
+        command = lifecycle_command(path)
+        command[-1] = command[-1].replace(
+            "from ai_cli.main import cli",
+            f"registry.current_boot_id = lambda: {TEST_BOOT_ID!r}; from ai_cli.main import cli",
+        )
+        return command
+
+    monkeypatch.setattr(session_lifecycle_script, "lifecycle_command", fixed_boot_command)
     record = tmp_path / "watchers.jsonl"
+    launches = tmp_path / "launches"
     binaries = tmp_path / "bin"
     binaries.mkdir()
     ai = binaries / "ai"
     ai.write_text(f"#!{sys.executable}\n" + _AI_SHIM.format(watchers=set(WATCHERS), record=str(record)))
-    for name in ("claude", "direnv"):
-        (binaries / name).write_text("#!/bin/sh\nexit 0\n")
+    (binaries / "claude").write_text(f"#!/bin/sh\necho launched >> {shlex.quote(str(launches))}\nexit 0\n")
+    (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
+    # A frozen clock makes the agent's exit fall inside the startup guard however slow
+    # the host, so the session stops on that first exit instead of restarting it.
+    (binaries / "date").write_text(
+        f'#!/bin/sh\nif [ "$1" = +%s ]; then echo 1000000000; else exec {shlex.quote(shutil.which("date"))} "$@"; fi\n'
+    )
     for binary in binaries.iterdir():
         binary.chmod(0o755)
     home = tmp_path / "home"
@@ -126,6 +150,8 @@ def session_home(tmp_path):
         return [json.loads(line) for line in record.read_text().splitlines()]
 
     def start():
+        state.register("c-session-1", recipe={"argv": ["ai", "c", "session-1"], "cwd": str(project)}, host="host-a")
+        env["TEST_GENERATION"] = state.begin("c-session-1")
         script = tmp_path / "session.sh"
         script.write_text(
             get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject", worktree_dir=str(project))
@@ -148,7 +174,10 @@ def session_home(tmp_path):
         result = subprocess.run(["tmux", "-S", socket, "has-session"], capture_output=True, check=False, timeout=10)
         return result.returncode == 0
 
-    yield home, project, start, session_alive, tear_down, records
+    def agent_launches():
+        return launches.read_text().count("launched") if launches.exists() else 0
+
+    yield home, project, start, session_alive, tear_down, records, agent_launches
     tear_down()
     for entry in records():
         if _still_running(entry):
@@ -157,7 +186,7 @@ def session_home(tmp_path):
 
 
 def test_given_session_on_private_server_when_it_ends_and_its_home_is_removed_then_no_watcher_survives(session_home):
-    home, project, start, session_alive, tear_down, records = session_home
+    home, project, start, session_alive, tear_down, records, agent_launches = session_home
     start()
 
     def both_running():
@@ -172,6 +201,7 @@ def test_given_session_on_private_server_when_it_ends_and_its_home_is_removed_th
     # session does. Killing the server first would hang up the pane and take the watchers
     # down with it, which is not how the orphans were left behind.
     assert _wait(lambda: not session_alive(), 30), "the session did not end after its agent exited"
+    assert agent_launches() == 1, f"the session ended without running its agent once: {agent_launches()} launches"
     tear_down()
     shutil.rmtree(home)
     shutil.rmtree(project)
