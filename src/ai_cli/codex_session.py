@@ -14,6 +14,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -295,11 +296,20 @@ def confirm(path: Path, token: str, event: object) -> None:
             client_version=doc["in_flight"]["client_version"],
             route=doc["in_flight"]["route"],
         )
-        _write(path, doc)
+        from .codex_control import notify
 
-    from .codex_control import notify
-
-    notify(path, token)
+        # The bridge must read the confirmed record during its handshake. Stage
+        # the original bytes first so a refusal can roll back by atomic rename,
+        # without needing another serialization or file write after rejection.
+        with tempfile.TemporaryDirectory(prefix=".codex-confirm-", dir=path.parent) as root:
+            rollback = Path(root) / path.name
+            rollback.write_bytes(path.read_bytes())
+            try:
+                _write(path, doc)
+                notify(path, token)
+            except BaseException:
+                rollback.replace(path)
+                raise
 
 
 def confirm_from_environment(args: list[str]) -> int:
