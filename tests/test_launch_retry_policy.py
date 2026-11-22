@@ -13,11 +13,15 @@ boundary: a real stub script, a real ``git upload-pack`` wrapper, and the uv com
 from __future__ import annotations
 
 import contextlib
+import http.server
 import io
 import itertools
+import os
 import re
+import subprocess
 import sys
 import textwrap
+import threading
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -359,3 +363,168 @@ def test_given_no_user_retry_table_when_a_site_reads_its_policy_then_the_shipped
 
     for site in ("wake_sidecar", "registry_fetch"):
         assert retry.policy(site).attempts >= 2, site
+
+
+# -- a credential helper on an HTTP remote: the transient marker ----------------------------
+
+_HELPER = """\
+import pathlib, sys
+here = pathlib.Path(__file__).parent
+if sys.argv[1:] != ["get"]:
+    sys.exit(0)
+sys.stdin.read()
+counter = here / "helper-calls"
+n = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(n))
+plan = (here / "helper-plan").read_text().split()
+step = plan[min(n, len(plan)) - 1]
+if step == "transient":
+    sys.stderr.write("example-helper: transient: timed out\\n")
+    sys.exit(1)
+if step == "refuse":
+    sys.stderr.write("example-helper: no credential is stored for this host\\n")
+    sys.exit(1)
+print("username=user")
+print("password=secret")
+"""
+
+
+class _GitHttpHandler(http.server.BaseHTTPRequestHandler):
+    """Smart-HTTP git behind Basic auth: no Authorization header gets a 401, as a real host's does."""
+
+    project_root = ""
+
+    def log_message(self, *_args) -> None:
+        return
+
+    def _serve(self) -> None:
+        if not self.headers.get("Authorization", "").startswith("Basic "):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="example"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        path, _, query = self.path.partition("?")
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        env = {
+            **os.environ,
+            "GIT_PROJECT_ROOT": self.project_root,
+            "GIT_HTTP_EXPORT_ALL": "1",
+            "PATH_INFO": path,
+            "QUERY_STRING": query,
+            "REQUEST_METHOD": self.command,
+            "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+            "CONTENT_LENGTH": str(len(body)),
+            "HTTP_CONTENT_ENCODING": self.headers.get("Content-Encoding", ""),
+            "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
+            "REMOTE_USER": "user",
+        }
+        output = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True, check=False).stdout
+        head, _, payload = output.partition(b"\r\n\r\n")
+        if not payload and b"\n\n" in output:
+            head, _, payload = output.partition(b"\n\n")
+        status = 200
+        headers = []
+        for line in head.decode("latin-1").splitlines():
+            name, _, value = line.partition(":")
+            if name.lower() == "status":
+                status = int(value.split()[0])
+            elif name:
+                headers.append((name, value.strip()))
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    do_GET = do_POST = _serve
+
+
+@pytest.fixture
+def helper_remote(launch, monkeypatch):
+    """The fleet's registry remote served over HTTP behind auth, with a planned credential helper."""
+    handler = type("Handler", (_GitHttpHandler,), {"project_root": str(launch.tmp)})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    helper_dir = launch.tmp / "helper"
+    helper_dir.mkdir()
+    helper = helper_dir / "helper.py"
+    helper.write_text(_HELPER, encoding="utf-8")
+    repo = Path.cwd()
+    git(repo, "remote", "set-url", "origin", f"http://127.0.0.1:{server.server_port}/remote.git")
+    # An empty value clears any inherited helper, so only the planned one answers.
+    git(repo, "config", "--add", "credential.helper", "")
+    git(repo, "config", "--add", "credential.helper", f'!"{Path(sys.executable).as_posix()}" "{helper.as_posix()}"')
+    for name in ("GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(name, raising=False)
+
+    def plan(*steps: str) -> None:
+        (helper_dir / "helper-plan").write_text(" ".join(steps), encoding="utf-8")
+        (helper_dir / "helper-calls").unlink(missing_ok=True)
+
+    def calls() -> int:
+        counter = helper_dir / "helper-calls"
+        return int(counter.read_text()) if counter.exists() else 0
+
+    try:
+        yield MagicMock(plan=plan, calls=calls, run=launch.run, tmp=launch.tmp)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_given_a_helper_that_reports_a_transient_failure_once_when_fetching_then_it_is_retried_and_completes(
+    helper_remote, monkeypatch
+):
+    _write_config(helper_remote.tmp, monkeypatch, _FAST_FETCH)
+    helper_remote.plan("transient", "ok")
+
+    code, out, err = helper_remote.run("-d")
+
+    assert code == 0, out + err
+    assert helper_remote.calls() == 2
+    assert "name registry fetched" in _fetch_outcome(err)
+    assert "authentication refused" not in err
+
+
+def test_given_a_helper_that_reports_a_transient_failure_every_time_when_fetching_then_it_names_attempts_and_cause(
+    helper_remote, monkeypatch
+):
+    _write_config(helper_remote.tmp, monkeypatch, _FAST_FETCH)
+    helper_remote.plan("transient")
+
+    code, out, err = helper_remote.run("-d")
+
+    assert code == 0, out + err
+    assert helper_remote.calls() == 2
+    outcome = _fetch_outcome(err)
+    assert "did not complete" in outcome
+    assert "example-helper: transient: timed out" in outcome
+    assert "after 2 attempts" in outcome
+    assert "authentication refused" not in outcome
+
+
+def test_given_a_helper_that_refuses_without_the_marker_when_fetching_then_it_is_reported_once_as_refused(
+    helper_remote, monkeypatch
+):
+    _write_config(helper_remote.tmp, monkeypatch, _FAST_FETCH)
+    helper_remote.plan("refuse")
+
+    code, out, err = helper_remote.run("-d")
+
+    assert code == 0, out + err
+    assert helper_remote.calls() == 1, "a refusal is a definite answer, never retried"
+    assert "authentication refused" in _fetch_outcome(err)
+
+
+def test_given_a_helper_that_answers_when_fetching_over_http_then_the_fetch_completes(helper_remote, monkeypatch):
+    """The control: the HTTP remote and its helper serve a real fetch, so the cases above measure the marker."""
+    _write_config(helper_remote.tmp, monkeypatch, _FAST_FETCH)
+    helper_remote.plan("ok")
+
+    code, out, err = helper_remote.run("-d")
+
+    assert code == 0, out + err
+    assert helper_remote.calls() == 1
+    assert "name registry fetched" in _fetch_outcome(err)
