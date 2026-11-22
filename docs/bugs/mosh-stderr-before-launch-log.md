@@ -97,6 +97,24 @@ stderr, so the clients' diagnostics bypassed the launch log. Both now use
 the same stderr relay as the dedicated SSH runner. A test subprocess writes
 an unterminated diagnostic and checks that it reaches the terminal and log.
 
+### Supervisor lifecycle regression assertion
+
+The quick-failure command now persists both its reason and the agent's exit
+status. The lifecycle regression still expected the old reason-only JSON, so
+it failed even though the generated command retained the reason correctly.
+The assertion now checks the complete command, including the status variable.
+It still checks the consecutive-failure reason and that running state is
+persisted before publishing the started event. No production change is needed;
+this is a contained, reversible test correction with no public API change.
+
+The two reported regressions passed in an isolated archive of `6d68fb1d`
+(`2 passed in 1.32s`) and failed at `0dfaa078` (`2 failed in 2.18s`). After
+correcting the lifecycle expectation, this command returned `1 passed in 0.26s`:
+
+```sh
+uv run --no-sync pytest -n 0 tests/test_session_lifecycle_script.py::test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written
+```
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->
