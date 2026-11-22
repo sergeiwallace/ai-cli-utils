@@ -1670,6 +1670,21 @@ apply to every site, ahead of the shipped per-site tables; a `[retry.<site>]` ta
 yours overrides one site. An invalid value is reported, naming the key, and the shipped
 value is used.
 
+A credential helper can mark its own failure as worth retrying. A helper's exit status
+does not survive git's credential-helper protocol, and when a helper cannot answer, git
+prints the same "could not read Username" whether the login was refused or the helper
+merely could not reach its identity service. So a helper that failed for a passing reason
+prints one stderr line of this form, and a registry or client fetch then retries:
+
+```
+<helper-name>: transient: <cause>
+```
+
+`<helper-name>` is letters, digits, `_`, `.` or `-`. The line outranks git's follow-on "could
+not read Username" or "could not read Password", but never a refusal from the remote
+itself: "Authentication failed", an HTTP 401 or 403, or a rejected ssh key stops at once. A
+helper failure without the line is reported once as an authentication refusal.
+
 Some waits stay outside the policy, each for its own reason:
 
 - The launch-time `ai update --force --package-only` child has no timeout. It rewrites

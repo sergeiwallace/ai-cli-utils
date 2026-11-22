@@ -1,0 +1,1 @@
+- A credential helper can mark its own failure as worth retrying by printing a stderr line `<helper-name>: transient: <cause>`. A registry or client fetch then retries under its retry policy, instead of reading git's follow-on "could not read Username" as a refused login. A refusal from the remote itself, or a helper failure without the line, is still reported once.

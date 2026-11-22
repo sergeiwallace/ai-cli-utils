@@ -152,8 +152,10 @@ def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
 
     A refused credential becomes :class:`RegistryAuthError` naming git's own final line and the
     helper's first, never a credential helper's whole restore walkthrough, which is advice for
-    a human at a prompt the launch does not have. A lost connection is marked transient. Any
-    other failure is a definite answer and is reported in full, once.
+    a human at a prompt the launch does not have. A lost connection, or a credential helper's
+    ``<name>: transient: <cause>`` line (see ``git_transport``), is marked transient, and the
+    helper's line is the cause it names. Any other failure is a definite answer and is
+    reported in full, once.
     """
     refusal = git_transport.auth_refusal(stderr)
     if refusal is not None:
@@ -161,6 +163,10 @@ def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
         helper = next((line for line in lines if not line.lower().startswith(("fatal:", "error:"))), "")
         said = f" (the credential helper said: {helper})" if helper and helper != refusal else ""
         return RegistryAuthError(f"{what}: authentication refused: {refusal}{said}")
+    marker = git_transport.transient_marker(stderr)
+    if marker is not None:
+        # The helper's own cause, not git's follow-on prompt line, is what the report names.
+        return RegistryUnreachableError(f"{what}: {marker}", transient=True)
     return RegistryUnreachableError(f"{what}: {stderr.strip()}", transient=git_transport.is_transient(stderr))
 
 
