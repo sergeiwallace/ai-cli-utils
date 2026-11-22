@@ -36,6 +36,7 @@ from . import launch_reporter as _launch_reporter
 from . import native_deps as _native_deps
 from . import output as _out
 from . import process_manager as _process_manager
+from . import retry as _retry
 from . import session as _session
 from . import session_launch_state as _session_launch_state
 from . import session_naming as _session_naming
@@ -224,9 +225,6 @@ def _ensure_dolt_server() -> None:
     )
 
 
-_WAKE_SIDECAR_TIMEOUT_SECONDS = 3
-
-
 def _wake_sidecar_script() -> Path | None:
     """Locate the optional wake-sidecar CLI in the environment repo's checkout, else the cwd."""
     for root in _environment_roots():
@@ -247,6 +245,44 @@ def _sidecar_unit_manager_available() -> bool:
     return False
 
 
+def _run_wake_sidecar(script: Path, command: str) -> subprocess.CompletedProcess[str]:
+    """``<script> <command> --json`` under the ``wake_sidecar`` retry policy, read now.
+
+    Only a timeout is retried: both commands are idempotent reads or ensures, so a second
+    try cannot start the unit twice, and any answer the CLI gives is definite.
+    """
+
+    def attempt(current: _retry.Attempt) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                [sys.executable, str(script), command, "--json"],
+                capture_output=True,
+                text=True,
+                timeout=current.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise _WakeSidecarTimeoutError(f"{command} did not finish within {current.timeout:g} s") from exc
+
+    def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
+        _out.warning(
+            Tag.DAEMON,
+            command,
+            f"wake sidecar {exc} (attempt {current.number} of {current.of}); retrying with {next_timeout:g} s",
+        )
+
+    return _retry.run(
+        "wake_sidecar",
+        attempt,
+        transient=lambda exc: isinstance(exc, _WakeSidecarTimeoutError),
+        on_retry=retrying,
+    )
+
+
+class _WakeSidecarTimeoutError(Exception):
+    """One wake-sidecar call that did not answer within its attempt's timeout."""
+
+
 def _ensure_wake_sidecar(config: dict) -> None:
     """Ask the optional sidecar CLI to idempotently ensure its machine unit."""
     if not _sidecar_unit_manager_available():
@@ -258,15 +294,9 @@ def _ensure_wake_sidecar(config: dict) -> None:
         return
 
     try:
-        completed = subprocess.run(
-            [sys.executable, str(script), "ensure", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _out.error(Tag.DAEMON, "ensure", "wake sidecar failed: ensure timed out; launch continues")
+        completed = _run_wake_sidecar(script, "ensure")
+    except _retry.RetryExhaustedError as exc:
+        _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {exc}; launch continues")
         return
     except OSError as exc:
         _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {exc}; launch continues")
@@ -295,13 +325,7 @@ def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
         if script is None:
             result = _config.get_sidecar_config(config)
         else:
-            completed = subprocess.run(
-                [sys.executable, str(script), "show", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
-                check=False,
-            )
+            completed = _run_wake_sidecar(script, "show")
             if completed.returncode != 0:
                 return None
             result = json.loads(completed.stdout)
@@ -317,7 +341,7 @@ def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
         command = shlex.join([sys.executable, str(script), "watch", "--session", slug])
         # POSIX-only: the shell belongs to the tmux window and retries every exit.
         return f"while :; do {command}; sleep 2; done"
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+    except (OSError, _retry.RetryExhaustedError, ValueError, TypeError):
         _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
         return None
 
@@ -331,7 +355,8 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         created = subprocess.run(
             tmux_binary.argv("new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop),
             capture_output=True,
-            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
+            # One bounded call, never retried: a second new-window would open a second watcher.
+            timeout=_retry.policy("wake_sidecar").timeout_for(1),
             check=False,
         )
         if created.returncode != 0:

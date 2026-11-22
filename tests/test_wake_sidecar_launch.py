@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from conftest import run_cli
 
+from ai_cli import retry
+
 
 @pytest.fixture
 def local_launch():
@@ -56,7 +58,7 @@ def test_given_stopped_sidecar_when_two_local_launches_then_starts_exactly_once(
         "ensure",
         "--json",
     ]
-    assert run.call_args.kwargs["timeout"] == 3
+    assert run.call_args.kwargs["timeout"] == retry.shipped_table()["wake_sidecar"]["timeout_seconds"]
     assert (first[2] + second[2]).count("wake sidecar started") == 1
     assert local_launch.call_count == 2
 
@@ -79,7 +81,12 @@ def test_given_sidecar_failure_when_local_launch_then_launch_succeeds(local_laun
     local_launch.assert_called_once()
 
 
-def test_given_sidecar_timeout_when_local_launch_then_launch_succeeds(local_launch, wake_script):
+def test_given_sidecar_timeout_when_local_launch_then_launch_succeeds(local_launch, wake_script, tmp_path, monkeypatch):
+    config = tmp_path / "user-config" / "ai-cli-utils" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[retry.wake_sidecar]\ndelay_seconds = 0\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
     with (
         patch("ai_cli.main._wake_sidecar_script", return_value=wake_script),
         patch("ai_cli.main._sidecar_unit_manager_available", return_value=True),
@@ -91,7 +98,7 @@ def test_given_sidecar_timeout_when_local_launch_then_launch_succeeds(local_laun
         code, _stdout, stderr = run_cli(["ai", "p", "session-1"])
 
     assert code == 0
-    assert "wake sidecar failed: ensure timed out" in stderr
+    assert "wake sidecar failed: ensure did not finish within" in stderr
     local_launch.assert_called_once()
 
 
