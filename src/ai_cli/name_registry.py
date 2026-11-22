@@ -45,7 +45,7 @@ from typing import TypeVar
 
 import portalocker
 
-from . import __version__, name_list
+from . import __version__, git_transport, name_list
 from . import config as _config
 from . import output as _out
 from . import retry as _retry
@@ -147,24 +147,6 @@ class RegistryAuthError(RegistryUnreachableError):
     """The remote refused this host's credential: a definite answer, reported once and never retried."""
 
 
-# What git and its credential helpers print when the remote refuses, or cannot be given, a
-# credential. Checked before the connection patterns: ssh's refusal ends in "Could not read
-# from remote repository", which on its own reads as a dropped connection.
-_AUTH_REFUSAL = re.compile(
-    r"could not read (?:Username|Password)|Authentication failed|Permission denied \(publickey"
-    r"|HTTP Basic: Access denied|Invalid username or password|returned error: 40[13]",
-    re.IGNORECASE,
-)
-# A remote that was not reached or dropped the transfer: asking again can succeed.
-_CONNECTION_FAILURE = re.compile(
-    r"Could not resolve host|Could not resolve hostname|Connection (?:timed out|refused|reset)"
-    r"|Failed to connect|Operation timed out|early EOF|remote end hung up unexpectedly"
-    r"|Could not read from remote repository|RPC failed|returned error: 5\d\d|Network is unreachable"
-    r"|TLS connection was non-properly terminated|SSL_ERROR|unexpected disconnect",
-    re.IGNORECASE,
-)
-
-
 def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
     """The error for a failed registry fetch, told apart by what the transport printed.
 
@@ -173,13 +155,13 @@ def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
     a human at a prompt the launch does not have. A lost connection is marked transient. Any
     other failure is a definite answer and is reported in full, once.
     """
-    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    if _AUTH_REFUSAL.search(stderr):
-        fatal = next((line for line in reversed(lines) if _AUTH_REFUSAL.search(line)), lines[-1])
+    refusal = git_transport.auth_refusal(stderr)
+    if refusal is not None:
+        lines = [line.strip() for line in stderr.splitlines() if line.strip()]
         helper = next((line for line in lines if not line.lower().startswith(("fatal:", "error:"))), "")
-        said = f" (the credential helper said: {helper})" if helper and helper != fatal else ""
-        return RegistryAuthError(f"{what}: authentication refused: {fatal}{said}")
-    return RegistryUnreachableError(f"{what}: {stderr.strip()}", transient=bool(_CONNECTION_FAILURE.search(stderr)))
+        said = f" (the credential helper said: {helper})" if helper and helper != refusal else ""
+        return RegistryAuthError(f"{what}: authentication refused: {refusal}{said}")
+    return RegistryUnreachableError(f"{what}: {stderr.strip()}", transient=git_transport.is_transient(stderr))
 
 
 class RegistryContendedError(RegistryError):

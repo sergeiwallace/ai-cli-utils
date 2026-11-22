@@ -18,12 +18,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from . import git_transport
+from . import retry as _retry
 from .git_repair import _git_env
 
 UPSTREAM_REMOTE = "origin"
 UPSTREAM_BRANCH = "main"
 UPSTREAM_REF = f"refs/remotes/{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}"
-FETCH_TIMEOUT_SECONDS = 20.0
 GIT_TIMEOUT_SECONDS = 30.0
 
 
@@ -58,17 +59,40 @@ def _first_line(result: subprocess.CompletedProcess) -> str:
     return text.splitlines()[0] if text else f"exit {result.returncode}"
 
 
+class _FetchError(Exception):
+    """One failed fetch of origin/main; ``transient`` when asking again can cure it."""
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+def _fetch_once(checkout: Path, timeout: float) -> None:
+    try:
+        fetch = _git(checkout, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise _FetchError(f"git fetch timed out after {timeout:g}s", transient=True) from exc
+    if fetch.returncode != 0:
+        stderr = fetch.stderr or ""
+        refusal = git_transport.auth_refusal(stderr)
+        if refusal is not None:
+            raise _FetchError(f"git fetch failed: authentication refused: {refusal}", transient=False)
+        raise _FetchError(f"git fetch failed: {_first_line(fetch)}", transient=git_transport.is_transient(stderr))
+
+
 def sync_client_checkout(checkout: Path) -> ClientCheck:
     """Fast-forward ``checkout`` to ``origin/main`` when that is safe; report what was done."""
     target = f"{UPSTREAM_REMOTE}/{UPSTREAM_BRANCH}"
     try:
-        fetch = _git(checkout, "fetch", "--quiet", UPSTREAM_REMOTE, UPSTREAM_BRANCH, timeout=FETCH_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        return ClientCheck(ClientState.UNCHECKED, reason=f"git fetch timed out after {FETCH_TIMEOUT_SECONDS:.0f}s")
+        _retry.run(
+            "client_fetch",
+            lambda attempt: _fetch_once(checkout, attempt.timeout),
+            transient=lambda exc: isinstance(exc, _FetchError) and exc.transient,
+        )
+    except (_FetchError, _retry.RetryExhaustedError) as exc:
+        return ClientCheck(ClientState.UNCHECKED, reason=str(exc))
     except OSError as exc:
         return ClientCheck(ClientState.UNCHECKED, reason=f"git could not run: {exc}")
-    if fetch.returncode != 0:
-        return ClientCheck(ClientState.UNCHECKED, reason=f"git fetch failed: {_first_line(fetch)}")
 
     try:
         counts = _git(checkout, "rev-list", "--left-right", "--count", f"HEAD...{UPSTREAM_REF}")

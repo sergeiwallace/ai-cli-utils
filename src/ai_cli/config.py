@@ -1034,6 +1034,13 @@ stale_session_timeout = 15
 # timeout_seconds = 60
 # max_timeout_seconds = 120
 
+[retry.client_fetch]
+## The fetch of this machine's own editable ai-cli-utils checkout before a remote launch.
+## A fetch that times out or loses its connection is retried; when every attempt fails the
+## launch says it could not check origin/main and continues on the client it has.
+# timeout_seconds = 20
+# max_timeout_seconds = 60
+
 [retry.registry_fetch]
 ## Every fetch of a shared name registry, git or Dolt. In a checkout with thousands of refs
 ## on a loaded host one fetch measured 16 to 27 s. A timed-out or unreachable fetch is
