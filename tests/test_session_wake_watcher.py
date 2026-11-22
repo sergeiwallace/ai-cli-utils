@@ -251,3 +251,34 @@ def test_given_watcher_exit_when_window_loop_runs_then_restarts_within_two_secon
     assert completed.returncode == 0, completed.stderr
     assert starts.read_text().splitlines() == ["['watch', '--session', 'myproject-tst-1']"] * 3
     assert [float(value) for value in pauses.read_text().splitlines()] == [2, 2, 2]
+
+
+_SHOW_HANGS_ONCE = """\
+import json, pathlib, time
+counter = pathlib.Path(__file__).with_name("show-calls")
+n = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(n))
+if n == 1:
+    time.sleep(30)
+print(json.dumps({"enabled": True, "mode": "session"}))
+"""
+
+
+def test_given_a_show_lookup_that_times_out_once_when_resolving_the_watcher_then_it_is_retried_and_found(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "hub" / "scripts" / "wake_sidecar_cli.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(_SHOW_HANGS_ONCE, encoding="utf-8")
+    config = tmp_path / "user-config" / "ai-cli-utils" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[retry.wake_sidecar]\ntimeout_seconds = 1\nmax_timeout_seconds = 5\ndelay_seconds = 0\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
+
+    with patch("ai_cli.main._wake_sidecar_script", return_value=script):
+        loop = main._session_wake_watch_loop({}, "myproject-tst-1")
+
+    assert (script.parent / "show-calls").read_text() == "2"
+    assert loop is not None
+    assert "watch --session myproject-tst-1" in loop
