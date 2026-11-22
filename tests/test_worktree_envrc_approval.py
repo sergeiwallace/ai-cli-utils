@@ -941,6 +941,36 @@ def test_given_a_reused_worktree_whose_envrc_changes_on_sync_when_launched_then_
     assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
 
 
+def test_given_a_checkout_that_converts_line_endings_when_a_synced_envrc_is_launched_then_it_is_approved(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    """Git for Windows checks files out with ``core.autocrlf=true``: the synced worktree file has
+    CRLF line endings while the ``origin/HEAD`` blob has LF, and it is still the reviewed content."""
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    stub_direnv.allow(worktree)
+    _land_on_main(session_repo, "export PROJECT_ENV=v2\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert (worktree / ".envrc").read_bytes() == b"export PROJECT_ENV=v2\r\n", "precondition: CRLF checkout"
+    assert code == 0 and handoffs, "the launch did not reach its handoff"
+    assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
+
+
+def test_given_a_converting_checkout_and_a_session_edit_when_launched_then_the_edit_is_still_refused(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    (worktree / ".envrc").write_bytes(b"export PROJECT_ENV=edited-by-the-session\r\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert handoffs == [], "the agent was handed off with content no reviewed copy carries"
+    assert not stub_direnv.approved(worktree)
+
+
 def test_given_an_untrusted_envrc_when_launched_then_the_launch_fails_before_the_handoff_and_names_the_fix(
     session_repo, stub_direnv, tmp_path, monkeypatch, capsys
 ):

@@ -1756,28 +1756,48 @@ def _session_repo_root(directory: Path) -> Path | None:
     return Path(os.path.normpath(directory / common)).parent
 
 
-def _upstream_envrc(repo_root: Path) -> bytes | None:
-    """The ``.envrc`` blob on the repository's upstream default branch (``origin/HEAD``), or None."""
+def _git_line(repo_root: Path, *args: str) -> str | None:
+    """The first stdout line of a read-only git command in ``repo_root``, or None on any failure."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_root), "cat-file", "blob", "origin/HEAD:.envrc"],
+            ["git", "-C", str(repo_root), *args],
             capture_output=True,
+            text=True,
             env=_git_env(),
             timeout=30,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return result.stdout if result.returncode == 0 else None
+    line = result.stdout.strip()
+    return line if result.returncode == 0 and line else None
+
+
+def _upstream_envrc_oid(repo_root: Path) -> str | None:
+    """The blob id of ``.envrc`` on the repository's upstream default branch (``origin/HEAD``), or None."""
+    return _git_line(repo_root, "rev-parse", "--verify", "--quiet", "origin/HEAD:.envrc")
+
+
+def _envrc_blob_oid(repo_root: Path, file: Path) -> str | None:
+    """The blob id git would record for ``file`` as ``.envrc`` in this repository, or None.
+
+    ``hash-object --path`` applies the repository's own clean conversion (``core.autocrlf``,
+    ``.gitattributes`` ``eol``/``text``) and writes nothing, so a checkout git converted on the
+    way out, such as Git for Windows' default CRLF checkout of an LF blob, hashes back to the
+    blob it came from, while any other change to the content still hashes differently.
+    """
+    return _git_line(repo_root, "hash-object", "--path=.envrc", "--", str(file))
 
 
 def _trusted_envrc_source(repo_root: Path, worktree_dir: Path) -> str | None:
-    """Which reviewed copy the worktree's ``.envrc`` is byte-identical to, or None.
+    """Which reviewed copy the worktree's ``.envrc`` matches, or None.
 
     This is the CONTENT half of the trust boundary. The file inside a session slot is
     not this tool's work: git writes whatever the checked-out branch carries, and the
     agent session running there can rewrite it. Content qualifies only when it already
-    exists, byte for byte, somewhere the operator is responsible for:
+    exists somewhere the operator is responsible for, byte for byte or as the same git blob
+    (:func:`_envrc_blob_oid`, which forgives only the line-ending conversion git itself applied
+    at checkout):
 
     - the repository root's working copy, where direnv raises its own prompt for that
       path independently, so approving the worktree generalises an approval decision
@@ -1805,16 +1825,23 @@ def _trusted_envrc_source(repo_root: Path, worktree_dir: Path) -> str | None:
     Deliberately independent of the root's *approval* state: depending on that made
     the feature a no-op on a host where nothing is approved, the host that needs it most.
     """
+    envrc = worktree_dir / ".envrc"
     try:
-        content = (worktree_dir / ".envrc").read_bytes()
+        content = envrc.read_bytes()
     except OSError:
         return None
+    root_envrc = repo_root / ".envrc"
     try:
-        if (repo_root / ".envrc").read_bytes() == content:
+        if root_envrc.read_bytes() == content:
             return "the repository root's .envrc"
     except OSError:
-        pass
-    if _upstream_envrc(repo_root) == content:
+        root_envrc = None
+    oid = _envrc_blob_oid(repo_root, envrc)
+    if oid is None:
+        return None
+    if root_envrc is not None and _envrc_blob_oid(repo_root, root_envrc) == oid:
+        return "the repository root's .envrc"
+    if _upstream_envrc_oid(repo_root) == oid:
         return "the .envrc on origin/HEAD"
     return None
 
