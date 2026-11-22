@@ -184,9 +184,18 @@ def _client() -> Codex:
 
 
 def prepare(
-    path: Path, cwd: Path, slot: str, *, fresh: bool, route: str, client_version: str
+    path: Path,
+    cwd: Path,
+    slot: str,
+    *,
+    fresh: bool,
+    route: str,
+    client_version: str,
+    start_fresh: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Reserve this process's launch while preserving committed identity."""
+    if start_fresh is not None and start_fresh != slot:
+        raise IdentityError("start-fresh session does not match this launch")
     path = path.resolve()
     if "\n" in str(path) or "\r" in str(path):
         raise IdentityError("Codex slot path cannot be represented in the launcher reply")
@@ -201,6 +210,8 @@ def prepare(
             if doc.get("slot") != slot or doc.get("cwd") != str(cwd.resolve()):
                 raise IdentityError("Codex slot identity does not match this launch")
             _check_writer(doc["in_flight"])
+            if start_fresh is not None:
+                raise IdentityError("start-fresh requires a missing slot record; existing identity is preserved")
             if doc["phase"] == "confirmed":
                 probe = _client().probe_thread(cwd, doc["thread_id"])
                 if probe.state == PRESENT:
@@ -217,9 +228,14 @@ def prepare(
                         raise IdentityError(proof.reason)
                     target = saved["thread_id"]
             decision = "resume-confirmed" if target != "new" else "abandoned-unconfirmed; start-fresh"
-        elif not fresh or _client().records_for(cwd):
-            raise IdentityError("Codex slot has no client-confirmed thread; refusing directory-based adoption")
         else:
+            if start_fresh is None and (not fresh or _client().records_for(cwd)):
+                raise IdentityError(
+                    "Codex slot has no client-confirmed thread; refusing directory-based adoption. "
+                    "With owner approval, repeat this operation with --start-fresh SESSION naming this exact slot."
+                )
+            # Approval applies only to creating this missing record in this call.
+            # Nothing is persisted in launch recipes or the native client store.
             doc = {
                 "schema_version": SCHEMA_VERSION,
                 "slot": slot,
@@ -303,7 +319,13 @@ def confirm_from_environment(args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
+        start_fresh = None
+        if len(args) == 8 and args[6] in {"-F", "--start-fresh"}:
+            start_fresh = args[7]
+            args = args[:6]
         if len(args) == 6 and args[0] in {"prepare", "launch"}:
+            # Windows exec cannot preserve writer identity; recovery approval
+            # obeys the same POSIX launch boundary as ordinary launches.
             if args[0] == "launch" and os.name != "posix":
                 raise IdentityError("Codex writer exec identity unsupported on this platform")
             version = subprocess.run(["codex", "--version"], capture_output=True, text=True, check=False, timeout=10)
@@ -315,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
                 fresh=args[4] == "true",
                 route=args[5],
                 client_version=match[1] if match else "unknown",
+                start_fresh=start_fresh,
             )
             if args[0] == "launch":
                 os.environ[SLOT_RECORD_ENV] = record

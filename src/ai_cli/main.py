@@ -7726,7 +7726,21 @@ def cmd_p(ctx, **options):
     _dispatch_session("p", ctx, options)
 
 
-@_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
+@_cli_group.command(
+    "cx",
+    context_settings=SESSION_CONTEXT,
+    help=(
+        "Launch a Codex session.\n\n"
+        "For a stopped legacy slot with no identity record, owner-approved recovery is available through "
+        "`python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` "
+        "(short form: -F SESSION). RECORD is the slot's absolute "
+        "`<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. "
+        "Both SESSION values must be the exact tmux session name. Then relaunch with `ai cx NAME -r`. "
+        "Approval creates only a missing record, starts a new thread, preserves old native records, "
+        "and is never saved in the launch recipe. This is an option on the prepare/launch module, "
+        "not on ai cx. Windows launch retains its existing exec-identity refusal."
+    ),
+)
 @_session_options
 def cmd_cx(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the

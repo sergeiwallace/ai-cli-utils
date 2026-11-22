@@ -28,7 +28,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai color`](#ai-color) | Reassign iTerm2 color for the current ai session |
 | [`ai copier-update`](#ai-copier-update) | Propagate project-template changes to downstream projects |
 | [`ai cos`](#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
-| [`ai cx`](#ai-cx) | Launch a Codex session |
+| [`ai cx`](#ai-cx) | Launch a Codex session. |
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
@@ -483,7 +483,9 @@ Arguments:
 ai cx [OPTIONS] [NAME]
 ```
 
-Launch a Codex session
+Launch a Codex session.
+
+For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch with `ai cx NAME -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
 
 Arguments:
 
