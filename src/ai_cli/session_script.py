@@ -12,7 +12,7 @@ import sys
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
 from .iterm2_restore import LAUNCH_REASON_VAR
-from .launch_logging import LAUNCH_LOG_ENV
+from .launch_logging import AGENT_DIAGNOSTIC_ENV, LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
 # Interpreters that can run the generated session template, most preferred first.
@@ -886,7 +886,10 @@ def get_engine_script(
         fi
     # BEGIN RUN STATE startup-failure
         if (( _child_status == 76 )); then
-          _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
+          if [[ ! -f "$_ai_state_dir/session-final-exit-$tmux_session" ]]; then
+            _ai_emit error exit "Session startup persistence failed."
+            _ai_persist_exit unknown '{{"reason":"startup persistence failed"}}'
+          fi
           break
         fi
     # END RUN STATE
@@ -1208,6 +1211,16 @@ def get_engine_script(
       done
     # END SHELL RETURN
       active_agent_pid=""
+    # BEGIN LAUNCH DIAGNOSTICS
+      # Take the pane tail before the reset or a restart destroys its contents.
+      # Measure the runtime before starting diagnostics so they cannot move the restart guard.
+      agent_elapsed=$(( $(date +%s) - start_ts ))
+      if [[ -n "$_ai_launch_log" || -n "${{{AGENT_DIAGNOSTIC_ENV}:-}}" ]]; then
+        {shlex.quote(sys.executable)} -c 'import sys; from ai_cli.launch_logging import record_shell_agent_exit; record_shell_agent_exit(*sys.argv[1:])' \
+          "$_ai_launch_log" "$ai_name" "$engine" "$agent_exit_code" "$agent_elapsed" ||
+          _ai_emit warning exit "$ai_name: agent exited with status $agent_exit_code after ${{agent_elapsed}}s"
+      fi
+    # END LAUNCH DIAGNOSTICS
       _reset_agent_terminal
       if [[ -f "$_child_int_exit_file" ]]; then
     # BEGIN RUN STATE child-agent-exit
@@ -1233,6 +1246,11 @@ def get_engine_script(
       elif [[ -n "$_child_saved_int_deadline" ]]; then
         rm -f "$_child_int_escape_file"
       fi
+    # BEGIN RUN STATE codex-startup-failure
+      if [[ "$engine" == cx ]] && (( agent_exit_code == 76 )); then
+        _ai_persist_exit unknown '{{"reason":"Codex launch refused or exited with status 76","status":76}}'
+      fi
+    # END RUN STATE
       # The launch loop owns exit handling through agent_exit_code below. Returning
       # success keeps a non-zero agent status from being interpreted as a shell
       # failure before that loop can apply its restart guards.
@@ -1628,6 +1646,10 @@ with open(path, 'w') as f:
         _resolve_cc_transcript() {{
           matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name" ${{_cc_restart:+"$_cc_restart"}})
           resolve_status=$?
+    # BEGIN TRANSCRIPT RESTORE restart
+          # 74 is a failed transcript restore; it is stopped below, with its output kept on screen.
+          if [[ $resolve_status -eq 74 ]]; then return 0; fi
+    # END TRANSCRIPT RESTORE
           if [[ -n "$_cc_restart" && $resolve_status -ne 0 && $resolve_status -ne 2 ]]; then
             _ai_persist_exit unknown '{{"reason":"restart transcript resolution refused"}}'
             exit 77
@@ -1695,6 +1717,15 @@ with open(path, 'w') as f:
         fi
       fi
     # END BACKGROUND ATTACH
+    # BEGIN TRANSCRIPT RESTORE resolve-failed
+      # 74: the [resume_restore] command failed for an archived transcript. Resuming
+      # or starting fresh would both lose the conversation, so stop here.
+      if [[ "$engine" == "c" && $resolve_status -eq 74 ]]; then
+        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+        _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
+        break
+      fi
+    # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH parked
       if $_bg_gave_up; then
         _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' or type 'exit 78' here to try again."
@@ -1728,6 +1759,18 @@ with open(path, 'w') as f:
       }}
     # END CODEX THREAD
 
+    # BEGIN TRANSCRIPT RESTORE session
+      # Every resume path below takes $matched_file. Restore the session's transcripts
+      # (its sub-agents' included) first; a failed restore stops before claude starts.
+      if [[ "$engine" == "c" && -z "$bg_target" && $resolve_status -eq 0 && -n "$matched_file" ]]; then
+        _restore_id="${{matched_file##*/}}"
+        if ! ai internal restore-transcript "${{_restore_id%.jsonl}}"; then
+          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+          _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
+          break
+        fi
+      fi
+    # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH prompted
       if [[ "$engine" == "c" && -n "$bg_target" && -f "$prompt_file" ]]; then
         # `claude attach` carries no prompt: deliver it once the attached session is idle.
@@ -1796,7 +1839,7 @@ with open(path, 'w') as f:
       # that as a failure opens a remote recovery shell whose prompt consumes all
       # further interrupts.
       if $agent_attempted && (( agent_exit_code == 130 || \\
-        (agent_exit_code == 0 && $(date +%s) - start_ts < 3) )); then
+        (agent_exit_code == 0 && agent_elapsed < 3) )); then
         _ai_final_manual_exit
         exit 77
       fi
@@ -1857,7 +1900,7 @@ with open(path, 'w') as f:
         agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
         [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
         _healthy_agent_seconds=60
-        if (( $(date +%s) - start_ts >= _healthy_agent_seconds )); then
+        if (( agent_elapsed >= _healthy_agent_seconds )); then
           agent_exit_count=0
         fi
         agent_exit_count=$((agent_exit_count + 1))
@@ -1872,7 +1915,7 @@ with open(path, 'w') as f:
       fi
 
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
-      _exit_elapsed=$(( $(date +%s) - start_ts ))
+      _exit_elapsed=${{agent_elapsed:-$(( $(date +%s) - start_ts ))}}
       if (( _exit_elapsed < 3 )); then
         _iterm2_status "error" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
@@ -1898,7 +1941,7 @@ with open(path, 'w') as f:
       if (( elapsed < 3 )); then
         _ai_emit info exit "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
     # BEGIN RUN STATE quick-failure
-        _ai_persist_exit unknown '{{"reason":"agent exited too quickly"}}'
+        _ai_persist_exit unknown '{{"reason":"agent exited too quickly","status":'"$agent_exit_code"'}}'
     # END RUN STATE
         break
       fi

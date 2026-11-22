@@ -28,7 +28,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai color`](#ai-color) | Reassign iTerm2 color for the current ai session |
 | [`ai copier-update`](#ai-copier-update) | Propagate project-template changes to downstream projects |
 | [`ai cos`](#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
-| [`ai cx`](#ai-cx) | Launch a Codex session |
+| [`ai cx`](#ai-cx) | Launch a Codex session. |
 | [`ai deploy`](#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
@@ -42,6 +42,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout list`](#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
@@ -482,7 +483,9 @@ Arguments:
 ai cx [OPTIONS] [NAME]
 ```
 
-Launch a Codex session
+Launch a Codex session.
+
+For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch from the session's worktree with the slot's original launch flags (--is-remote, --project-prefix, --project); for example `ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
 
 Arguments:
 
@@ -734,6 +737,18 @@ Check a layout file against the layout schema without applying it
 Arguments:
 
 - `NAME`
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai list-capabilities
+
+```text
+ai list-capabilities [OPTIONS]
+```
+
+Print the optional behaviours this launcher has enabled, one per line
 
 | Short | Long | Value | Description |
 |---|---|---|---|

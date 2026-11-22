@@ -48,6 +48,17 @@ def _ctx(command):
     return click.Context(command, info_name=command.name, help_option_names=["-h", "--help"])
 
 
+def test_given_start_fresh_recovery_when_cx_help_is_rendered_then_relaunch_preserves_slot_flags_and_worktree():
+    result = CliRunner().invoke(_cli_group, ["cx", "--help"], terminal_width=80)
+
+    assert result.exit_code == 0, result.output
+    relaunch = _flatten(result.output).split("Then relaunch", 1)[1].split("Approval creates", 1)[0]
+    assert "session's worktree" in relaunch
+    assert "original launch flags" in relaunch
+    assert "ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r" in relaunch
+    assert "ai cx NAME -r" not in relaunch
+
+
 def tree_paths(help_text):
     """The command paths the root help's command tree lists, rebuilt from each name's indentation."""
     section = _commands_section(help_text).split("\n\n", 1)[0]

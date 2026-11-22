@@ -41,6 +41,79 @@ metadata record is read. Claude Code, Gemini and Pi keep their existing launch b
 Version 1 slot records refuse with a tagged incompatible-schema error; there is no
 pre-v1 migration or directory-based adoption.
 
+#### Slots predating identity records
+
+The pre-slot launcher used `codex resume --last`. Its generated metadata carried
+`engine`, `session`, `worktree_dir` and `session_id_uuid`, but the launch entry
+populated that UUID only for Gemini; it was empty for Codex. The session registry's
+`id` is a launcher-generated UUID, not a native thread ID. Registry launch recipes,
+supervisor lifecycle state and an empty `.codex.json.lock` file do not bind a Codex
+thread to a slot. This was checked against the tracked writers and pre-slot Git
+history, without inspecting any real client store. No exact-thread migration is
+implemented because these sources cannot prove the old thread. A future migration
+source would need a client-confirmed native thread ID bound to the exact slot and
+resolved cwd, with validated writer/schema evidence; `probe_thread(cwd, thread_id)`
+must then corroborate exactly one real matching rollout before resume.
+
+For a stopped slot whose record is missing, the owner can explicitly approve a new
+thread without renaming the session or changing any old native records:
+
+```text
+python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION
+ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r
+```
+
+`RECORD` is the absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json`
+path (the same path the generated launcher uses); `CWD` is the worktree. Both
+`SESSION` values passed to preparation must be the exact tmux session name. Then
+relaunch from the session's worktree with the slot's original launch flags
+(`--is-remote`, `--project-prefix`, `--project`). The relaunch above is a remote-slot
+example: `PREFIX`, `PROJECT` and `SESSION` stand for the original project prefix,
+project and exact tmux session name, for example `cx-r-myproject-session-1`.
+Substitute actual values, quoting paths as required by the invoking shell; local
+slots repeat their original flags without adding `--is-remote`.
+For a paired host, run preparation on the owning
+host with its paths and use route `paired-host-tmux` instead of `local-tmux`.
+
+The module's existing `prepare` and `launch` operations accept trailing
+`-F SESSION` / `--start-fresh SESSION`. `prepare` reserves without starting a TUI;
+`launch` reserves and execs the client. The option is deliberately confined to this
+one invocation, is not a shared `ai cx` option, and is never stored in generated
+scripts, registry recipes or environment. Under the existing slot lock it creates
+only a missing schema 2 record. Repeating approval against any existing record
+refuses without overwriting it. The normal launch then starts a new thread, whose
+current-token hook confirmation enables subsequent exact-thread resumes. A quit
+before confirmation follows the existing unconfirmed-launch recovery rule.
+
+When approval is absent, the existing missing-identity refusal remains, with a hint
+for this recovery command. A directory's newest rollout, an arbitrary metadata UUID
+or a non-present candidate never supplies identity. Existing writer, cwd, schema,
+token and hook proofs remain required. The preparation code uses portable path and
+locking APIs; `launch` retains its existing Windows refusal because POSIX exec
+identity continuity is required. Linux and macOS add no new platform restriction;
+macOS execution and real-client recovery remain unverified.
+
+Acceptance criteria and focused coverage in `test_codex_slot_start_fresh.py`:
+
+- When a pre-slot layout has an empty lock and native cwd records, preparation
+  without approval shall refuse for both fresh and resumed requests.
+- When approval names this exact session and its record is missing, preparation
+  shall write a valid unconfirmed schema 2 record and leave native files unchanged.
+- When approval names another session or a record already exists, preparation
+  shall refuse without changing the identity record.
+- When the new thread is confirmed, a later launch shall resume only that exact
+  thread through the existing native proof, preserving all prior proof requirements.
+- When metadata cannot bind a thread to the slot, preparation shall refuse and
+  explain the explicit recovery route, even if that candidate exists natively.
+- When the launch entry receives approval, it shall hand off a fresh client with
+  the unchanged hook declaration and current record/token environment.
+
+The regression cases were frozen before the production edit: 9 failed and 4 passed.
+The new behavior failed because the option was unsupported or its guidance absent;
+the no-approval refusal and malformed-record preservation already passed. Existing
+tests were not weakened. Real-client relaunch of an old slot is an owning-launcher
+verification step; tests use an isolated native store and synthetic client handoff.
+
 The committed fields are `phase` (`unconfirmed` or `confirmed`), `thread_id`,
 `rollout_path`, and `result` (`unconfirmed`, `confirmed`, or `live-only`). The record
 also retains `slot`, `cwd`, `client_version`, `execution_mode`, and `route`.

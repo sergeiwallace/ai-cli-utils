@@ -48,6 +48,109 @@ that the client exits 78, and that the collision hint is absent.
 Test stderr recovery with a process that writes straight to stderr, and test
 exits under both of the short durations the transport treats specially.
 
+## Agent exits after handoff
+
+### Symptoms and reproduction
+
+A tmux pane displays the agent's startup error and then closes. The owning
+host's log ends with `Auto-restart stopped. Returning to the calling shell.`
+and the launching host may report an ambiguous clean transport exit. To
+reproduce, run the generated supervisor or one-shot handoff on a test PTY,
+write a diagnostic to the agent's stderr, and exit the agent while it is still
+starting. Exercise the remote wrapper with a successful transport exit.
+
+### Cause
+
+The supervisor restores the agent's terminal descriptors before launching
+it. This preserves interactivity and sends its output past the launcher's
+stderr mirror. The one-shot owner recorded the exit status alone. A tmux
+client can return zero after the pane closes, so the remote wrapper's saved
+command status cannot identify the agent exit. The Codex thread guard also
+used the same supervisor exit status as a lifecycle persistence failure.
+
+### Fix and verification
+
+The shared exit recorder measures runtime before cleanup and saves a bounded
+tail for startup exits. It reads the current tmux pane while it still exists
+or uses bytes already relayed by the bare PTY. Pane capture reflects the
+screen and scrollback tmux still has. The recorder also writes remote startup
+diagnostics to a per-launch file that SSH and mosh can retrieve after the
+connection closes. The Codex refusal continues to stop the supervisor and
+now records its own reason in lifecycle evidence.
+
+At revision `6e797f42`, the regression assertions failed for missing output
+in the managed, one-shot, bare PTY and remote launch logs. The tests keep the
+agent on a PTY and use fake agent and transport commands.
+
+### Clean exits and caller-supplied displays
+
+The display test's fake Codex exits immediately with status zero. The shared
+exit recorder logged both runs even though the supervisor used the caller's
+display without probing. A short successful exit can still leave the remote
+caller without an explanation when tmux returns zero, so the display test now
+checks for display diagnostics specifically.
+
+The recorder skips ordinary status-zero exits at or after 15 seconds.
+Failures still produce an exit record, and one-shot sessions retain their
+existing clean-exit record. The launch-logging test exercises both status zero
+and status seven at the 15-second boundary. Before the fix, the status-zero
+case wrote an unexpected line.
+
+### Worktree sync warnings
+
+The warning already reached the log, but selecting Git's final stderr line
+could report `Applied autostash.` as the error. The worktree warning now
+prefers Git's explicit error lines. The regression appends that progress
+line after a real failed fetch and checks that the warning still reports
+the error and the launch proceeds.
+
+### Transport client stderr
+
+The VPN-aware transport loop started mosh and fallback SSH with inherited
+stderr, so the clients' diagnostics bypassed the launch log. Both now use
+the same stderr relay as the dedicated SSH runner. A test subprocess writes
+an unterminated diagnostic and checks that it reaches the terminal and log.
+
+### Supervisor lifecycle regression assertion
+
+The quick-failure command now persists both its reason and the agent's exit
+status. The lifecycle regression still expected the old reason-only JSON, so
+it failed even though the generated command retained the reason correctly.
+The assertion now checks the complete command, including the status variable.
+It still checks the consecutive-failure reason and that running state is
+persisted before publishing the started event. No production change is needed;
+this is a contained, reversible test correction with no public API change.
+
+The two reported regressions passed in an isolated archive of `6d68fb1d`
+(`2 passed in 1.32s`) and failed at `0dfaa078` (`2 failed in 2.18s`). After
+correcting the lifecycle expectation, this command returned `1 passed in 0.26s`:
+
+```sh
+uv run --no-sync pytest -n 0 tests/test_session_lifecycle_script.py::test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written
+```
+
+### Remote dial regression assertion
+
+The registry test compared two independent SSH launches byte for byte when
+checking that tracking does not alter their arguments. Each launch already
+allocated a diagnostic UUID for mosh. Commit `d52505c9` also put that path in
+the SSH command, so the comparison failed on the UUID even with identical
+tracking behavior. The later client stderr relay did not introduce the path.
+
+Keep per-launch paths unique so concurrent launches cannot share diagnostics.
+The test now requires distinct commands, normalizes exactly one UUID in each
+remote diagnostic path, and compares every remaining argument unchanged.
+Missing diagnostics or changes to SSH options, destinations, path structure,
+or remote commands still fail. This contained test correction needs no shared
+abstraction or public API change.
+
+After both assertion corrections, the original two-test reproduction returned
+`2 passed in 2.25s`:
+
+```sh
+uv run --no-sync pytest -n 0 tests/test_session_lifecycle_script.py::test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written tests/test_session_registry.py::test_remote_dial_argv_is_unchanged_by_tracking
+```
+
 <!-- /doc:region name="summary" -->
 
 <!-- doc:region name="reproduction" kind="replaceable" -->
