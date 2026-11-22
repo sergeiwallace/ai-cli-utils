@@ -444,7 +444,10 @@ def test_given_unregistered_session_when_interrupted_then_original_shell_survive
 
 @pytest.mark.parametrize("engine", ["c", "cx"])
 def test_given_remote_recovery_shell_when_exited_then_original_shell_survives(pane_session, engine):
-    pane_session.start(engine=engine, remote=True, caller=True)
+    # Only a failed start offers the recovery shell. Pin the clock so the run stays a
+    # failed start, and let wall time pass the guard as a loaded host's setup does.
+    pane_session.start(engine=engine, remote=True, caller=True, quick_clean=True)
+    time.sleep(3.2)
     pane_session.exit_agent("1")
     assert _wait(lambda: "close this session" in pane_session.capture()), pane_session.capture()
     pane_session.type_line("exit")
@@ -459,6 +462,7 @@ def test_given_running_engine_when_terminal_interrupt_exits_then_original_shell_
     pane_session, engine, remote, mode
 ):
     pane_session.start(engine=engine, remote=remote, mode=mode, caller=True)
+    pane_session.widen_stop_window()
     # A raw TUI that exits 0 on Ctrl+C after a healthy run looks like /exit, so it
     # restarts unless the next Ctrl+C lands in the wrapper's restart window.
     if mode == "raw-clean":
@@ -509,9 +513,13 @@ def test_given_healthy_run_when_agent_exits_cleanly_then_wrapper_restarts_it(pan
 @pytest.mark.parametrize("remote", [False, True])
 def test_given_clean_exit_restart_window_when_interrupted_then_original_shell_returns(pane_session, remote):
     pane_session.start(remote=remote, caller=True)
+    pane_session.widen_stop_window()
     time.sleep(3.2)
     pane_session.exit_agent("0")
     assert _wait(lambda: "Ctrl+C to stop" in pane_session.capture()), pane_session.capture()
+    # Press after the default window would have closed, as a loaded host's press lands:
+    # the configured window, not three seconds, bounds the press.
+    time.sleep(4.2)
     pane_session.interrupt()
     pane_session.assert_caller()
     assert pane_session.count() == 1, "an interrupt in the restart window relaunched the engine"
