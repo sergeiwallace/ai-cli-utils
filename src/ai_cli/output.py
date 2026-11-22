@@ -149,6 +149,7 @@ class Untagged(StrEnum):
     SERVICE_UNIT = "exact service-unit text and installation plan for inspection"
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
     TABLE = "an aligned table a person reads; a tag on each row would break its columns"
+    CAPABILITY = "a capability token a deployment's probe matches as a whole line"
 
 
 class Level(StrEnum):

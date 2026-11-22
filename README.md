@@ -221,6 +221,7 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](docs/reference/cli.md#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |

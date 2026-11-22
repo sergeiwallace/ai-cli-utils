@@ -48,6 +48,7 @@ from . import suspended_session as _suspended_session
 from . import tmux_binary
 from . import tmux_ownership as _tmux_ownership
 from . import tmux_setup as _tmux_setup
+from . import transcript_restore as _transcript_restore
 from . import transport as _transport
 from . import tunnel as _tunnel
 from . import zsh_setup as _zsh_setup
@@ -903,6 +904,32 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+#: ``ai internal resolve-continue-target`` and ``restore-transcript`` exit status when the
+#: ``[resume_restore]`` command failed; the session script stops instead of resuming.
+_RESTORE_FAILED_STATUS = 74
+
+
+def _pick_with_archive_restore(project_dir: Path, pick: Callable[[], Path | None]) -> tuple[Path | None, set[str]]:
+    """Pick from the live transcripts; restore archived ones and pick again only when that fails.
+
+    Resuming a live session therefore runs no ``[resume_restore]`` command for the archives
+    beside it, which would otherwise be restored, and archived again, on every launch. A
+    restart whose recorded transcript was archived refuses on the first pick, so it is
+    retried the same way. Returns the pick and the session ids restored.
+    """
+    try:
+        matched = pick()
+    except _ClaudeRestartTranscriptError:
+        restored = _transcript_restore.restore_archived(project_dir)
+        if not restored:
+            raise
+        return pick(), restored
+    if matched is not None:
+        return matched, set()
+    restored = _transcript_restore.restore_archived(project_dir)
+    return (pick() if restored else None), restored
+
+
 class _LiveClaudeSessionError(RuntimeError):
     """A bare launch found a live Claude Code process it cannot reattach to."""
 
@@ -1172,17 +1199,23 @@ def _bare_engine_command(
         command = ["claude"]
         if not _is_root():
             command.append("--dangerously-skip-permissions")
-        # Resume this session's own prior conversation by its exact transcript UUID.
-        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(target_root, ai_name)
-            if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
-                matched = lone
+
+        def pick() -> "Path | None":
+            # Resume this session's own prior conversation by its exact transcript UUID.
+            found = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(target_root, ai_name)
+                if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
+                    found = lone
+            return found
+
+        matched, restored = _pick_with_archive_restore(_cc_project_dir(target_root), pick)
         if matched is not None:
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
                 raise _LiveClaudeSessionError(ai_name, pid, matched)
+            _transcript_restore.restore_session(session_id, restored)
             command += ["--resume", session_id]
         command += ["--name", ai_name]
         return command + extra_args
@@ -2454,19 +2487,27 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         cwd, title = Path(argv[1]), argv[2]
         restarting = "--restart" in argv[3:]
-        try:
-            matched = (
+
+        def pick() -> "Path | None":
+            found = (
                 _pick_cc_restart_transcript(cwd, title)
                 if restarting
                 else _pick_cc_resume_transcript(cwd, title, Tag.INTERNAL)
             )
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(cwd, title)
+                if lone is not None and _confirm_mismatched_title_resume(title, lone):
+                    found = lone
+            return found
+
+        try:
+            matched, _restored = _pick_with_archive_restore(_cc_project_dir(cwd), pick)
+        except _transcript_restore.TranscriptRestoreError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(_RESTORE_FAILED_STATUS)
         except _ClaudeRestartTranscriptError as exc:
             _out.error(Tag.INTERNAL, "resume", str(exc))
             sys.exit(1)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(cwd, title)
-            if lone is not None and _confirm_mismatched_title_resume(title, lone):
-                matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
@@ -2478,6 +2519,16 @@ def _handle_internal(argv: list[str]) -> None:
                     _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(title, pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
+        sys.exit(0)
+    elif action == "restore-transcript":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal restore-transcript <session_id>", err=True)
+            sys.exit(1)
+        try:
+            _transcript_restore.restore_session(argv[1])
+        except _transcript_restore.TranscriptRestoreError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(_RESTORE_FAILED_STATUS)
         sys.exit(0)
     elif action == "update-session-map":
         if len(argv) < 4:
@@ -6318,6 +6369,9 @@ def _do_session_launch(
                 resume=resume,
                 pi_provider=pi_provider,
             )
+        except _transcript_restore.TranscriptRestoreError as exc:
+            reporter.error("resume", str(exc))
+            sys.exit(1)
         except _LiveClaudeSessionError as exc:
             # tmux can reattach only when it already owns the live process. A
             # raw bare process has no shared terminal to attach to, so refuse
@@ -7821,6 +7875,18 @@ def cmd_upgrade():
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
     _exec_handoff(uv_bin, upgrade_args)
+
+
+@_cli_group.command("list-capabilities", help="Print the optional behaviours this launcher has enabled, one per line")
+def cmd_list_capabilities():
+    """Print one token per enabled optional behaviour, for a deployment's tooling to probe.
+
+    \b
+    transcript-restore  [resume_restore] command is set: it runs before every Claude Code
+                        resume, and a failure stops the resume
+    """
+    if _transcript_restore.configured():
+        _out.raw(Untagged.CAPABILITY, _transcript_restore.CAPABILITY)
 
 
 @_cli_group.command("register", help="Register a repository root and its task prefix")
