@@ -40,7 +40,7 @@ vocabulary = [
     "connect", "reconnect", "auth-wait", "session", "worktree", "terminal", "tmux", "direnv",
     "mode", "handoff", "ensure", "reload", "config", "load", "plan", "cleanup", "exit", "general",
     "adopt", "allocate", "apply", "attach", "audit", "check", "compact", "configure", "heartbeat",
-    "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
+    "fetch", "history", "lease", "list", "migrate", "notify", "open", "profiles", "prune", "pull", "push",
     "refresh", "register", "repair", "report", "resolve", "restore", "resume", "retire", "scrape",
     "set", "stage", "status", "stop", "sync", "translate", "usage", "validate", "watch",
     "add", "remove", "spare", "reconcile", "release", "reassign", "locate", "publish", "display",

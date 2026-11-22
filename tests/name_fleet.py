@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from ai_cli import config as _config
-from ai_cli import name_list, session_naming
+from ai_cli import name_list, retry, session_naming
 from ai_cli import name_registry as reg
 from ai_cli.launch_reporter import LaunchReporter
 
@@ -59,11 +59,22 @@ REGISTRY_TEST_TIMEOUT_S = 170
 SHIPPED_BUDGET_DEFAULTS = {
     name: getattr(_config, name)
     for name in (
-        "REGISTRY_FETCH_TIMEOUT_DEFAULT_S",
         "REGISTRY_PUSH_TIMEOUT_DEFAULT_S",
         "REGISTRY_CLONE_TIMEOUT_DEFAULT_S",
     )
 }
+SHIPPED_RETRY_TABLE = retry.shipped_table()
+
+
+def _widened_retry_table() -> dict:
+    """The shipped ``[retry]`` table with the registry fetch's budget raised to the fixtures' own."""
+    fetch = SHIPPED_RETRY_TABLE["registry_fetch"]
+    widened = {
+        "timeout_seconds": max(fetch["timeout_seconds"], REGISTRY_TEST_TIMEOUT_S),
+        "max_timeout_seconds": max(fetch["max_timeout_seconds"], REGISTRY_TEST_TIMEOUT_S),
+    }
+    return {**SHIPPED_RETRY_TABLE, "registry_fetch": {**fetch, **widened}}
+
 
 POLICY_TOML = textwrap.dedent(
     f"""\
@@ -152,6 +163,7 @@ def shipped_budget_defaults(monkeypatch) -> None:
     """Put back the fetch, push and clone defaults ``build_fleet`` widened, for a test of them."""
     for name, shipped in SHIPPED_BUDGET_DEFAULTS.items():
         monkeypatch.setattr(_config, name, shipped)
+    monkeypatch.setattr(retry, "shipped_table", lambda: SHIPPED_RETRY_TABLE)
 
 
 def policy_of(repo: Path, policy_toml: str | None = None) -> dict:
@@ -425,6 +437,8 @@ def build_fleet(
     monkeypatch.setattr(reg, "common_words", lambda policy, **_: frozenset({"may", "art", "sun"}))
     for name, shipped in SHIPPED_BUDGET_DEFAULTS.items():
         monkeypatch.setattr(_config, name, max(shipped, REGISTRY_TEST_TIMEOUT_S))
+    widened = _widened_retry_table()
+    monkeypatch.setattr(retry, "shipped_table", lambda: widened)
     registry = registry_for(repo, backend=backend)
     fleet = Fleet(tmp=tmp_path, projects=projects, remote=remote, repo=repo, registry=registry, backend=backend)
     if backend == "dolt":
