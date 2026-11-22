@@ -24,6 +24,7 @@ import pytest
 from conftest import run_cli
 from name_fleet import build_fleet, git, policy_of
 
+from ai_cli import main, retry
 from ai_cli import name_registry as reg
 from ai_cli.main import _auto_update_if_stale, _do_update_or_deploy, _ensure_dolt_server
 
@@ -218,6 +219,135 @@ def test_given_a_stale_install_when_a_launch_updates_it_then_the_child_update_re
     ):
         _auto_update_if_stale({"deploy": {"project_path": str(checkout)}})
 
-    [update] = [c for c in children if c[1:2] == ["update"]]
+    [update] = [c for c in children if "update" in c]
     assert "--force" in update
     assert "--package-only" in update
+
+
+def test_given_a_stale_install_when_a_launch_updates_it_then_the_child_is_this_running_package(checkout, tmp_path):
+    """An `ai` found on PATH may be an older install that rejects --package-only; this interpreter is not."""
+    state = tmp_path / "state"
+    state.mkdir()
+    children: list[list[str]] = []
+
+    def run(cmd, **_kwargs):
+        children.append(list(cmd))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("ai_cli.main._find_aicli_project_path", return_value=checkout),
+        patch("ai_cli.config.get_xdg_state_home", return_value=state),
+        patch("shutil.which", return_value="/usr/bin/ai"),
+        patch("subprocess.run", side_effect=run),
+    ):
+        _auto_update_if_stale({"deploy": {"project_path": str(checkout)}})
+
+    [update] = [c for c in children if "update" in c]
+    assert update[:4] == [sys.executable, "-P", "-m", "ai_cli.main"]
+    assert update[4:7] == ["update", "--force", "--package-only"]
+
+
+# -- the policy's own shape ------------------------------------------------------------------
+
+
+def _sites() -> list[str]:
+    return [name for name, value in retry.shipped_table().items() if isinstance(value, dict)]
+
+
+def _worst_case(policy: retry.RetryPolicy) -> float:
+    timeouts = sum(policy.timeout_for(n) for n in range(1, policy.attempts + 1))
+    delays = sum(policy.delay_after(n, rand=lambda: 0.0) for n in range(1, policy.attempts))
+    return timeouts + delays
+
+
+def test_given_the_shipped_policies_when_read_then_timeouts_never_shrink_and_every_attempt_fits_the_total(
+    tmp_path, monkeypatch, capsys
+):
+    _write_config(tmp_path, monkeypatch, "")
+
+    for site in _sites():
+        policy = retry.policy(site)
+        timeouts = [policy.timeout_for(n) for n in range(1, policy.attempts + 1)]
+        assert timeouts == sorted(timeouts), site
+        assert _worst_case(policy) <= policy.max_total_seconds, site
+    assert capsys.readouterr().err == "", "no shipped policy contradicts itself"
+
+
+@pytest.mark.parametrize(
+    ("table", "keys"),
+    [
+        ("attempts = 3\ntimeout_seconds = 5\ngrowth = 2\nmax_timeout_seconds = 20\nmax_total_seconds = 12\n",
+         ["attempts", "max_total_seconds"]),
+        ("timeout_seconds = 12\nmax_timeout_seconds = 12\nmax_total_seconds = 12\n",
+         ["timeout_seconds", "max_total_seconds"]),
+    ],
+)  # fmt: skip
+def test_given_a_total_that_cannot_admit_the_attempts_when_a_site_reads_its_policy_then_it_warns_naming_site_and_keys(
+    tmp_path, monkeypatch, capsys, table, keys
+):
+    _write_config(tmp_path, monkeypatch, f"[retry.wake_sidecar]\n{table}")
+
+    retry.policy("wake_sidecar")
+
+    err = capsys.readouterr().err
+    assert "retry.wake_sidecar" in err
+    assert all(key in err for key in keys), err
+
+
+def test_given_a_delay_that_overshoots_the_total_when_retrying_then_it_stops_before_calling_with_no_time_left(
+    tmp_path, monkeypatch
+):
+    _write_config(
+        tmp_path,
+        monkeypatch,
+        "[retry.wake_sidecar]\nattempts = 3\ntimeout_seconds = 1\nmax_timeout_seconds = 1\n"
+        "delay_seconds = 0.1\njitter = 0\nmax_total_seconds = 2\n",
+    )
+    timeouts: list[float] = []
+
+    def call(attempt: retry.Attempt) -> None:
+        timeouts.append(attempt.timeout)
+        raise TimeoutError("no answer")
+
+    with pytest.raises(retry.RetryExhaustedError) as exhausted:
+        retry.run(
+            "wake_sidecar", call, transient=lambda exc: isinstance(exc, TimeoutError), sleep=lambda _s: time.sleep(2.2)
+        )
+
+    assert timeouts == [1]
+    assert exhausted.value.attempts == 1
+    assert str(exhausted.value.last) == "no answer"
+
+
+# -- the show lookup, and the ensure and show together ---------------------------------------
+
+
+def test_given_a_hung_sidecar_when_the_ensure_and_the_show_lookup_both_run_then_together_they_stay_within_twice_the_total(
+    tmp_path, monkeypatch
+):
+    script = _hanging_script(tmp_path / "myhub" / "scripts", "wake_sidecar_cli.py")
+    _write_config(
+        tmp_path,
+        monkeypatch,
+        "[retry.wake_sidecar]\nattempts = 2\ntimeout_seconds = 1\ngrowth = 1.5\nmax_timeout_seconds = 1.5\n"
+        "delay_seconds = 0.2\nmax_total_seconds = 3\n",
+    )
+    bound = 2 * retry.policy("wake_sidecar").max_total_seconds
+    errors, warnings = [], []
+
+    with (
+        patch("ai_cli.main._wake_sidecar_script", return_value=script),
+        patch("ai_cli.main._sidecar_unit_manager_available", return_value=True),
+        patch("ai_cli.main._out.error", side_effect=lambda *args, **_kwargs: errors.append(args)),
+        patch("ai_cli.main._out.warning", side_effect=lambda *args, **_kwargs: warnings.append(args)),
+    ):
+        started = time.monotonic()
+        main._ensure_wake_sidecar({})
+        loop = main._session_wake_watch_loop({}, "myproject-tst-1")
+        elapsed = time.monotonic() - started
+
+    assert elapsed < bound + 2.0, f"ensure and show held the launch {elapsed:.1f} s"
+    assert _calls(script) == 4, "each of the two lookups made both of its attempts"
+    assert loop is None
+    assert any("wake sidecar failed" in message for _tag, _op, message in errors)
+    assert any("wake watcher unavailable" in message for _tag, _op, message in warnings)
