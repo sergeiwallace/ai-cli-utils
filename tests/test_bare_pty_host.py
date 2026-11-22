@@ -342,6 +342,20 @@ def test_given_an_agent_slower_to_start_than_the_drive_waits_when_the_drive_give
 
 
 @posix_pty
+def test_given_a_bare_agent_when_it_exits_at_startup_then_the_launch_log_keeps_the_terminal_output(
+    session_factory, tmp_path
+):
+    session = session_factory(lambda running: running.terminal.type(b"EXIT"))
+
+    assert session.run() == 7
+    [log] = (tmp_path / "state" / "ai-cli-utils" / "launch-logs").glob("*.log")
+    text = log.read_text(encoding="utf-8")
+    assert "claude exited with status 7" in text
+    assert "AGENT READY" in text
+    assert "\x1b" not in text
+
+
+@posix_pty
 def test_given_a_bare_launch_when_text_is_written_to_the_submission_fifo_then_the_agent_reads_it(session_factory):
     def drive(session: _Session) -> None:
         fifo = session.fifo()
