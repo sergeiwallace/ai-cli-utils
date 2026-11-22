@@ -27,7 +27,8 @@ from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_clients import PRESENT, Codex
 
 SCHEMA_VERSION = 2
-SUPPORTED_VERSIONS = {"0.169.0", "0.171.0"}
+PROVEN_VERSIONS = {"0.169.0", "0.171.0"}
+CLIENT_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
 HOOK_COMMAND = "ai internal codex-session-confirm"
 HOOK_DECLARATION = 'hooks.SessionStart=[{hooks=[{type="command",command=' + json.dumps(HOOK_COMMAND) + "}]}]"
 SLOT_RECORD_ENV = "AI_CLI_CODEX_SLOT_RECORD"
@@ -45,7 +46,7 @@ def hook_contract() -> dict:
     key = "/<session-flags>/config.toml:session_start:0:0"
     return {
         "schema_version": 1,
-        "supported_client_versions": sorted(SUPPORTED_VERSIONS),
+        "supported_client_versions": sorted(PROVEN_VERSIONS),
         "event": "SessionStart",
         "command": HOOK_COMMAND,
         "declaration": HOOK_DECLARATION,
@@ -200,8 +201,8 @@ def prepare(
     path = path.resolve()
     if "\n" in str(path) or "\r" in str(path):
         raise IdentityError("Codex slot path cannot be represented in the launcher reply")
-    if client_version not in SUPPORTED_VERSIONS:
-        raise IdentityError("Codex client version is unsupported; identity result is unknown")
+    if not CLIENT_VERSION.fullmatch(client_version):
+        raise IdentityError("Codex client version is unreadable; identity result is unknown")
     path.parent.mkdir(parents=True, exist_ok=True)
     with portalocker.Lock(str(path) + ".lock", timeout=5):
         doc = _read(path) if path.exists() else None
@@ -284,8 +285,8 @@ def confirm(path: Path, token: str, event: object) -> None:
             or "transcript_path" not in event
         ):
             raise IdentityError("Codex confirmation identity is incompatible with the launch")
-        if doc["in_flight"]["client_version"] not in SUPPORTED_VERSIONS:
-            raise IdentityError("unsupported Codex client confirmation")
+        if not CLIENT_VERSION.fullmatch(str(doc["in_flight"]["client_version"])):
+            raise IdentityError("unreadable Codex client confirmation")
         if rollout:
             doc["resumable"] = {"thread_id": thread, "rollout_path": rollout}
         doc.update(

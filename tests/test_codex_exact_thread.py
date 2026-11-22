@@ -304,12 +304,12 @@ def test_given_ephemeral_native_confirmation_when_writer_is_live_then_collision_
         prepare(record, worktree, SLOT, fresh=False, route="local-tmux", client_version="0.169.0")
 
 
-def test_given_unsupported_client_when_prepared_then_confirmed_identity_is_preserved(collision):
+def test_given_unreadable_client_when_prepared_then_confirmed_identity_is_preserved(collision):
     from ai_cli.codex_session import IdentityError, prepare
 
     worktree, _, record = collision
-    with pytest.raises(IdentityError, match="unsupported"):
-        prepare(record, worktree, SLOT, fresh=False, route="paired-host-tmux", client_version="99.0.0")
+    with pytest.raises(IdentityError, match="unreadable"):
+        prepare(record, worktree, SLOT, fresh=False, route="paired-host-tmux", client_version="unknown")
     doc = json.loads(record.read_text())
     assert doc["result"] == "confirmed" and doc["phase"] == "confirmed"
     assert doc["client_version"] == "0.169.0" and doc["route"] == "local-tmux"
@@ -449,14 +449,14 @@ def test_given_invalid_event_when_direct_confirmation_runs_then_record_is_unchan
     assert record.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", ["0.169.0", "0.171.0", "0.170.0"])
-def test_given_client_version_when_prepared_then_only_supported_versions_reserve_slot(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize("version", ["0.169.0", "0.171.0", "0.170.0", "0.172.3", "unknown", "", "0.171.0-beta"])
+def test_given_client_version_when_prepared_then_any_readable_version_reserves_slot(tmp_path, monkeypatch, version):
     from ai_cli.codex_session import IdentityError, prepare
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native"))
     record = tmp_path / "slot.json"
-    if version == "0.170.0":
-        with pytest.raises(IdentityError, match="client version is unsupported"):
+    if version in {"unknown", "", "0.171.0-beta"}:
+        with pytest.raises(IdentityError, match="client version is unreadable"):
             prepare(record, tmp_path, "test-session", fresh=True, route="local-tmux", client_version=version)
         assert not record.exists()
         assert not record.with_suffix(".json.lock").exists()
