@@ -1032,6 +1032,15 @@ stale_session_timeout = 15
 # max_timeout_seconds = 20
 # max_total_seconds = 10
 
+[retry.dolt_server]
+## The optional local Dolt supervisor's ensure before a launch. It used to wait with no
+## bound. Asked once: a hung ensure would hang again. Stopping the ensure stops only the
+## wait; a server it asked the unit manager to start keeps starting, and the launch
+## continues as it does when the supervisor reports its embedded fallback.
+# attempts = 1
+# timeout_seconds = 120
+# max_timeout_seconds = 120
+
 [retry.remote_allocation]
 ## The ssh call that asks a remote host which session a remote launch attaches to. A call
 ## that overruns its timeout, or is killed from outside, never answered, so it is asked

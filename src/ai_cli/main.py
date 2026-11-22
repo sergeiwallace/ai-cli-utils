@@ -218,12 +218,32 @@ def _ensure_dolt_server() -> None:
     script = _dolt_server_script()
     if script is None:
         return
-    _out.run_relayed(
-        Tag.DOLT_SERVER,
-        "ensure",
-        [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
-        check=False,
-    )
+
+    def attempt(current: _retry.Attempt) -> None:
+        try:
+            _out.run_relayed(
+                Tag.DOLT_SERVER,
+                "ensure",
+                [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
+                check=False,
+                timeout=current.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise _DoltEnsureTimeoutError(
+                f"the Dolt server ensure did not finish within {current.timeout:g} s"
+            ) from exc
+
+    # Bounded under [retry.dolt_server]. Stopping the ensure stops only this wait: a server it
+    # asked the unit manager to start keeps starting, and the launch continues as it does when
+    # the supervisor reports its embedded fallback.
+    try:
+        _retry.run("dolt_server", attempt, transient=lambda exc: isinstance(exc, _DoltEnsureTimeoutError))
+    except _retry.RetryExhaustedError as exc:
+        _out.error(Tag.DOLT_SERVER, "ensure", f"{exc}; launch continues")
+
+
+class _DoltEnsureTimeoutError(Exception):
+    """The Dolt supervisor's ensure did not answer within its attempt's timeout."""
 
 
 def _wake_sidecar_script() -> Path | None:
