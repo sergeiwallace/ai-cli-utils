@@ -1664,6 +1664,33 @@ apply to every site, ahead of the shipped per-site tables; a `[retry.<site>]` ta
 yours overrides one site. An invalid value is reported, naming the key, and the shipped
 value is used.
 
+Some waits stay outside the policy, each for its own reason:
+
+- The launch-time `ai update --force --package-only` child has no timeout. It rewrites
+  the launcher's own environment, and uv is not atomic about it, so a timeout could leave
+  `ai` unable to start; a retry would repeat a whole pull and install. The launch shows a
+  "still checking" heartbeat, and the summary line times each step.
+- A launch waiting for a peer's update polls that peer's lock for up to 90 seconds. It is a
+  wait on another process, not a call that can be asked again.
+- A failed auto-update is retried on a later launch, 15 minutes after the first failure and
+  doubling to 6 hours. That schedule spans launches and is kept on disk, so each launch
+  reads the same wait.
+- Launch extensions carry their own `timeout` and `on_error` in `[extensions.run.<name>]`,
+  because they run commands of yours that may not be safe to repeat.
+- A push to a shared name registry and a host's first Dolt clone keep their single budgets,
+  `[session_names] registry_push_timeout_seconds` and `registry_clone_timeout_seconds`. A
+  timed-out push may have landed, and the publish loop already re-fetches and retries a
+  lost race; a timed-out clone leaves a partial database behind.
+- `ai names`' check that a remote Dolt ref exists makes one call on the first
+  `[retry.registry_fetch]` timeout. Its failure already has a defined outcome.
+- The `AI_HOST` refresh asks a login shell and then tmux, each under
+  `[relaunch] host_refresh_timeout_seconds`. When one probe times out the next answers, so
+  retrying the first would only delay the answer.
+- The session watcher's tmux window is created in one call, because a second call would
+  open a second watcher.
+- The relaunch hold, final-exit persistence and the ssh reconnect loop have their own
+  configured bounds in `[relaunch]`, `[session_relaunch.exit_persistence]` and `[remote]`.
+
 ### Output configuration
 
 An `[output]` table in `config.toml` controls every element of every line an `ai`

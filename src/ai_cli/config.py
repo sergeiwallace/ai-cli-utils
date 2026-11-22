@@ -1012,7 +1012,8 @@ stale_session_timeout = 15
 ## credential, is reported once with its cause. Read on every call, so an edit applies to
 ## the next one. A [retry.<site>] table overrides any of these keys for one site. A key
 ## your file leaves out takes the shipped value, the one shown here; your own [retry]
-## values apply to every site, ahead of the shipped per-site tables.
+## values apply to every site, ahead of the shipped per-site tables. The waits kept
+## outside this policy, and why, are listed under "Retries" in the README.
 # attempts = 3
 # timeout_seconds = 10
 # growth = 2.0
