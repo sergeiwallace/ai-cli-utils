@@ -18,6 +18,7 @@ import pytest
 from process_ownership import owned_sleeper
 
 from ai_cli import direnv_exec, direnv_setup
+from ai_cli import session_script as _session_script
 from ai_cli.main import (
     _auto_update_if_stale,
     _cmd_tunnel_start,
@@ -2195,7 +2196,11 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows has no process group to hand the terminal to: a foreground child.
+            assert '"$_supervisor_script" --ai-cli-child-body\n' in script
+        else:
+            assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
         assert '"$_supervisor_script" --ai-cli-child-body &' not in script
         assert "exit 78" in script
         assert f'exec "{shell}" "$_script_stable_path"' not in script

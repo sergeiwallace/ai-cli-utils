@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from conftest import hold_file_lock, make_iterm2_config, run_cli
 
+from ai_cli import session_script as _session_script
 from ai_cli.main import (
     _UPDATE_RETRY_BASE_SECONDS,
     _UPDATE_RETRY_MAX_SECONDS,
@@ -286,7 +287,11 @@ class TestGetEngineScript:
         # that does not kills the pane on the session's first self-update.
         _shell = resolve_session_shell()
         assert _shell is not None and os.access(_shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows has no process group to hand the terminal to: a foreground child.
+            assert '"$_supervisor_script" --ai-cli-child-body\n' in script
+        else:
+            assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
         assert '"$_supervisor_script" --ai-cli-child-body &' not in script
         assert "acquire-generation-lease" in script
         assert "exit 78" in script
