@@ -280,15 +280,17 @@ def get_engine_script(
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
     # next exit with no relaunch; a missing, unreadable or malformed file leaves restarts on.
+    # The boot relaunch policy stops a restart only through stops_restart_after_exit (AI-CLI-4dil8).
     _relaunch_policy_command = shlex.join(
         pinned_python(
             "import json; from pathlib import Path; "
             "from ai_cli.config import auto_restart_enabled; "
+            "from ai_cli.session_run_state import stops_restart_after_exit; "
             f"doc = json.loads(Path({registry_path().as_posix()!r}).read_text()); "
-            f"policy = next((r.get('relaunch', 'auto') for r in doc['sessions'] "
-            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), 'auto'); "
-            f"print('auto_restart_off' if policy != 'never' and not auto_restart_enabled({config_file_text()!r}) "
-            "else policy)"
+            f"record = next((r for r in doc['sessions'] "
+            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), {{}}); "
+            "print('never' if stops_restart_after_exit(record) "
+            f"else 'auto' if auto_restart_enabled({config_file_text()!r}) else 'auto_restart_off')"
         )
     )
 
@@ -899,8 +901,11 @@ def get_engine_script(
         if (( _child_status != 78 )); then
           _relaunch_policy=$({_relaunch_policy_command} 2>/dev/null)
           if [[ "$_relaunch_policy" == never || "$_relaunch_policy" == auto_restart_off ]]; then
-            [[ "$_relaunch_policy" == auto_restart_off ]] && \
+            if [[ "$_relaunch_policy" == auto_restart_off ]]; then
               _ai_emit info exit {shlex.quote(f"not restarting: [session] auto_restart = false in {config_file_text()}")}
+            else
+              _ai_emit info exit {shlex.quote(f"not restarting: relaunch policy never (`ai sessions policy {session} auto` restores restarts)")}
+            fi
             _ai_final_manual_exit
             _supervisor_preserve_pane
             break

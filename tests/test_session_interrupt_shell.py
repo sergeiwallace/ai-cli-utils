@@ -292,11 +292,10 @@ def pane_session(request, tmp_path, monkeypatch):
             assert "KeyboardInterrupt" not in self.output.read_text()
             assert "Traceback" not in self.output.read_text()
 
-        def set_policy(self, policy, *, by=None):
+        def set_policy(self, policy, *, by="owner"):
+            # The write `ai sessions policy` makes; the launch's own default is `default`.
             def change(doc):
-                doc["sessions"][0]["relaunch"] = policy
-                if by is not None:
-                    doc["sessions"][0]["relaunch_set_by"] = by
+                doc["sessions"][0].update(relaunch=policy, relaunch_set_by=by)
                 return True
 
             registry._mutate(change)
