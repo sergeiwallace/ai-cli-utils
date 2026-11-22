@@ -157,7 +157,7 @@ class DoltRegistry(reg.FleetRegistry):
             output = "".join(_text(part) for part in (exc.stdout, exc.stderr)).strip()
             if output:
                 message += f"; its last output: {output.splitlines()[-1]}"
-            raise reg.RegistryUnreachableError(message) from exc
+            raise reg.RegistryUnreachableError(message, transient=True) from exc
         if check and result.returncode != 0:
             raise reg.RegistryError(f"dolt {' '.join(args[:2])} failed: {(result.stderr or result.stdout).strip()}")
         return result
@@ -308,10 +308,13 @@ class DoltRegistry(reg.FleetRegistry):
             )
 
     def _fetch(self) -> None:
-        result = self.dolt("fetch", "origin", timeout=self.fetch_timeout_s(), check=False)
+        self.retrying_fetch(self._fetch_once)
+
+    def _fetch_once(self, timeout: float) -> None:
+        result = self.dolt("fetch", "origin", timeout=timeout, check=False)
         if result.returncode != 0:
-            raise reg.RegistryUnreachableError(
-                f"could not fetch {self.dolt_ref} from {self.remote}: {(result.stderr or result.stdout).strip()}"
+            raise reg.fetch_failure(
+                f"could not fetch {self.dolt_ref} from {self.remote}", result.stderr or result.stdout
             )
 
     def snapshot(self, *, fetch: bool = True) -> reg.Snapshot:

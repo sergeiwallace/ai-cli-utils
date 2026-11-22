@@ -830,7 +830,7 @@ def test_given_distinct_fetch_and_push_timeouts_when_writing_then_each_dolt_call
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_fetch_timeout_seconds = 401\nregistry_push_timeout_seconds = 407\n",
+        "[session_names]\nregistry_push_timeout_seconds = 407\n[retry.registry_fetch]\ntimeout_seconds = 401\nmax_timeout_seconds = 401\n",
     )
     calls = _dolt_calls(monkeypatch)
 
@@ -843,7 +843,7 @@ def test_given_distinct_fetch_and_push_timeouts_when_writing_then_each_dolt_call
     assert reg.read_spool() == {}
 
 
-@pytest.mark.parametrize("key", ["registry_fetch_timeout_seconds", "registry_push_timeout_seconds"])
+@pytest.mark.parametrize("key", ["registry_push_timeout_seconds"])
 def test_given_an_invalid_timeout_setting_when_writing_then_it_refuses_naming_the_setting(fleet, monkeypatch, key):
     _user_config(fleet, monkeypatch, f"[session_names]\n{key} = -1\n")
     tip = fleet.tip()
@@ -893,7 +893,7 @@ def test_given_a_clone_timeout_setting_when_cloning_then_only_the_clone_uses_it(
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_clone_timeout_seconds = 601\nregistry_fetch_timeout_seconds = 302\n",
+        "[session_names]\nregistry_clone_timeout_seconds = 601\n[retry.registry_fetch]\ntimeout_seconds = 302\nmax_timeout_seconds = 302\n",
     )
     fresh = fleet.other_machine("configured-clone")
     calls = _dolt_calls(monkeypatch)

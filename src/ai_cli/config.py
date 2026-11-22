@@ -599,12 +599,11 @@ def read_naming_config(config: dict) -> dict:
     return result
 
 
-# A registry fetch's own budget, separate from the registry's publish timeout: in a
-# checkout with thousands of refs on a loaded host, fetching the one registry ref has
-# been measured taking 16 to 27 seconds.
-REGISTRY_FETCH_TIMEOUT_DEFAULT_S = 60
-# A registry push's own budget, for the same reason: a push of one small commit to the
-# registry ref from such a checkout has been measured at 30 seconds.
+# A registry push's own budget, separate from the registry's publish timeout: a push of
+# one small commit to the registry ref from a checkout with thousands of refs on a
+# loaded host has been measured at 30 seconds. A push is not retried here: the publish
+# loop already re-fetches and retries a lost race, and a push that timed out may have
+# landed. A fetch's budget is the [retry.registry_fetch] policy.
 REGISTRY_PUSH_TIMEOUT_DEFAULT_S = 60
 # A host's first clone of a Dolt registry has its own budget. On Windows CI, with Dolt
 # 2.3.4, clones of a small test registry overran 60 seconds in 22 of 73 tests of one
@@ -621,11 +620,6 @@ def _read_registry_timeout(config: dict, key: str, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"invalid session_names.{key}: use a positive number of seconds")
     return value
-
-
-def read_registry_fetch_timeout(config: dict) -> float:
-    """``[session_names] registry_fetch_timeout_seconds``; every registry fetch reads it fresh."""
-    return _read_registry_timeout(config, "registry_fetch_timeout_seconds", REGISTRY_FETCH_TIMEOUT_DEFAULT_S)
 
 
 def read_registry_push_timeout(config: dict) -> float:
@@ -960,10 +954,9 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
-## Seconds one fetch, and one push, of a shared name registry may take before the
-## registry counts as unreachable, each read on every call. Separate from the
-## registry's publish timeout.
-# registry_fetch_timeout_seconds = 60
+## Seconds one push of a shared name registry may take before the registry counts as
+## unreachable, read on every push. Separate from the registry's publish timeout. A
+## fetch's budget and retries are [retry.registry_fetch] below.
 # registry_push_timeout_seconds = 60
 ## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
 ## 300 on Windows.

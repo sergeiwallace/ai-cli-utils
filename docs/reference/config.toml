@@ -252,10 +252,9 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
-## Seconds one fetch, and one push, of a shared name registry may take before the
-## registry counts as unreachable, each read on every call. Separate from the
-## registry's publish timeout.
-# registry_fetch_timeout_seconds = 60
+## Seconds one push of a shared name registry may take before the registry counts as
+## unreachable, read on every push. Separate from the registry's publish timeout. A
+## fetch's budget and retries are [retry.registry_fetch] below.
 # registry_push_timeout_seconds = 60
 ## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
 ## 300 on Windows.

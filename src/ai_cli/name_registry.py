@@ -41,17 +41,23 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TypeVar
 
 import portalocker
 
 from . import __version__, name_list
 from . import config as _config
+from . import output as _out
+from . import retry as _retry
 from .git_repair import _GIT_TARGETING_VARS
+from .output import Tag
 
 POLICY_FILENAME = "session-names.toml"
 POLICY_MARKER = Path("config") / POLICY_FILENAME
 FLEET_PROJECTS_MARKER = _config.FLEET_REGISTRY_MARKER
 PRIVATE_REF = "refs/session-names/registry"
+
+_T = TypeVar("_T")
 
 NAMES_DIR = "names"
 NAMES_TXT = "available/names.txt"
@@ -126,7 +132,54 @@ class RegistryError(RuntimeError):
 
 
 class RegistryUnreachableError(RegistryError):
-    """A fetch or push did not complete within the budget: offline, auth, or the remote is down."""
+    """A fetch or push did not complete: offline, auth, or the remote is down.
+
+    ``transient`` marks the failures asking again can cure, a timeout or a lost connection;
+    the fetch's retry policy retries only those.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+class RegistryAuthError(RegistryUnreachableError):
+    """The remote refused this host's credential: a definite answer, reported once and never retried."""
+
+
+# What git and its credential helpers print when the remote refuses, or cannot be given, a
+# credential. Checked before the connection patterns: ssh's refusal ends in "Could not read
+# from remote repository", which on its own reads as a dropped connection.
+_AUTH_REFUSAL = re.compile(
+    r"could not read (?:Username|Password)|Authentication failed|Permission denied \(publickey"
+    r"|HTTP Basic: Access denied|Invalid username or password|returned error: 40[13]",
+    re.IGNORECASE,
+)
+# A remote that was not reached or dropped the transfer: asking again can succeed.
+_CONNECTION_FAILURE = re.compile(
+    r"Could not resolve host|Could not resolve hostname|Connection (?:timed out|refused|reset)"
+    r"|Failed to connect|Operation timed out|early EOF|remote end hung up unexpectedly"
+    r"|Could not read from remote repository|RPC failed|returned error: 5\d\d|Network is unreachable"
+    r"|TLS connection was non-properly terminated|SSL_ERROR|unexpected disconnect",
+    re.IGNORECASE,
+)
+
+
+def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
+    """The error for a failed registry fetch, told apart by what the transport printed.
+
+    A refused credential becomes :class:`RegistryAuthError` naming git's own final line and the
+    helper's first, never a credential helper's whole restore walkthrough, which is advice for
+    a human at a prompt the launch does not have. A lost connection is marked transient. Any
+    other failure is a definite answer and is reported in full, once.
+    """
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if _AUTH_REFUSAL.search(stderr):
+        fatal = next((line for line in reversed(lines) if _AUTH_REFUSAL.search(line)), lines[-1])
+        helper = next((line for line in lines if not line.lower().startswith(("fatal:", "error:"))), "")
+        said = f" (the credential helper said: {helper})" if helper and helper != fatal else ""
+        return RegistryAuthError(f"{what}: authentication refused: {fatal}{said}")
+    return RegistryUnreachableError(f"{what}: {stderr.strip()}", transient=bool(_CONNECTION_FAILURE.search(stderr)))
 
 
 class RegistryContendedError(RegistryError):
@@ -584,7 +637,7 @@ class FleetRegistry(Registry):
         except subprocess.TimeoutExpired as exc:
             self._clear_own_lock()
             raise RegistryUnreachableError(
-                f"`git {args[0]}` against {self.remote} did not finish within {timeout:g} s"
+                f"`git {args[0]}` against {self.remote} did not finish within {timeout:g} s", transient=True
             ) from exc
         if check and result.returncode != 0:
             raise RegistryError(f"git {' '.join(args[:2])} failed: {result.stderr.decode(errors='replace').strip()}")
@@ -601,11 +654,35 @@ class FleetRegistry(Registry):
             (self._git_dir() / f"{PRIVATE_REF}.lock").unlink(missing_ok=True)
 
     def fetch_timeout_s(self) -> float:
-        """The fetch budget from config.toml, read on every fetch."""
+        """The first attempt's budget under ``[retry.registry_fetch]``, read now, for a single bounded fetch."""
+        return _retry.policy("registry_fetch").timeout_for(1)
+
+    def retrying_fetch(self, fetch_once: Callable[[float], _T]) -> _T:
+        """``fetch_once(timeout)`` under the ``registry_fetch`` retry policy, read now.
+
+        A timeout or a lost connection is retried with the next attempt's longer timeout, and
+        each retry says so; a refused credential or any other definite answer is raised at
+        once. Exhausted attempts raise :class:`RegistryUnreachableError` naming the count and
+        the last cause, so every caller's offline fallback still applies.
+        """
+
+        def retrying(attempt: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
+            _out.warning(
+                Tag.NAMES,
+                "fetch",
+                f"registry fetch attempt {attempt.number} of {attempt.of} failed: {exc}; "
+                f"retrying with {next_timeout:g} s",
+            )
+
         try:
-            return _config.read_registry_fetch_timeout(_config.load_config(read_only=True))
-        except ValueError as exc:
-            raise RegistryError(str(exc)) from exc
+            return _retry.run(
+                "registry_fetch",
+                lambda attempt: fetch_once(attempt.timeout),
+                transient=lambda exc: isinstance(exc, RegistryUnreachableError) and exc.transient,
+                on_retry=retrying,
+            )
+        except _retry.RetryExhaustedError as exc:
+            raise RegistryUnreachableError(str(exc)) from exc
 
     def push_timeout_s(self) -> float:
         """The push budget from config.toml, read on every push."""
@@ -626,6 +703,9 @@ class GitRegistry(FleetRegistry):
         self.location = f"{remote} {ref} ({repo})"
 
     def _fetch(self) -> str | None:
+        return self.retrying_fetch(self._fetch_once)
+
+    def _fetch_once(self, timeout: float) -> str | None:
         # Offering only the last fetched tip keeps negotiation from walking every local ref,
         # which in a checkout with thousands of refs measured at over a third of the fetch's time.
         negotiation = [f"--negotiation-tip={PRIVATE_REF}"] if self._last_fetched() else []
@@ -637,7 +717,7 @@ class GitRegistry(FleetRegistry):
             *negotiation,
             self.remote,
             f"+{self.ref}:{PRIVATE_REF}",
-            timeout=self.fetch_timeout_s(),
+            timeout=timeout,
             check=False,
         )
         if result.returncode != 0:
@@ -645,7 +725,7 @@ class GitRegistry(FleetRegistry):
             if _MISSING_REMOTE_REF.search(stderr):
                 self._git("update-ref", "-d", PRIVATE_REF, check=False)
                 return None
-            raise RegistryUnreachableError(f"could not fetch {self.ref} from {self.remote}: {stderr.strip()}")
+            raise fetch_failure(f"could not fetch {self.ref} from {self.remote}", stderr)
         return self._last_fetched()
 
     def _last_fetched(self) -> str | None:

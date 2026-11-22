@@ -360,7 +360,9 @@ host file lock (`portalocker`, already a dependency) serializes the package's ow
 CLI processes never open the database for writing together. Reads take the same lock for the short
 time a read runs, because Dolt's own lock falls back silently to read-only for a second opener.
 
-Every `dolt fetch` reads and uses `registry_fetch_timeout_seconds`; every `dolt push` reads and uses
+Every `dolt fetch` runs under the `[retry.registry_fetch]` policy, read on every fetch: each attempt
+gets that policy's growing timeout, a timeout or lost connection is retried, and a refused credential
+is reported once. Every `dolt push` reads and uses
 `registry_push_timeout_seconds`; every `dolt clone` reads and uses `registry_clone_timeout_seconds`,
 which defaults to 300 seconds on Windows, where a first clone has overrun 60, and 60 elsewhere. A
 host's first read or write clones and goes straight on: the clone already holds the remote tip, so
@@ -587,8 +589,8 @@ those tests as not run, never as passed.
     - [ ] When two package processes on one host write at once, the system shall serialize them through the host file lock, and both writes shall land.
     - [ ] If the `dolt` binary is missing, then the system shall raise `RegistryUnreachableError` with a message naming the install step.
     - [ ] If `dolt version` reports a version below the floor in [D-6](#d-6), or `meta.min_reader_version` is above the package's, then the system shall refuse every read and write with a message naming the upgrade.
-    - [ ] When fetch and push timeouts are configured to distinct values above `publish_timeout_s`, every `dolt fetch` shall receive only `registry_fetch_timeout_seconds`, every `dolt push` shall receive only `registry_push_timeout_seconds`, and a fetch or push completing between the old shared budget and its configured budget shall succeed without taking an offline spare.
-    - [ ] If either registry timeout setting is invalid, then the system shall refuse while naming that setting; it shall not silently fall back to `publish_timeout_s`.
+    - [ ] When fetch and push timeouts are configured to distinct values above `publish_timeout_s`, every `dolt fetch` attempt shall receive only its `[retry.registry_fetch]` timeout, every `dolt push` shall receive only `registry_push_timeout_seconds`, and a fetch or push completing between the old shared budget and its configured budget shall succeed without taking an offline spare.
+    - [ ] If the push or clone timeout setting is invalid, then the system shall refuse while naming that setting; it shall not silently fall back to `publish_timeout_s`. An invalid `[retry.registry_fetch]` value is warned about, naming the key, and the shipped value is used, as for every `[retry]` site.
   - **T-1.4 Allocation and transaction parity**
     - [ ] When any session, spare or label token is held, every allocation path shall treat it as occupied in the one shared namespace on both backends.
     - [ ] When a drop-policy launch reserves a label whose last token carries digits (for example `abc2`), the system shall hold it as a `label` row on both backends, and every other allocation path shall refuse that token as held; today's label-reservation tests shall run unchanged against both backends.
