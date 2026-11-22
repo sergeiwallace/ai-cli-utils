@@ -1,0 +1,1 @@
+- Before a remote launch, the fetch of this machine's own editable ai-cli-utils checkout is retried under `[retry.client_fetch]` when it times out or loses its connection, each attempt with a longer timeout. It made one 20 s attempt. A refused credential is reported once as "authentication refused".
