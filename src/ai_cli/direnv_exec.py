@@ -98,13 +98,13 @@ def main(argv: list[str] | None = None) -> int:
             "direnv",
             f"{failure}; starting {command[0]} without the project environment",
         )
-    program = shutil.which(command[0], path=environment.get("PATH"))
-    if program is None:
+    from .foreground import resolve_program, run_in_foreground
+
+    program = resolve_program(command[0], environment.get("PATH"))
+    if shutil.which(program, path=environment.get("PATH")) is None:
         output.error(output.Tag.LAUNCH, "handoff", f"{command[0]} not found on PATH.")
         return 127
-    from .foreground import run_in_foreground
-
-    return run_in_foreground([program, *command[1:]], env=environment)
+    return run_in_foreground(command, executable=program, env=environment)
 
 
 if __name__ == "__main__":

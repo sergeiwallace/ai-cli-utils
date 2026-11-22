@@ -367,7 +367,7 @@ def _run_on_this_console(file: str, args: list[str]) -> int:
     """Run ``file`` as a child on this process's console and return its exit status."""
     from .foreground import run_in_foreground
 
-    return run_in_foreground(args, executable=shutil.which(file) or file)
+    return run_in_foreground(args, executable=file)
 
 
 def _exec_tmux(args: list[str]) -> NoReturn:
