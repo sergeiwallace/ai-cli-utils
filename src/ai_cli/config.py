@@ -1006,8 +1006,9 @@ stale_session_timeout = 15
 ## min(timeout_seconds * growth^(n-1), max_timeout_seconds) seconds. After a failed attempt
 ## the launch waits min(delay_seconds * growth^(n-1), max_delay_seconds) seconds, less a
 ## random share of up to `jitter` of that wait (0 waits it in full; 1 is full jitter). The
-## whole wait, delays included, ends within max_total_seconds, and each attempt's timeout is
-## cut to what remains of it, however many attempts are left. Only
+## whole wait, delays included, ends within max_total_seconds, and each retry's timeout is
+## cut to what remains of it, however many attempts are left. The first attempt always gets
+## its full timeout, so the total is never shorter than timeout_seconds. Only
 ## a timeout or a lost connection is retried: a definite answer, such as a refused
 ## credential, is reported once with its cause. Read on every call, so an edit applies to
 ## the next one. A [retry.<site>] table overrides any of these keys for one site. A key
