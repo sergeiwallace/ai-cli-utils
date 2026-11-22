@@ -60,14 +60,19 @@ thread without renaming the session or changing any old native records:
 
 ```text
 python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION
-ai cx NAME -r
+ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r
 ```
 
 `RECORD` is the absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json`
 path (the same path the generated launcher uses); `CWD` is the worktree. Both
-`SESSION` values must be the exact tmux session name, for example `cx-myproject-1`;
-`NAME` is the existing title used by `ai cx`. Substitute actual values, quoting paths
-as required by the invoking shell. For a paired host, run preparation on the owning
+`SESSION` values passed to preparation must be the exact tmux session name. Then
+relaunch from the session's worktree with the slot's original launch flags
+(`--is-remote`, `--project-prefix`, `--project`). The relaunch above is a remote-slot
+example: `PREFIX`, `PROJECT` and `SESSION` stand for the original project prefix,
+project and exact tmux session name, for example `cx-r-myproject-session-1`.
+Substitute actual values, quoting paths as required by the invoking shell; local
+slots repeat their original flags without adding `--is-remote`.
+For a paired host, run preparation on the owning
 host with its paths and use route `paired-host-tmux` instead of `local-tmux`.
 
 The module's existing `prepare` and `launch` operations accept trailing
