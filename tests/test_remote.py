@@ -1023,7 +1023,7 @@ def test_given_allocation_killed_once_when_remote_launched_then_retries_and_atta
 
     assert code in (0, None), stderr
     assert len(calls) == 2
-    assert f"remote session-name allocation was cut off ({cause}); retrying once" in stderr
+    assert f"remote session-name allocation was cut off ({cause}); retrying (attempt 2 of 2" in stderr
     assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
 
 

@@ -298,6 +298,14 @@ stale_session_timeout = 15
 # timeout_seconds = 5
 # max_timeout_seconds = 20
 
+[retry.remote_allocation]
+## The ssh call that asks a remote host which session a remote launch attaches to. A call
+## that overruns its timeout, or is killed from outside, never answered, so it is asked
+## again; any exit it reports itself is final.
+# attempts = 2
+# timeout_seconds = 60
+# max_timeout_seconds = 120
+
 [retry.registry_fetch]
 ## Every fetch of a shared name registry, git or Dolt. In a checkout with thousands of refs
 ## on a loaded host one fetch measured 16 to 27 s. A timed-out or unreachable fetch is
