@@ -58,6 +58,10 @@ INHERITED_TERMINAL_ALLOWLIST = {
         "the pinned interactive engine owns the existing pane terminal; Windows needs a foreground "
         "child because exec cannot preserve its PID"
     ),
+    ("main.py", "_run_on_this_console"): (
+        "the program the launcher hands off to (the tmux client, the agent) owns the terminal; "
+        "Windows has no exec, so it runs as a waited-for child in its place"
+    ),
 }
 
 # Rich may be imported only by the renderer and by the live-display owner.
