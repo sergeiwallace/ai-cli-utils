@@ -1,0 +1,94 @@
+{
+  "scheme": "semantic-v1",
+  "sha256": "ee12b1e18f30b9e65b0ea31eb5b5179e50d95ce4cd68cbe120b9bea3ac7a12c4",
+  "receipt": {
+    "claude": {"generation": "/opt/harness/artifacts/0.1.0"},
+    "claude-beads": {"generation": "/opt/harness/artifacts/0.1.0"}
+  },
+  "registries": {
+    "settings.json": {
+      "enabledPlugins": {
+        "ai-harness-core@ai-harness-core-local": true,
+        "ai-harness-beads@ai-harness-core-local": true
+      },
+      "extraKnownMarketplaces": {
+        "ai-harness-core-local": {
+          "source": {"source": "directory", "path": "/opt/harness/artifacts/0.1.0"}
+        }
+      }
+    },
+    "plugins/known_marketplaces.json": {
+      "ai-harness-core-local": {
+        "source": {"source": "directory", "path": "/opt/harness/artifacts/0.1.0"},
+        "installLocation": "/opt/harness/artifacts/0.1.0",
+        "lastUpdated": "2026-11-21T17:39:00Z"
+      },
+      "unrelated": {
+        "source": {"source": "directory", "path": "/opt/unrelated"}
+      }
+    },
+    "plugins/installed_plugins.json": {
+      "version": 2,
+      "plugins": {
+        "ai-harness-core@ai-harness-core-local": [
+          {
+            "installPath": "/opt/harness/artifacts/0.1.0/plugins/ai-harness-core",
+            "version": "0.1.0",
+            "scope": "user",
+            "lastUpdated": "2026-11-21T17:39:00Z"
+          }
+        ],
+        "ai-harness-beads@ai-harness-core-local": [
+          {
+            "installPath": "/opt/harness/artifacts/0.1.0/plugins/ai-harness-beads",
+            "version": "0.1.0",
+            "scope": "user"
+          }
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "unrelated marketplace moves",
+      "file": "plugins/known_marketplaces.json",
+      "keys": ["unrelated", "source", "path"],
+      "value": "/opt/unrelated-moved",
+      "expected": "same"
+    },
+    {
+      "name": "client refreshes a timestamp",
+      "file": "plugins/installed_plugins.json",
+      "keys": ["plugins", "ai-harness-core@ai-harness-core-local", 0, "lastUpdated"],
+      "value": "2026-11-21T17:40:00Z",
+      "expected": "same"
+    },
+    {
+      "name": "Core marketplace source moves",
+      "file": "plugins/known_marketplaces.json",
+      "keys": ["ai-harness-core-local", "source", "path"],
+      "value": "/opt/other-generation",
+      "expected": "different"
+    },
+    {
+      "name": "Beads version changes",
+      "file": "plugins/installed_plugins.json",
+      "keys": ["plugins", "ai-harness-beads@ai-harness-core-local", 0, "version"],
+      "value": "2.0.0",
+      "expected": "different"
+    },
+    {
+      "name": "Core installed row is removed",
+      "file": "plugins/installed_plugins.json",
+      "keys": ["plugins", "ai-harness-core@ai-harness-core-local"],
+      "expected": "invalid"
+    },
+    {
+      "name": "Core direct MCP row conflicts with plugin registration",
+      "file": "settings.json",
+      "keys": ["mcpServers"],
+      "value": {"ai-harness-core": {"command": "/opt/other/python"}},
+      "expected": "invalid"
+    }
+  ]
+}

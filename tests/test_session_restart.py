@@ -72,7 +72,7 @@ def npx_tree(tmp_path, monkeypatch):
     allowlist.parent.mkdir(parents=True)
 
     def write_entries(installations):
-        lines = ["version = 1"]
+        lines = ["version = 2"]
         for index, installed in enumerate(installations):
             lines.extend(
                 [
