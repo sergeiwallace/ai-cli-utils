@@ -13,7 +13,8 @@ to grow, which tenacity leaves to the wrapped function; and its policy is fixed 
 ``Retrying`` object is built, where this one is read from config.toml on every call. What is
 left is a frozen dataclass and one loop. ``max_total_seconds`` is tenacity's ``stop_after_delay``:
 however many attempts the policy allows, the whole wait, delays included, ends inside it, and
-each attempt's timeout is cut to what remains.
+each retry's timeout is cut to what remains. The first attempt always gets its full timeout,
+so a total never makes a configured timeout lie: the total bounds the retries after it.
 
 Configuration is the ``[retry]`` table of config.toml, read from the file on every call, never
 captured at launch and never taken from an environment variable. ``[retry]`` holds the default
@@ -189,9 +190,12 @@ def run(
     last cause, and names the total when that is what stopped it.
     """
     current = policy(site)
-    deadline = time.monotonic() + current.max_total_seconds
+    total = max(current.max_total_seconds, current.timeout_for(1))
+    deadline = time.monotonic() + total
     for number in range(1, current.attempts + 1):
-        timeout = min(current.timeout_for(number), deadline - time.monotonic())
+        timeout = current.timeout_for(number)
+        if number > 1:
+            timeout = min(timeout, deadline - time.monotonic())
         attempt = Attempt(number, current.attempts, timeout)
         try:
             return call(attempt)
@@ -203,7 +207,7 @@ def run(
             delay = current.delay_after(number)
             left = deadline - time.monotonic() - delay
             if left <= 0:
-                raise RetryExhaustedError(site, number, exc, total=current.max_total_seconds) from exc
+                raise RetryExhaustedError(site, number, exc, total=total) from exc
             if on_retry is not None:
                 on_retry(attempt, exc, min(current.timeout_for(number + 1), left))
             (sleep or time.sleep)(delay)

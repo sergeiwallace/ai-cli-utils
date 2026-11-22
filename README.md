@@ -1613,8 +1613,9 @@ edit applies to the next launch without restarting anything. Attempt *n* may tak
 `min(timeout_seconds * growth^(n-1), max_timeout_seconds)` seconds; after a failed
 attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`, less a
 random share of up to `jitter` of it. The whole wait, delays included, ends within
-`max_total_seconds`, which cuts each attempt's timeout to what remains of it, so a hung
-optional step costs a launch no more than that total. Only a timeout or a lost connection
+`max_total_seconds`, which cuts each retry's timeout to what remains of it, so a hung
+optional step costs a launch no more than that total. The first attempt always gets its
+full timeout, so a total shorter than `timeout_seconds` stretches to it. Only a timeout or a lost connection
 is retried. A
 definite answer, such as a credential the registry's remote refuses, is reported once
 with its cause. When every attempt fails the launch says how many it made and why the
