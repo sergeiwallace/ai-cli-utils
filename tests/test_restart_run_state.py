@@ -124,9 +124,8 @@ def test_given_tmux_cleanup_edit_when_program_compared_then_upgrade_is_refused(p
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ('exec "$SHELL" -i', 'exec "$SHELL" -c true'),
+        ('"$_relaunch_policy" == never ||', '"$_relaunch_policy" == off ||'),
         ("agent_exit_code == 130", "agent_exit_code == 143"),
-        ("_supervisor_return_to_shell=true", "_supervisor_return_to_shell=false"),
     ],
 )
 def test_given_shell_handoff_edit_when_program_compared_then_upgrade_is_refused(programs, original, replacement):

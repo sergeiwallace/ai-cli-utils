@@ -91,10 +91,21 @@ same old child body and ends the session too, so the way to move it onto these
 rules is to exit it and relaunch it. Once a child body runs the current script,
 `ai -X` restarts the agent without ending the session.
 
-A failed remote launch can still offer a recovery shell for fixing credentials.
-In that shell, `exit 78` retries the agent and `exit` closes the remote session,
-returning to the local shell. Changing a running session's restart policy to
-`never`, or disabling `[session] auto_restart`, retains the worktree shell behavior.
+Every way an `ai c` tmux session ends returns the terminal to the shell that ran
+`ai c`, in the directory it ran in, with the terminal pane left open: a stop in the
+restart window, a double Ctrl+C, a launch that keeps failing to start, a refused or
+failed resume, a restart policy of `never`, `[session] auto_restart = false`, and a
+failed remote launch alike. No shell is left inside the tmux pane. A failed remote
+launch ends the remote session too; fix the login on that host, then run `ai c -R`
+again. When the supervisor cannot end the session itself (it died, or stopped before
+it owned the session), tmux ends it for any attached terminal; a dead pane is kept only
+while nothing is attached, and attaching to it ends it.
+
+When `ai c` runs inside a tmux pane, it switches that terminal's tmux client to the
+new session instead of refusing to nest a second client, and when the new session
+ends the client goes back to the session it came from, at the shell that ran `ai c`.
+It refuses, before it reserves anything, only where the switch cannot work: no client
+shows the pane, or the tmux server `TMUX` names does not know it.
 
 Ctrl-Z does not exit. In an `ai c` session it does not even suspend for long: Claude Code says
 "Run `fg` to bring Claude Code back", but an `ai c` pane has no job-control shell, so `fg` and
@@ -221,5 +232,6 @@ name, and leaves the process alone. End that process by hand as in step 4.
 <!-- doc:region name="revision_log" kind="append_only" -->
 
 2026-11-15: Documented interrupt return to the calling shell and remote recovery-shell exit.
+2026-11-22: Every ending returns to the calling shell; the recovery shell and the pane-keeping shell are gone; launching from inside tmux switches the client and returns it.
 
 <!-- /doc:region name="revision_log" -->

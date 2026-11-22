@@ -1190,4 +1190,13 @@ def run_once(launch_log, name, command):
     ):
         output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
+    # A once-only session ends with this process. A client `ai c` switched into it from another
+    # tmux session goes back there first, rather than leaving tmux when the session closes.
+    pane = os.environ.get("TMUX_PANE", "")
+    if os.environ.get("TMUX") and pane:
+        from .tmux_ownership import return_switched_client, session_id_of
+
+        own_session = session_id_of(pane)
+        if own_session is not None:
+            return_switched_client(own_session)
     sys.exit(status)

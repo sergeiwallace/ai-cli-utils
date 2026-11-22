@@ -982,9 +982,19 @@ def _compatible(source: str, expected: str) -> bool:
         if cleanup:
             text = text[: cleanup.start()] + text[cleanup.end() :]
             body = re.sub(r"(?m)^  ", "", cleanup[1])
-            ending = "      done\n      exit 0\n    fi\n"
-            if ending not in text:
-                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
+            # The supervisor loop's end, in each form a supported program has had.
+            ending = next(
+                (
+                    candidate
+                    for candidate in (
+                        "      done\n      exit 0\n    fi\n",
+                        "      done\n    # BEGIN SHELL RETURN interactive\n",
+                        "      done\n    # BEGIN RUN STATE final-exit-message\n",
+                    )
+                    if candidate in text
+                ),
+                "      done\n      exit 0\n    fi\n",
+            )
             text = text.replace(
                 ending,
                 "      done\n" + body + ending.removeprefix("      done\n"),
@@ -1072,10 +1082,6 @@ def _compatible(source: str, expected: str) -> bool:
         expected,
     )
     earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
-    earlier = earlier.replace(
-        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
-        "if $_supervisor_tmux_ownership_established; then",
-    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
     earlier = earlier.replace(
         "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
         "if (( _child_status == 77 || _child_status == 79 )); then",

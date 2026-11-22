@@ -493,7 +493,8 @@ session and returns to the shell you launched from. `ai exit-session` ends it fr
 from another terminal. A clean exit in the first three seconds of a run ends the session
 without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
 0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
-read at each exit, so an edit applies at the next one.
+read at each exit, so an edit applies at the next one. With restarts off, an exit ends the
+session and returns to the shell you launched from, the same as every other ending.
 
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 

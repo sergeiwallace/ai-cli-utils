@@ -2126,11 +2126,11 @@ class TestGetEngineScript:
             worktree_dir=f"/tmp/project; touch {marker}",
         )
         assert f"cd -- '/tmp/project; touch {marker}'" in script
-        # Both the child body and the returned interactive shell use the quoted cd.
+        # The child body uses the quoted cd (no ending returns to a shell that needs one).
         # The value also appears in session metadata and both generation-acquisition
         # payloads, each shell-quoted as a single JSON argument.
-        assert script.count(f"cd -- '/tmp/project; touch {marker}'") == 2
-        assert script.count("touch /tmp/marker") == 5
+        assert script.count(f"cd -- '/tmp/project; touch {marker}'") == 1
+        assert script.count("touch /tmp/marker") == 4
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
         script = get_engine_script("c", "session-tst-1", "c-session-tst-1", "c-session-", "session")
@@ -2172,10 +2172,10 @@ class TestGetEngineScript:
         assert "_ai_state_dir" in script
         assert 'mkdir -p "$_ai_state_dir/iterm2"' in script
 
-    def test_get_engine_script_when_remote_then_execs_shell(self):
+    def test_get_engine_script_when_remote_then_stops_like_a_local_session(self):
         script = get_engine_script("c", "session-tst-1", "c-session-tst-1", "c-session-", "session", is_remote=True)
-        assert '"$SHELL"' in script
-        assert "exit 79" in script
+        assert '"$SHELL"' not in script
+        assert script.rstrip().endswith("exit 77")
 
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "session-tst-1", "c-session-tst-1", "c-session-", "session", is_remote=False)

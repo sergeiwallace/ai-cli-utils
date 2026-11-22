@@ -134,6 +134,118 @@ def kill_owned_tmux_session(
     return killed
 
 
+#: Where a client that ``ai c`` switched into a session came from: its session, and its tty.
+RETURN_SESSION_OPTION = "@ai_cli_return_session"
+RETURN_CLIENT_OPTION = "@ai_cli_return_client"
+
+
+def _tmux(args: Sequence[str], tmux_command: Sequence[str] | None) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            [*tmux_binary.command(tmux_command), *args], capture_output=True, text=True, check=False, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def configure_session_end(session_id: str, *, tmux_command: Sequence[str] | None = None) -> list[str]:
+    """Make tmux end session ``session_id`` for whoever is looking at it once its pane is dead.
+
+    The session's supervisor ends its own tmux session on every ending it reaches. These
+    settings end it when the supervisor cannot: it exited before it owned the session, or
+    it was killed. ``remain-on-exit`` keeps a dead pane for diagnosis only while no client
+    is attached. The ``pane-died`` hook ends the session if one is, and ``client-attached``
+    ends it when one attaches to a dead pane later. A destroyed session detaches its clients
+    (``detach-on-destroy on``) whatever the tmux configuration says, so a client is never
+    moved into an unrelated session; one switched in from another session is sent back by
+    :func:`return_switched_client` first. Hooks need tmux 2.2 or later, and the delayed end on
+    attach tmux 3.2 (``run-shell -d -C``).
+
+    Returns the names of the settings tmux refused, empty when every one applied.
+    """
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return ["session id"]
+    end = f"kill-session -t '{session_id}'"
+    settings = (
+        ("remain-on-exit", ("set-window-option", "-t", session_id, "remain-on-exit", "on")),
+        ("detach-on-destroy", ("set-option", "-t", session_id, "detach-on-destroy", "on")),
+        ("pane-died", ("set-hook", "-t", session_id, "pane-died", f"if-shell -F '#{{session_attached}}' \"{end}\"")),
+        # A second's delay lets the new client read its terminal's replies to the queries it
+        # sends on attach; ended at once, those replies arrive at the shell as typed text.
+        (
+            "client-attached",
+            (
+                "set-hook",
+                "-t",
+                session_id,
+                "client-attached",
+                f'if-shell -F \'#{{pane_dead}}\' "run-shell -d 1 -C \\"{end}\\""',
+            ),
+        ),
+    )
+    refused = []
+    for name, args in settings:
+        result = _tmux(args, tmux_command)
+        if result is None or result.returncode != 0:
+            refused.append(name)
+    return refused
+
+
+def session_id_of(target: str, *, tmux_command: Sequence[str] | None = None) -> str | None:
+    """The opaque id (``$N``) of the session ``target`` names, or None.
+
+    ``display-message`` takes a pane target, where an exact session name (``=NAME``) needs
+    its trailing ``:``; a session id, a pane id or a full pane target is used as given.
+    """
+    if target.startswith("=") and ":" not in target:
+        target = f"{target}:"
+    result = _tmux(("display-message", "-p", "-t", target, "#{session_id}"), tmux_command)
+    value = result.stdout.strip() if result is not None and result.returncode == 0 else ""
+    return value if _SESSION_ID_RE.fullmatch(value) else None
+
+
+def record_return(
+    target: str, origin_session_id: str, client_tty: str, *, tmux_command: Sequence[str] | None = None
+) -> bool:
+    """Record on session ``target`` that ``client_tty`` came from ``origin_session_id``.
+
+    Refused (False) when ``target`` is the origin itself or tmux cannot record it.
+    """
+    target_id = session_id_of(target, tmux_command=tmux_command)
+    if target_id is None or target_id == origin_session_id or not _SESSION_ID_RE.fullmatch(origin_session_id):
+        return False
+    for option, value in ((RETURN_SESSION_OPTION, origin_session_id), (RETURN_CLIENT_OPTION, client_tty)):
+        result = _tmux(("set-option", "-t", target_id, option, value), tmux_command)
+        if result is None or result.returncode != 0:
+            return False
+    return True
+
+
+def return_switched_client(session_id: str, *, tmux_command: Sequence[str] | None = None) -> bool:
+    """Send the client ``ai c`` switched into ``session_id`` back to the session it came from.
+
+    Only while that client still shows ``session_id`` and its own session still exists: a
+    client that has moved on is left where it is, and one whose session is gone is detached
+    with the rest when ``session_id`` ends. Returns whether a client was sent back.
+    """
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return False
+    values = []
+    for option in (RETURN_SESSION_OPTION, RETURN_CLIENT_OPTION):
+        result = _tmux(("show-options", "-qv", "-t", session_id, option), tmux_command)
+        values.append(result.stdout.strip() if result is not None and result.returncode == 0 else "")
+    origin, client = values
+    if not _SESSION_ID_RE.fullmatch(origin) or not client:
+        return False
+    showing = _tmux(("display-message", "-p", "-c", client, "#{session_id}"), tmux_command)
+    if showing is None or showing.returncode != 0 or showing.stdout.strip() != session_id:
+        return False
+    if session_id_of(origin, tmux_command=tmux_command) != origin:
+        return False
+    switched = _tmux(("switch-client", "-c", client, "-t", origin), tmux_command)
+    return switched is not None and switched.returncode == 0
+
+
 def _capture_pane_process_tree(target: str, tmux_command: Sequence[str] | None) -> list[psutil.Process]:
     """Return the pane process and descendants while their relationship exists."""
     try:

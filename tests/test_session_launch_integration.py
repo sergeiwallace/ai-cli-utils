@@ -1194,6 +1194,9 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
     assert post_capture_targets == [
         ("set-window-option", original_id),
         ("set-option", original_id),
+        ("set-hook", original_id),
+        ("set-hook", original_id),
+        ("set-option", original_id),
         ("set-option", original_id),
         ("set-window-option", original_id),
         ("rename-window", original_id),
