@@ -156,6 +156,10 @@ uv run pytest tests/test_main.py
 uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_sshs_to_host
 ```
 
+By default on macOS, pytest runs tests marked `real_tmux` or `real_pty` in one
+xdist worker per job. Use `real_pty` for tests that open a pseudo-terminal
+outside tmux. The other workers can run ordinary tests in parallel.
+
 ### Running a required CI check locally
 
 `scripts/run_local_ci.py` runs the commands of one required check (`lint`, `test`, `test-macos`

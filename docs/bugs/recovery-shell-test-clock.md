@@ -39,9 +39,26 @@ quick-failure scenario. It waits for the recovery prompt after checking the
 banner, then verifies that `exit` returns control to the same calling shell and
 that the agent launched only once.
 
+## Parallel runs on macOS
+
+The clock control fixes which path the recovery test exercises. The default
+parallel run still had six failures among 85 interrupt tests in 471.22 seconds,
+including agent startup timeouts and Codex launch confirmation refusals. The
+two reported recovery and foreground-promotion cases passed all five runs
+with `-n 0` on a busy Mac. The supervisor compares the interrupt count during
+promotion with the count it recorded before spawning the child.
+
+On macOS, pytest now schedules tests marked `real_tmux` or `real_pty` on the
+same xdist worker within each CI job. A scheduling regression test checks
+worker assignment with and without CI sharding and verifies that sharding
+still selects tests by their original node IDs.
+
 ## Verification
 
 The clock-advance and fixed-clock cases were verified using a real macOS tmux
-pane and the generated wrapper. The sandbox denied process enumeration required
-by the repository's test harness, so the focused CI pair still needs a clean
-before-and-after run on a macOS runner with process inspection available.
+pane and the generated wrapper. The focused pair subsequently ran on a macOS
+host with process inspection available.
+
+After grouping the terminal tests, three consecutive runs of
+`uv run --no-sync pytest tests/test_session_interrupt_shell.py -q` passed all
+85 cases per run in 1008.27, 961.00, and 997.43 seconds.
