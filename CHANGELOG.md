@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[resume_restore] command` in `config.toml` runs a command of your own before every Claude Code
+  resume, with `{session_id}` replaced by the session's id, so a transcript your deployment archived
+  (for example as `<session-id>.jsonl.zst`) is restored first. A failure or timeout stops the resume
+  and prints the command's output and exit status. `ai list-capabilities` prints
+  `transcript-restore` when it is set. Guide: `docs/guides/resume-restore.md`.
+
 ### Changed
 
 - Session list configuration and scope use machine host group terminology; the old scope and host key are no longer accepted.

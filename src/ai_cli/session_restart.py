@@ -991,7 +991,7 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )

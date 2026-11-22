@@ -94,7 +94,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai color`](../reference/cli.md#ai-color) | Reassign iTerm2 color for the current ai session |
 | [`ai copier-update`](../reference/cli.md#ai-copier-update) | Propagate project-template changes to downstream projects |
 | [`ai cos`](../reference/cli.md#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
-| [`ai cx`](../reference/cli.md#ai-cx) | Launch a Codex session |
+| [`ai cx`](../reference/cli.md#ai-cx) | Launch a Codex session. |
 | [`ai deploy`](../reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
@@ -108,6 +108,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai layout list`](../reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](../reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](../reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](../reference/cli.md#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](../reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](../reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](../reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
