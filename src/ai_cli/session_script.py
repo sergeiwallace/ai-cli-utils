@@ -395,8 +395,8 @@ def get_engine_script(
       # A Ctrl+C while the renderer runs must not cost the message.
       _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
-        # The renderer's default datetime leads the plain line too.
     # BEGIN EMIT STAMP
+        # The plain line leads with the configured datetime, as a rendered one does (emit_stamp_command).
         _ai_emit_stamp=$({_emit_stamp_command} 2>/dev/null) || _ai_emit_stamp=""
     # END EMIT STAMP
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"

@@ -1024,6 +1024,8 @@ def _compatible(source: str, expected: str) -> bool:
         # The fallback stamp is data for `date` with no control flow; before the EMIT STAMP
         # insertion it was this fixed line, which certifies as the same program.
         text = re.sub(r"(?m)^        _ai_emit_stamp=\$\(TZ=America/New_York date .*$", "", text)
+        # So was the comment above it, which named that fixed form; its successor is in the bracket.
+        text = re.sub(r"(?m)^        # The renderer's default datetime leads the plain line too\.$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
     normalized_source = normalize(source)
