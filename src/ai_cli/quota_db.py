@@ -27,7 +27,7 @@ def _get_reset_anchor_path() -> Path:
 
 
 def _save_reset_anchor(reset_utc_str: str) -> None:
-    """Persist a reset anchor observed from a /usage scrape."""
+    """Persist an observed weekly reset time as the anchor."""
     with contextlib.suppress(Exception):
         _get_reset_anchor_path().write_text(reset_utc_str.strip())
 
@@ -36,11 +36,11 @@ def _get_reset_anchor_utc() -> datetime:
     """Return the weekly quota reset anchor.
 
     Priority (highest to lowest):
-      1. Anchor file — written by record_quota_snapshot() when /usage includes a reset time.
+      1. Anchor file — written by record_quota_snapshot() when a snapshot carries a reset time.
       2. Config file — [quota] reset_anchor_utc in config.toml.
       3. Hardcoded default — last-known fallback.
     """
-    # 1. Scraped anchor file
+    # 1. Anchor file
     try:
         anchor_file = _get_reset_anchor_path()
         if anchor_file.exists():
@@ -268,12 +268,12 @@ def record_quota_snapshot(
 ) -> None:
     """Insert a quota snapshot for the current week and update weekly state.
 
-    If ``reset_at`` is provided (scraped from the /usage dialog), it is
+    If ``reset_at`` is provided (Claude Code's seven-day reset), it is
     persisted as the new reset anchor so future week-start calculations are
     accurate even when the reset time changes.
     """
     # Update the anchor before computing week_start so that _get_current_week_start()
-    # immediately uses the freshly scraped reset time for this and all future calls.
+    # immediately uses the fresh reset time for this and all future calls.
     if reset_at:
         _save_reset_anchor(reset_at)
 
