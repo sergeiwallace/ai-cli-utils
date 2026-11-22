@@ -228,7 +228,11 @@ def configure_session_end(
         ),
     )
     refused = []
-    pane_option = _tmux(("set-option", "-p", "-t", pane_id, "remain-on-exit", "on"), tmux_command) if scoped else None
+    pane_option = (
+        _tmux(("set-option", "-p", "-t", pane_id, "remain-on-exit", "on"), tmux_command)
+        if scoped and pane_id is not None
+        else None
+    )
     if pane_option is None or pane_option.returncode != 0:
         window_option = _tmux(("set-window-option", "-t", session_id, "remain-on-exit", "on"), tmux_command)
         if window_option is None or window_option.returncode != 0:
