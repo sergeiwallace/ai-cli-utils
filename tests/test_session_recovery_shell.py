@@ -84,11 +84,14 @@ def tmux_socket():
 class _RemoteSession:
     """A remote-mode session in a real tmux pane whose agent needs a fresh login."""
 
-    def __init__(self, sock: str, tmp_path: Path, session: str, login_shell: str) -> None:
+    def __init__(self, sock: str, tmp_path: Path, session: str, login_shell: str, *, logged_in: bool = False) -> None:
         self.sock = sock
         self.session = session
         self.launches = tmp_path / "launches"
         self.logged_in = tmp_path / "logged-in"
+        if logged_in:
+            # Logged in from the start, the stand-in agent stays up like a real session.
+            self.logged_in.touch()
         fake_bin = tmp_path / "fakes"
         fake_bin.mkdir()
         sessions = tmp_path / "state" / "ai-cli-utils" / "sessions"
@@ -159,6 +162,11 @@ class _RemoteSession:
             ["tmux", "-S", self.sock, "has-session", "-t", self.session], capture_output=True, check=False
         )
         return probe.returncode == 0
+
+    def wait_for_agent(self) -> None:
+        assert _wait_for(lambda: bool(_lines(self.launches)), _STOP_SECONDS), (
+            f"the agent never started; pane: {self.pane()!r}"
+        )
 
     def release(self) -> None:
         for pid in _lines(self.launches):
