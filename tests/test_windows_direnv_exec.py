@@ -155,12 +155,12 @@ def test_given_windows_session_script_when_direnv_exports_a_windows_path_then_th
         # MSYS2's cygpath, for this one path list.
         (tools / "cygpath").write_text("#!/bin/sh\nprintf '%s\\n' /c/fake:/c/other\n")
         (tools / "cygpath").chmod(0o755)
+    # A PATH entry in the shell's own spelling: under MSYS2 a `D:/...` entry would split at its colon.
+    tools_entry = shlex.quote(tools.as_posix())
+    if sys.platform == "win32":
+        tools_entry = f'"$(cygpath -u {tools_entry})"'
     body = tmp_path / "load.sh"
-    body.write_text(
-        f"PATH={shlex.quote(tools.as_posix())}:$PATH\n"
-        + prelude
-        + 'eval "$(direnv export bash)"\nprintf "%s" "$PATH"\n'
-    )
+    body.write_text(f"PATH={tools_entry}:$PATH\n" + prelude + 'eval "$(direnv export bash)"\nprintf "%s" "$PATH"\n')
     result = subprocess.run(
         [bash, body.as_posix()],
         stdin=subprocess.DEVNULL,
