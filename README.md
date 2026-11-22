@@ -221,6 +221,7 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](docs/reference/cli.md#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
@@ -1462,6 +1463,11 @@ Each phase is the line's operation (see
   includes every restart: its `.envrc` approval, resume lookup and restart lines are
   logged with the time each was printed, as the launcher's own are. A reload row is
   stored only once it has escalated.
+- When an agent exits during its first 15 seconds, the launch log records its exit
+  status and up to 12 recent terminal lines. This applies to managed and one-shot
+  tmux panes and bare sessions with a launcher-owned PTY. On a remote launch, SSH
+  and mosh also report the saved startup diagnostic when the connection ends.
+  New launch logs are created with owner-only permissions on POSIX systems.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a

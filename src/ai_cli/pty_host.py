@@ -50,6 +50,7 @@ from typing import Any
 
 from . import output as _out
 from .config import get_xdg_state_home
+from .launch_logging import AGENT_TAIL_LIMIT, agent_program, record_agent_exit
 from .transport import _terminate_after_child, restore_terminal
 
 #: The variable that tells the agent (and its hooks) where its submission FIFO is.
@@ -120,7 +121,9 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view) :]
 
 
-def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subprocess.Popen, input_at: Path) -> None:
+def _relay(
+    master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subprocess.Popen, input_at: Path, tail: bytearray
+) -> None:
     """Copy operator input and FIFO submissions to the agent, and its output back, until it exits."""
     wake_r, wake_w = os.pipe()
     for fd in (wake_r, wake_w):
@@ -169,6 +172,7 @@ def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subpr
                     shown = b""
                 if not shown:
                     return
+                tail[:] = (tail + shown)[-AGENT_TAIL_LIMIT:]
                 if output_open:
                     try:
                         _write_all(stdout_fd, shown)
@@ -182,6 +186,7 @@ def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subpr
                 os.set_blocking(master, False)
                 with contextlib.suppress(OSError):
                     while output_open and (rest := os.read(master, _CHUNK)):
+                        tail[:] = (tail + rest)[-AGENT_TAIL_LIMIT:]
                         _write_all(stdout_fd, rest)
                 return
     finally:
@@ -193,7 +198,7 @@ def _relay(master: int, stdin_fd: int, stdout_fd: int, fifo_fd: int, proc: subpr
         os.close(wake_w)
 
 
-def host(file: str, args: list[str], *, session: str) -> int:
+def host(file: str, args: list[str], *, session: str, launch_log: str = "", diagnostic_path: str = "") -> int:
     """Run ``args`` on a launcher-owned pty and return its exit status.
 
     Raises ``FileNotFoundError`` before touching the terminal when *file* cannot be
@@ -213,6 +218,7 @@ def host(file: str, args: list[str], *, session: str) -> int:
             _copy_winsize(stdin_fd, slave)
             _make_fifo(fifo)
             _record_input(input_at)
+            started = time.monotonic()
             try:
                 proc = subprocess.Popen(
                     args,
@@ -231,17 +237,29 @@ def host(file: str, args: list[str], *, session: str) -> int:
             fds.append(fifo_fd)
             fds.append(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
             saved = termios.tcgetattr(stdin_fd) if os.isatty(stdin_fd) else None
+            tail = bytearray()
             try:
                 if saved is not None:
                     tty.setraw(stdin_fd, termios.TCSANOW)
-                _relay(master, stdin_fd, stdout_fd, fifo_fd, proc, input_at)
+                _relay(master, stdin_fd, stdout_fd, fifo_fd, proc, input_at, tail)
                 returncode = proc.wait()
-                raise_if_terminated()
+                elapsed = time.monotonic() - started
             finally:
                 if saved is not None:
                     with contextlib.suppress(termios.error, OSError):
                         termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
                 restore_terminal()
+            if launch_log or diagnostic_path:
+                record_agent_exit(
+                    launch_log,
+                    session,
+                    agent_program(args),
+                    returncode,
+                    elapsed,
+                    diagnostic_path=diagnostic_path,
+                    terminal_output=tail.decode("utf-8", errors="replace"),
+                )
+            raise_if_terminated()
         finally:
             # Closing the master also hangs up the agent's terminal, so an agent left
             # behind by an unexpected error gets SIGHUP rather than running on unseen.
