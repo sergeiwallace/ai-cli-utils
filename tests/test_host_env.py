@@ -341,3 +341,24 @@ def test_given_a_login_shell_that_leaves_the_probe_group_when_the_probe_times_ou
     assert shell_pid is not None, "the login shell never started"
     assert completed.stdout == "('inherited', '')\n", completed.stderr
     assert _wait_until(lambda: not _alive(shell_pid), 5), "a login shell in its own group outlived the timed-out probe"
+
+
+def test_given_a_login_shell_that_leaves_a_background_child_when_the_probe_succeeds_then_the_child_is_killed(
+    stalled_login_shell,
+):
+    configure, stalled_pid = stalled_login_shell
+    env = configure("sleep 60 >/dev/null 2>&1 &\necho $! > PID_FILE\nprintf 'AI_HOST_FRESH=fresh-host\\n'")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _PROBE_CALLER, "20"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        child_pid = stalled_pid(seconds=0)
+    assert child_pid is not None, "the login shell never started its child"
+    assert completed.stdout == "('login-shell', 'fresh-host')\n", completed.stderr
+    assert _wait_until(lambda: not _alive(child_pid), 5), "a child the login shell left behind outlived the probe"
