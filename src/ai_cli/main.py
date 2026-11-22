@@ -2351,7 +2351,7 @@ def _dispatch_internal(argv: list[str]) -> None:
         if len(argv) == 3 and _session_launch_state.launched_with(argv[2], "no_direnv"):
             _out.emit(Tag.SESSION, "direnv", "approval skipped (-D/--no-direnv)", err=True, level=_out.Level.DETAIL)
             sys.exit(0)
-        prepared = _session.prepare_project_environment(Path(argv[1]), config=config)
+        prepared = _session.prepare_project_environment(_session.native_path(argv[1]), config=config)
         _out.emit(
             Tag.SESSION,
             "direnv",

@@ -1011,3 +1011,35 @@ def test_given_a_child_body_with_a_launch_log_when_the_agent_starts_then_the_age
 
     assert run.starts and run.starts[0]["launch_log"] is None, run.starts
     assert _session_lines(run.log, "direnv"), "the child body's own records must still reach the log"
+
+
+@pytest.mark.parametrize(
+    ("platform", "text", "expected"),
+    [
+        ("win32", "/c/Users/user/myproject/.worktrees/myproject-1", "c:/Users/user/myproject/.worktrees/myproject-1"),
+        ("win32", "/D/work", "D:/work"),
+        ("win32", "C:/Users/user/myproject", "C:/Users/user/myproject"),
+        ("linux", "/c/Users/user/myproject", "/c/Users/user/myproject"),
+        ("darwin", "/c/Users/user/myproject", "/c/Users/user/myproject"),
+    ],
+)
+def test_given_a_shell_working_directory_when_it_reaches_the_approval_step_then_it_is_a_native_path(
+    platform, text, expected, monkeypatch
+):
+    """The child body passes its shell's ``$PWD``, which an MSYS shell on Windows spells ``/c/...``."""
+    from ai_cli import session as _session
+    from ai_cli.main import _handle_internal
+
+    received: list[Path] = []
+
+    def prepare(directory, *, config=None):
+        received.append(directory)
+        return _session.ProjectEnvironment(True, _session.Level.DETAIL, "nothing to approve")
+
+    monkeypatch.setattr(_session, "prepare_project_environment", prepare)
+    monkeypatch.setattr(sys, "platform", platform)
+    with pytest.raises(SystemExit) as exited:
+        _handle_internal(["prepare-project-env", text])
+
+    assert exited.value.code == 0
+    assert received == [Path(expected)]

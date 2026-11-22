@@ -1034,6 +1034,19 @@ def _contains_git_checkout(directory: Path) -> Path | None:
     return None
 
 
+def native_path(text: str, *, platform: str | None = None) -> Path:
+    """``text`` as this platform's path, reading an MSYS drive path (``/c/Users/...``) on Windows.
+
+    Git Bash and the session script's MSYS shell spell ``C:\\Users`` as ``/c/Users``, which
+    Windows Python reads as a directory under the current drive's root. On Windows such a
+    path becomes ``c:/Users/...``; everywhere else, and for any other text, it is unchanged.
+    """
+    msys = re.match(r"^/([A-Za-z])(?:/(.*))?$", text)
+    if (platform or sys.platform) == "win32" and msys:
+        return Path(f"{msys.group(1)}:/{msys.group(2) or ''}")
+    return Path(text)
+
+
 def _slot_registration_gone(wt_dir: Path, registered: list[Path]) -> bool:
     """Return whether ``wt_dir`` is a linked worktree whose admin directory no longer exists.
 
@@ -1052,14 +1065,8 @@ def _slot_registration_gone(wt_dir: Path, registered: list[Path]) -> bool:
         return False
     if not line.startswith("gitdir:"):
         return False
-    target = line.removeprefix("gitdir:").strip()
-    # Windows: Git Bash's git can write ``/c/Users/...``, which Windows Python reads as a
-    # path on the current drive's root. Read it as ``C:/Users/...`` so a live slot never
-    # looks unregistered.
-    msys = re.match(r"^/([A-Za-z])/(.*)$", target)
-    if sys.platform == "win32" and msys:
-        target = f"{msys.group(1)}:/{msys.group(2)}"
-    admin = Path(target)
+    # Git Bash's git can write ``/c/Users/...``; read it so a live slot never looks unregistered.
+    admin = native_path(line.removeprefix("gitdir:").strip())
     if not admin.is_absolute():
         admin = wt_dir / admin
     if admin.exists():
