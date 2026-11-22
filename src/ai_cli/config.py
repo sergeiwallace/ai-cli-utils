@@ -795,9 +795,11 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Optional: a command that names the background session id. It is run as
 ## `<command> --session <ai session name> --pane-capture <file>`, where the file
 ## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
-## id on stdout is an answer; anything else is no answer. The id is only a hint:
-## it is attached only if `claude agents --json` lists it as a live background
-## session. Unset (the default) skips the command; ai then attaches only when exactly
+## id on stdout is an answer; anything else is no answer. A non-zero exit is the
+## command saying it has none, which is recorded in the launch log, not shown; a
+## command that cannot run, times out or prints something other than one id is
+## reported as a warning. The id is only a hint: it is attached only if
+## `claude agents --json` lists it as a live background session. Unset (the default) skips the command; ai then attaches only when exactly
 ## one live background session has this session's name and directory.
 # background_session_resolver = "/path/to/resolver-command"
 # background_session_resolver_timeout_seconds = 10
