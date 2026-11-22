@@ -482,6 +482,12 @@ Phase 3, T-5, as built:
   `refresh`, each at the level it printed before. `ai internal emit` refuses an
   operation outside the configured vocabulary, so one a user adds to `[output]` works
   there.
+- **The session script's other `ai internal` calls.** The child body's stderr is the
+  pane, not the supervisor's log relay, so the child exports `AI_CLI_LAUNCH_LOG` (its
+  bracketed `LAUNCH LOG` insertion) and `_handle_internal` attaches that log as the file
+  sink once, for every action. A restart's `.envrc` approval, resume lookup and
+  migration lines therefore reach the launch log, stamped when they are emitted, the
+  same way the launcher's own lines do.
 - **Enforcement.** `test_given_the_package_source_when_scanned_then_every_output_call_passes_a_vocabulary_operation`
   scans every `ai_cli.output` call and every launch-reporter call. The operation must be
   a string literal in the shipped vocabulary. Three named adapters may pass a variable:

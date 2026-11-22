@@ -2136,22 +2136,12 @@ def _internal_emit(args: list[str]) -> int:
 def _store_session_records(records: list[_out.Record]) -> None:
     """Send a session-script reply's records to its launch log and to telemetry (AI-CLI-cuwe).
 
-    ``[output.sinks.*]`` decides what each sink keeps. The script names its
-    launch's log in ``AI_CLI_LAUNCH_LOG``; without one the records still reach
-    telemetry.
+    ``[output.sinks.*]`` decides what each sink keeps. The launch log is the one
+    :func:`_handle_internal` attached from ``AI_CLI_LAUNCH_LOG``; without one the
+    records still reach telemetry.
     """
-    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-    path = os.environ.get(LAUNCH_LOG_ENV, "")
-    log = open_launch_log(path) if path else None
-    previous = _out.attach_file_sink(log.write_line if log is not None else None)
-    try:
-        _out.store(records)
-        _out.flush_sinks()
-    finally:
-        _out.attach_file_sink(previous)
-        if log is not None:
-            log.close()
+    _out.store(records)
+    _out.flush_sinks()
 
 
 _RELOAD_REASONS = {
@@ -2227,8 +2217,33 @@ def _handle_internal(argv: list[str]) -> None:
 
     Kept out of Click so sub-millisecond startup is preserved for hot paths.
     Always calls ``sys.exit`` — never returns.
+
+    Every record any action emits also goes to the launch log the session script
+    names in ``AI_CLI_LAUNCH_LOG``, stamped as it is emitted. The script exports that
+    for its child body, whose stderr is the pane, so a relaunch's direnv, resume and
+    restart lines reach the log exactly as the launcher's own do. Attaching it here,
+    once, rather than per action is what stops an action from being added that
+    reports only to the pane.
     """
+    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
     _out.utf8_stdout_on_windows()
+    log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+    if not log_path:
+        _dispatch_internal(argv)
+        return
+    launch_log = open_launch_log(log_path)
+    previous_sink = _out.attach_file_sink(launch_log.write_line)
+    try:
+        _dispatch_internal(argv)
+    finally:
+        _out.flush_sinks()
+        _out.attach_file_sink(previous_sink)
+        launch_log.close()
+
+
+def _dispatch_internal(argv: list[str]) -> None:
+    """The actions of :func:`_handle_internal`; every one ends in ``sys.exit``."""
     if not argv:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
@@ -2282,18 +2297,7 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-        launch_log = open_launch_log(log_path) if log_path else None
-        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-        try:
-            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
-        finally:
-            _out.flush_sinks()
-            _out.attach_file_sink(previous_sink)
-            if launch_log is not None:
-                launch_log.close()
+        _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
         sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
@@ -2303,20 +2307,10 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "resolve-codex-display":
         from .codex_display import resolve_codex_display
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
 
         resolution = resolve_codex_display(os.environ)
         if resolution.reason:
-            log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-            launch_log = open_launch_log(log_path) if log_path else None
-            previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-            try:
-                LaunchReporter().detail("display", resolution.reason)
-            finally:
-                _out.flush_sinks()
-                _out.attach_file_sink(previous_sink)
-                if launch_log is not None:
-                    launch_log.close()
+            LaunchReporter().detail("display", resolution.reason)
         for variable, value in resolution.values.items():
             _out.raw(Untagged.INTERNAL_REPLY, f"{variable}={value}")
         sys.exit(0)

@@ -967,6 +967,16 @@ def get_engine_script(
     if [[ -n "${{_ai_launch_log:-}}" ]]; then
       exec 2>&3
     fi
+    # BEGIN LAUNCH LOG child
+    # This body's stderr is the pane, not the supervisor's log relay, so every `ai internal`
+    # it runs (the resume lookup, the .envrc approval, migrations) records into the launch log
+    # itself, stamped as it emits: `ai internal` attaches the log this variable names.
+    if [[ -n "${{_ai_launch_log:-}}" ]]; then
+      export {LAUNCH_LOG_ENV}="$_ai_launch_log"
+    else
+      unset {LAUNCH_LOG_ENV}
+    fi
+    # END LAUNCH LOG
     {cd_cmd}
     direnv_root="$PWD"
     tmux_session={shell["session"]}
