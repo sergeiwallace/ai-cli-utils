@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -669,7 +670,16 @@ def test_remote_dial_argv_is_unchanged_by_tracking(state_home, iterm2_toml, outs
     _launch_remote(["ai", "c", "-R", "2"], runner=runner)
 
     assert dialled[0][0] == "ssh"
-    assert shlex.join(dialled[0]) == shlex.join(dialled[1])
+    assert dialled[0] != dialled[1]
+    normalised_dials = []
+    for args in dialled:
+        # Only the per-launch diagnostic UUID may differ when tracking is toggled.
+        remote_command, count = re.subn(
+            r"(?<=/transport-errors/)[0-9a-f]{32}(?=\.stderr\.agent\b)", "<launch-id>", args[-1]
+        )
+        assert count == 1
+        normalised_dials.append([*args[:-1], remote_command])
+    assert normalised_dials[0] == normalised_dials[1]
 
 
 def test_given_a_clean_remote_exit_when_sessions_are_pruned_then_that_record_is_removed(

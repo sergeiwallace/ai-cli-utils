@@ -1016,6 +1016,18 @@ def _compatible(source: str, expected: str) -> bool:
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
         return True
+    # Rebuild the trusted program before startup diagnostics moved the elapsed-time checks.
+    previous_diagnostics = re.sub(
+        r"(?ms)^    # BEGIN LAUNCH DIAGNOSTICS\n.*?^    # END LAUNCH DIAGNOSTICS\n", "", expected
+    )
+    if previous_diagnostics != expected:
+        previous_diagnostics = (
+            previous_diagnostics.replace("agent_elapsed < 3", "$(date +%s) - start_ts < 3")
+            .replace("agent_elapsed >= _healthy_agent_seconds", "$(date +%s) - start_ts >= _healthy_agent_seconds")
+            .replace("${agent_elapsed:-$(( $(date +%s) - start_ts ))}", "$(( $(date +%s) - start_ts ))")
+        )
+        if _compatible(source, previous_diagnostics):
+            return True
     # The terminal restore is printf data with no control flow, so a program that
     # sends the retired bytes is the same program. Rebuilt in our trusted template.
     from .session_script import rendered_terminal_reset
