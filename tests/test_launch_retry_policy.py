@@ -306,7 +306,12 @@ def _update(checkout: Path, state: Path) -> tuple[int, list[list[str]], str]:
         contextlib.redirect_stdout(out),
         pytest.raises(SystemExit) as exited,
     ):
-        _do_update_or_deploy(force_reinstall=True, config={"deploy": {"project_path": str(checkout)}}, quiet=True)
+        _do_update_or_deploy(
+            force_reinstall=True,
+            config={"deploy": {"project_path": str(checkout)}},
+            quiet=True,
+            package_only=True,
+        )
     return exited.value.code, commands, out.getvalue()
 
 
