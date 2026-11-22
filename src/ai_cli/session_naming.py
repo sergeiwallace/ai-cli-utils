@@ -268,6 +268,15 @@ def _former_ids_from(path: Path, *, strict: bool) -> list[set[str]]:
     return groups
 
 
+def _sources_read_for(host: str, sources: list[Path]) -> list[Path]:
+    """The sources :func:`_resolve_from` reads for ``host``: up to an authoritative hit, else all of them."""
+    authoritative = {*_environment_registries(_projects_roots()), _local_registry()}
+    for index, source in enumerate(sources):
+        if source in authoritative and _alias_from(source, host) is not None:
+            return sources[: index + 1]
+    return sources
+
+
 def check_former_host_ids(sources: list[Path] | None = None) -> None:
     """Refuse a malformed ``[former_host_ids]`` table, naming its file."""
     for source in alias_sources() if sources is None else sources:
@@ -300,10 +309,12 @@ def machine_identity(host: str | None = None) -> MachineIdentity:
     """
     host = host_id() if host is None else host
     spellings = {host}
-    try:
-        groups = [group for source in alias_sources() for group in _former_ids_from(source, strict=False)]
-    except HostAliasError:
-        groups = []
+    groups = []
+    for source in alias_sources():
+        try:
+            groups.extend(_former_ids_from(source, strict=False))
+        except HostAliasError:
+            continue
     grew = True
     while grew:
         grew = False
@@ -366,15 +377,16 @@ def resolve_host_alias() -> str:
         if phase is not None:
             phase.outcome(f"host id {host}")
     sources = alias_sources()
-    check_former_host_ids(sources)
     try:
-        return _resolve_from(host, sources)
+        alias = _resolve_from(host, sources)
     except HostAliasNotConfiguredError as exc:
         if inherited and inherited != host:
             raise HostAliasNotConfiguredError(
                 f"{exc}\n  Refreshed inherited host id {inherited!r} to {host!r} before alias lookup."
             ) from exc
         raise
+    check_former_host_ids(_sources_read_for(host, sources))
+    return alias
 
 
 def _in_git_checkout(path: Path) -> Path | None:
