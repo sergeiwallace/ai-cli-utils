@@ -532,3 +532,44 @@ def test_given_unreadable_status_data_when_launching_then_it_exits_1_taking_noth
     assert caught.value.code == 1
     assert "milo" in capsys.readouterr().err
     assert fleet.tip() == before
+
+
+def _held_under_a_former_host_id(tmp_path, monkeypatch, launch) -> str:
+    """A title this machine reserved under its former host id and alias, then was renamed.
+
+    The session was started outside the launcher, so no tmux session runs for it: only
+    its worktree is left behind for a relaunch to resume.
+    """
+    from ai_cli import session_naming
+
+    old_host = f"{HOST}-old"
+    session_naming.alias_sources()[0].write_text(
+        f'[aliases]\n{HOST} = "box"\n{old_host} = "boxo"\n\n[former_host_ids]\n{HOST} = ["{old_host}"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_naming, "host_id", lambda: old_host)
+    with patch("ai_cli.session_naming.resolve_or_prompt_host_alias", return_value="boxo"):
+        title = named(launch, naming=main._NamingRequest(custom="cleo"))
+    monkeypatch.setattr(session_naming, "host_id", lambda: HOST)
+    (tmp_path / "repo" / ".worktrees" / title).mkdir(parents=True)
+    return title
+
+
+def test_given_a_title_held_under_a_former_host_id_when_named_positionally_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_under_a_former_host_id(tmp_path, monkeypatch, launch)
+
+    assert title == f"{REPO}-boxo-cleo"
+    assert named(launch, "cleo") == title
+
+
+def test_given_a_title_held_under_a_former_host_id_when_resumed_by_name_then_that_title_relaunches(
+    tmp_path, monkeypatch, launch, register_repo
+):
+    build_fleet(tmp_path, monkeypatch)
+    title = _held_under_a_former_host_id(tmp_path, monkeypatch, launch)
+    register_repo(tmp_path / "repo", REPO)
+
+    assert named(launch, "cleo", resume=True, bare=False) == title
