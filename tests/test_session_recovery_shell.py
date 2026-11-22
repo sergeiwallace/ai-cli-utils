@@ -1,16 +1,18 @@
-"""A stopped remote session must leave the human a way back to the agent and a way out (AI-CLI-tozg).
+"""A stopped remote session ends, and with it the tmux session its client is attached to.
 
 The reported path: the agent's credentials expire, ``/login`` forces it to exit, the
 session relaunches it, and the relaunch exits at once because nothing is logged in
-yet. The launch loop correctly stops on a run that short, and on a remote session it
-hands the pane to a recovery shell. That shell used to say only "Exit shell to close
-tmux session.", and ``exit`` from it tore the whole session down, so the one thing
-the human needed after logging in again, the agent back in this pane, had no route.
+yet. The launch loop correctly stops on a run that short. A remote session used to
+hand its pane to a recovery shell at that point, which left the human inside the
+remote tmux session instead of back at the shell that ran ``ai c -R``. The session now
+ends the way a local one does: the stop line names the retry, the tmux session closes,
+and the client returns to the launching shell, where ``ai c -R`` relaunches the agent
+once the login is fixed.
 
 These tests run the whole generated remote session in a real tmux pane, as ``ai c``
-starts it: the stable script, its supervisor, the promoted child body and the
-recovery shell. Only ``claude`` and ``ai`` are stand-ins. The stand-in agent exits
-immediately until a "logged in" marker exists, then stays up like a real session.
+starts it: the stable script, its supervisor and the promoted child body. Only
+``claude`` and ``ai`` are stand-ins. The stand-in agent exits immediately, as one with
+no valid login does.
 """
 
 from __future__ import annotations
@@ -45,7 +47,6 @@ _OBSERVE_SECONDS = process_wait_seconds()
 # parallel suite need well over the usual budget.
 _STOP_SECONDS = 5 * _OBSERVE_SECONDS
 _STOP_LINE = "— stopping."
-_RELAUNCH_COMMAND = "exit 78"
 
 
 def _wait_for(predicate, timeout: float = _OBSERVE_SECONDS) -> bool:
@@ -139,6 +140,10 @@ class _RemoteSession:
             check=False,
         )
         assert created.returncode == 0, created.stderr
+        self.output = tmp_path / "pane-output"
+        self.output_done = tmp_path / "pane-output-done"
+        pipe = f"cat > {shlex.quote(str(self.output))}; touch {shlex.quote(str(self.output_done))}"
+        subprocess.run(["tmux", "-S", sock, "pipe-pane", "-O", "-t", f"={session}:", pipe], check=True)
 
     def pane(self) -> str:
         # -J joins a line the 120-column pane wrapped, so a long record still reads as one line.
@@ -155,22 +160,6 @@ class _RemoteSession:
         )
         return probe.returncode == 0
 
-    def type_line(self, text: str) -> None:
-        subprocess.run(["tmux", "-S", self.sock, "send-keys", "-t", self.session, text, "Enter"], check=True)
-
-    def wait_for_recovery_shell(self) -> None:
-        # The banner prints before the shell starts reading; type only once a prompt
-        # has had the chance to appear, or the keystrokes race the shell's startup.
-        assert _wait_for(lambda: _STOP_LINE in self.pane(), _STOP_SECONDS), (
-            f"the launch loop never stopped; pane: {self.pane()!r}"
-        )
-        # The banner is rendered after the stop line by its own process, so the stop
-        # line alone does not mean the banner is on screen yet.
-        assert _wait_for(lambda: "close this session" in self.pane(), _STOP_SECONDS), (
-            f"the recovery banner never appeared; pane: {self.pane()!r}"
-        )
-        time.sleep(1)
-
     def release(self) -> None:
         for pid in _lines(self.launches):
             with contextlib.suppress(OSError):
@@ -178,49 +167,18 @@ class _RemoteSession:
 
 
 @pytest.mark.real_tmux
-def test_given_a_stopped_remote_session_when_the_pane_is_handed_back_then_it_names_restart_and_close(
+def test_given_a_stopped_remote_session_when_the_launch_loop_stops_then_its_tmux_session_closes(
     tmux_socket, tmp_path, login_shell
 ):
-    session = _RemoteSession(tmux_socket, tmp_path, "recovery-banner", login_shell)
+    session = _RemoteSession(tmux_socket, tmp_path, "recovery-stop", login_shell)
     try:
-        session.wait_for_recovery_shell()
-        pane = session.pane()
-        assert _RELAUNCH_COMMAND in pane, f"the recovery shell names no way to get the agent back; pane: {pane!r}"
-        assert "close this session" in pane, f"the recovery shell no longer says how to leave; pane: {pane!r}"
-    finally:
-        session.release()
-
-
-@pytest.mark.real_tmux
-def test_given_the_recovery_shell_after_a_fresh_login_when_the_human_asks_to_restart_then_the_agent_relaunches(
-    tmux_socket, tmp_path, login_shell
-):
-    session = _RemoteSession(tmux_socket, tmp_path, "recovery-restart", login_shell)
-    try:
-        session.wait_for_recovery_shell()
-        before = len(_lines(session.launches))
-        session.logged_in.touch()
-        session.type_line(_RELAUNCH_COMMAND)
-        assert _wait_for(lambda: len(_lines(session.launches)) > before, _STOP_SECONDS), (
-            f"asking the recovery shell to restart never relaunched the agent; pane: {session.pane()!r}"
+        assert _wait_for(lambda: not session.alive(), _STOP_SECONDS), (
+            f"the stopped session stayed up in tmux; pane: {session.pane()!r}"
         )
-        time.sleep(4)
-        assert session.alive(), "the relaunched agent did not keep the session up"
-        assert session.pane().count(_STOP_LINE) == 1, (
-            f"the relaunched agent hit the quick-exit stop again; pane: {session.pane()!r}"
-        )
-    finally:
-        session.release()
-
-
-@pytest.mark.real_tmux
-def test_given_the_recovery_shell_when_the_human_exits_then_the_tmux_session_closes(tmux_socket, tmp_path, login_shell):
-    session = _RemoteSession(tmux_socket, tmp_path, "recovery-close", login_shell)
-    try:
-        session.wait_for_recovery_shell()
-        session.type_line("exit")
-        assert _wait_for(lambda: not session.alive()), (
-            f"exiting the recovery shell left the human in the pane; pane: {session.pane()!r}"
-        )
+        assert _wait_for(session.output_done.exists)
+        shown = session.output.read_text(encoding="utf-8", errors="replace")
+        assert _STOP_LINE in shown, f"the launch loop never said it stopped; pane: {shown!r}"
+        assert "Run 'ai c' to retry." in shown, f"the stop line names no way back to the agent; pane: {shown!r}"
+        assert "close this session" not in shown, f"a recovery shell was offered in the pane; pane: {shown!r}"
     finally:
         session.release()

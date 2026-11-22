@@ -182,7 +182,7 @@ def patched_subprocess(tmux_server, tmp_path):
                     after_list_panes()
                 return result
 
-            if sub in {"display-message", "if-shell"}:
+            if sub in {"display-message", "if-shell", "switch-client", "show-options", "list-clients", "set-hook"}:
                 return real_subprocess_run(
                     ["tmux", "-S", str(server.socket_path), *cmd[1:]],
                     capture_output=True,
@@ -1579,3 +1579,160 @@ def test_given_an_iterm2_pane_when_launching_then_the_rename_is_started_detached
     # Only the rename's own warning is in scope: the launch may warn about the host
     # (no direnv on a CI runner), which says nothing about the rename.
     assert "Warning: iTerm2 pane rename" not in out, out
+
+
+_STANDARD_LAUNCH_PATCHES = (
+    ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
+    ("ai_cli.session.cleanup_stale_sessions", {}),
+    ("ai_cli.config.get_current_project_name", {"return_value": "myproject"}),
+    ("ai_cli.config.get_session_map", {"return_value": {}}),
+    ("ai_cli.iterm2._load_iterm2_config", {"return_value": {}}),
+    ("ai_cli.iterm2._assign_iterm2_color_slot", {"return_value": None}),
+    ("ai_cli.iterm2._emit_iterm2_profile_setup", {}),
+    ("ai_cli.iterm2._configure_tmux_for_iterm2", {}),
+    ("ai_cli.session_script.get_engine_script", {"return_value": f"{_LIVE_CHILD_COMMAND}\n"}),
+    ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+)
+
+
+def _new_session_reason(server) -> str:
+    (created,) = [cmd for cmd in server._tmux_commands if cmd[1:2] == ["new-session"]]
+    values = [created[i + 1] for i, arg in enumerate(created) if arg == "-e"]
+    (reason,) = [value.partition("=")[2] for value in values if value.startswith("AIH_LAUNCH_REASON=")]
+    return reason
+
+
+@pytest.mark.parametrize(("launch_reason", "expected"), [(None, ""), ("host_reboot", "host_reboot")])
+def test_given_stale_reason_in_the_callers_environment_when_launched_then_only_an_explicit_reason_reaches_the_pane(
+    patched_subprocess, monkeypatch, launch_reason, expected
+):
+    """A shell inside a session relaunched after a reboot still carries its reason.
+
+    ``ai c <new-name>`` run there must start the new session fresh, while the relaunch
+    that owns a reason (``ai iterm2 restore``, the reboot relaunch) still delivers it.
+    """
+    monkeypatch.setenv("AIH_LAUNCH_REASON", "host_reboot")
+    kwargs = _base_launch_kwargs(name="1")
+    if launch_reason is not None:
+        kwargs["launch_reason"] = launch_reason
+    with contextlib.ExitStack() as stack:
+        for target, options in _STANDARD_LAUNCH_PATCHES:
+            stack.enter_context(patch(target, **options))
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    assert _new_session_reason(patched_subprocess) == expected
+
+
+@pytest.fixture
+def attached_caller(tmux_server):
+    """A caller session on the launch's tmux server, with a real client attached to it.
+
+    The client runs in a pane of a second server, standing in for the operator's
+    terminal; from the caller's pane, ``TMUX`` and ``TMUX_PANE`` name this server.
+    """
+    socket = str(tmux_server.socket_path)
+    outer = str(Path(socket).with_name("outer.sock"))
+
+    def tmux(*args):
+        return subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False, timeout=10)
+
+    assert tmux("-f", os.devnull, "new-session", "-d", "-s", "caller", _LIVE_CHILD_COMMAND).returncode == 0
+    client = f"env -u TMUX tmux -S {socket} attach-session -t =caller"
+    started = subprocess.run(
+        ["tmux", "-S", outer, "-f", os.devnull, "new-session", "-d", "-x", "120", "-y", "30", client],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert started.returncode == 0
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while not tmux("list-clients", "-t", "=caller").stdout and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pane = tmux("display-message", "-p", "-t", "=caller:", "#{pane_id}").stdout.strip()
+    caller_id = tmux("display-message", "-p", "-t", "=caller:", "#{session_id}").stdout.strip()
+    try:
+        yield {"socket": socket, "pane": pane, "session_id": caller_id, "tmux": tmux}
+    finally:
+        subprocess.run(["tmux", "-S", outer, "kill-server"], capture_output=True, check=False, timeout=10)
+
+
+def _run_ai_c() -> object:
+    """Run ``ai c 1`` through its click command, past every step above the launch itself."""
+    from ai_cli import main
+
+    with contextlib.ExitStack() as stack:
+        for target, options in _STANDARD_LAUNCH_PATCHES:
+            stack.enter_context(patch(target, **options))
+        for target in (
+            "ai_cli.main._ensure_dolt_server",
+            "ai_cli.main._ensure_wake_sidecar",
+            "ai_cli.main.trigger_background_update",
+            "ai_cli.main._tunnel._ensure_nats_tunnel",
+            "ai_cli.main._process_manager._start_stale_session_reaper_for_launch",
+            "ai_cli.main.run_launch_extensions",
+        ):
+            stack.enter_context(patch(target))
+        stack.enter_context(patch("ai_cli.main._auto_update_if_stale", return_value=False))
+        stack.enter_context(patch("ai_cli.config.load_config", return_value={"worktree": {"enabled": False}}))
+        with pytest.raises(SystemExit) as exited:
+            main.cmd_c.main(["1", "--project-prefix", "myproject"], standalone_mode=False)
+    return exited.value.code
+
+
+@pytest.mark.parametrize(
+    ("inherited", "expected"),
+    [
+        pytest.param(None, "host_reboot", id="relaunch-sets-it-for-this-command"),
+        pytest.param("host_reboot", "", id="inherited-from-a-running-session"),
+        pytest.param("manual_exit", "host_reboot", id="set-again-over-an-inherited-one"),
+    ],
+)
+def test_given_a_launch_reason_in_the_environment_when_ai_c_runs_then_only_one_set_for_it_reaches_the_pane(
+    patched_subprocess, monkeypatch, inherited, expected
+):
+    """``ai iterm2 restore`` types ``AIH_LAUNCH_REASON=<cause> ai c ...``; that reason is this launch's.
+
+    A shell or agent inside a relaunched session carries the reason its session was handed,
+    marked as inherited. ``ai c <new-name>`` run there must start the new session fresh.
+    """
+    from ai_cli import main
+
+    monkeypatch.setenv("AIH_LAUNCH_REASON", "host_reboot")
+    if inherited is not None:
+        monkeypatch.setenv(main._INHERITED_LAUNCH_REASON_VAR, inherited)
+
+    _run_ai_c()
+
+    assert _new_session_reason(patched_subprocess) == expected
+    assert "AIH_LAUNCH_REASON" not in os.environ
+
+
+def test_given_reinstall_continuation_inside_tmux_when_it_hands_off_then_the_client_switches_instead_of_refusing(
+    patched_subprocess, attached_caller, monkeypatch, capsys
+):
+    """The launcher's self-restart after a reinstall re-runs `ai c` in the same pane.
+
+    That continuation used to re-check the terminal, find TMUX set and refuse, leaving the
+    operator in the tmux shell. It must hand the terminal's client to the new session and
+    record where that client came from.
+    """
+    from ai_cli import main
+
+    tmux = attached_caller["tmux"]
+    monkeypatch.setenv("TMUX", f"{attached_caller['socket']},1,0")
+    monkeypatch.setenv("TMUX_PANE", attached_caller["pane"])
+    monkeypatch.setenv(main._LAUNCH_REEXEC_ENV, "1")
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True, raising=False)
+
+    code = _run_ai_c()
+
+    err = capsys.readouterr().err
+    assert code in (0, None), err
+    assert "Continuing Claude Code session" in err, err
+    assert "already inside a tmux session" not in err, err
+    assert patched_subprocess._execvp_calls == [], "the continuation tried to nest a tmux client"
+    (session,) = [s for s in patched_subprocess.sessions if s.name == "c-myproject-tst-1"]
+    assert tmux("list-clients", "-F", "#{session_id}").stdout.split() == [session.id]
+    shown = tmux("show-options", "-qv", "-t", session.id, "@ai_cli_return_session").stdout.strip()
+    assert shown == attached_caller["session_id"]

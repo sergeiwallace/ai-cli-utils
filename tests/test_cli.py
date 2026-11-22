@@ -3590,10 +3590,16 @@ class TestTmuxEnvForwardingNormalisesXdgStateHome:
         assert self._value_of(build_tmux_env_flags({"PATH": "/usr/bin"}), "AI_CLI_SKIP_DIRENV") is None
 
     def test_given_a_relaunch_reason_when_flags_are_built_then_the_pane_receives_it(self):
-        """``ai iterm2 restore`` sets it on the relaunch; a running tmux server would not pass it on."""
-        flags = build_tmux_env_flags({"PATH": "/usr/bin", "AIH_LAUNCH_REASON": "host_reboot"})
+        """The relaunch that owns a reason passes it; a running tmux server would not pass it on."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin"}, launch_reason="host_reboot")
 
         assert self._value_of(flags, "AIH_LAUNCH_REASON") == "host_reboot"
+
+    def test_given_a_stale_reason_in_the_callers_environment_when_flags_are_built_then_the_pane_gets_none(self):
+        """A shell inside a relaunched session still carries its reason; a new session must not inherit it."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin", "AIH_LAUNCH_REASON": "host_reboot"})
+
+        assert self._value_of(flags, "AIH_LAUNCH_REASON") == ""
 
     def test_given_no_relaunch_reason_when_flags_are_built_then_an_empty_one_clears_a_stale_server_value(self):
         """The first relaunch after a reboot starts the server, whose global env then holds the reason."""
