@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from pathlib import Path
 
 from ai_cli.config import DEFAULT_CONFIG
@@ -197,3 +198,32 @@ def test_given_a_table_config_py_validates_with_defaults_when_checked_then_its_k
         unread = {key for key in listed - declared[name] if f"{table}.{key}" not in package_reads}
         assert undocumented == set(), f"{name} keys missing from [{table}]: {sorted(undocumented)}"
         assert unread == set(), f"[{table}] lists keys nothing reads: {sorted(unread)}"
+
+
+def test_given_the_shipped_retry_policy_when_the_template_documents_it_then_every_value_matches():
+    """The template's commented ``[retry]`` lines are the shipped ``data/retry.toml``, uncommented."""
+    from ai_cli import retry
+
+    lines = DEFAULT_CONFIG[DEFAULT_CONFIG.index("\n[retry]\n") : DEFAULT_CONFIG.index("\n[session_relaunch]\n")]
+    uncommented = "\n".join(
+        line[2:] if line.startswith("# ") else line for line in lines.splitlines() if not line.startswith("##")
+    )
+
+    assert tomllib.loads(uncommented)["retry"] == retry.shipped_table()
+
+
+def test_given_a_config_written_from_the_template_when_the_shipped_retry_default_changes_then_a_site_follows_it(
+    tmp_path, monkeypatch
+):
+    """A new user's file is the template, so an active ``[retry]`` value there would pin the old default."""
+    from ai_cli import retry
+
+    (tmp_path / "ai-cli-utils").mkdir()
+    (tmp_path / "ai-cli-utils" / "config.toml").write_text(DEFAULT_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    shipped = retry.shipped_table()
+    changed = {**shipped, "wake_sidecar": {**shipped["wake_sidecar"], "attempts": 7}}
+    monkeypatch.setattr(retry, "shipped_table", lambda: changed)
+
+    assert retry.policy("wake_sidecar").attempts == 7

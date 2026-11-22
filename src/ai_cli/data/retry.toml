@@ -1,0 +1,23 @@
+# The shipped retry policy: every key a [retry] site reads, and the value it takes when a
+# user's config.toml leaves that key out. ``ai_cli.retry`` reads this file; the config
+# template (docs/reference/config.toml) repeats these values as commented lines, and a test
+# keeps the two equal. They are not written into a user's config.toml as active values:
+# a copied value would pin that user to it when the shipped default later changes.
+
+[retry]
+attempts = 3
+timeout_seconds = 10
+growth = 2.0
+max_timeout_seconds = 60
+delay_seconds = 1
+max_delay_seconds = 10
+jitter = 0.5
+
+[retry.wake_sidecar]
+timeout_seconds = 5
+max_timeout_seconds = 20
+
+[retry.registry_fetch]
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120

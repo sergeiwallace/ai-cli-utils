@@ -1596,6 +1596,47 @@ To add another machine, give it a short alias and select it for one launch with
 `[remote] default`. Existing flat `[remote]` configurations remain supported as
 one implicit default machine.
 
+### Retries
+
+A launch waits on things it does not control: the optional wake sidecar's unit
+manager and a shared name registry's remote. Each of those waits runs under one retry
+policy from the `[retry]` table of `config.toml`, read on every call, so an edit applies
+to the next launch without restarting anything. Attempt *n* may take
+`min(timeout_seconds * growth^(n-1), max_timeout_seconds)` seconds; after a failed
+attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`, less a
+random share of up to `jitter` of it. Only a timeout or a lost connection is retried. A
+definite answer, such as a credential the registry's remote refuses, is reported once
+with its cause. When every attempt fails the launch says how many it made and why the
+last one failed, and continues where the step was optional.
+
+```toml
+[retry]                       # the default for every site
+attempts = 3
+timeout_seconds = 10
+growth = 2.0
+max_timeout_seconds = 60
+delay_seconds = 1
+max_delay_seconds = 10
+jitter = 0.5
+
+[retry.wake_sidecar]          # the wake-sidecar ensure before a local launch
+timeout_seconds = 5
+max_timeout_seconds = 20
+
+[retry.registry_fetch]        # every fetch of a shared name registry
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120
+```
+
+A key your file leaves out takes the shipped value
+([src/ai_cli/data/retry.toml](src/ai_cli/data/retry.toml)); the template
+([docs/reference/config.toml](docs/reference/config.toml)) shows each one commented out,
+so a new config file never pins today's default. Your own `[retry]` values
+apply to every site, ahead of the shipped per-site tables; a `[retry.<site>]` table of
+yours overrides one site. An invalid value is reported, naming the key, and the shipped
+value is used.
+
 ### Output configuration
 
 An `[output]` table in `config.toml` controls every element of every line an `ai`
