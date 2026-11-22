@@ -52,23 +52,19 @@ def test_given_windows_when_handing_off_then_launcher_waits_for_the_program_and_
     assert finished.read_text() == "done"
 
 
-def test_given_windows_when_handing_off_then_ctrl_c_is_left_to_the_program(windows_launcher, monkeypatch):
-    seen = []
+def test_given_windows_when_handing_off_then_the_program_starts_with_ctrl_c_and_the_launcher_ignores_it(
+    windows_launcher, tmp_path, monkeypatch
+):
     monkeypatch.setattr(main.os, "execvp", Mock(side_effect=AssertionError("Windows has no exec")))
-    program = "import sys; sys.exit(0)"
-    real_popen = main.subprocess.Popen
-
-    def popen(*args, **kwargs):
-        seen.append(signal.getsignal(signal.SIGINT))
-        return real_popen(*args, **kwargs)
-
-    monkeypatch.setattr(main.subprocess, "Popen", popen)
+    seen = tmp_path / "child-sigint"
+    program = "import pathlib, signal, sys; pathlib.Path(sys.argv[1]).write_text(str(signal.getsignal(signal.SIGINT)))"
     with pytest.raises(SystemExit):
-        main._exec_handoff(sys.executable, [sys.executable, "-c", program])
-    assert seen == [signal.SIG_IGN]
+        main._exec_handoff(sys.executable, [sys.executable, "-c", program, str(seen)])
+    assert seen.read_text() == str(signal.default_int_handler)
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
 
 
-def test_given_windows_when_program_is_missing_then_the_error_surfaces_and_ctrl_c_is_restored(
+def test_given_windows_when_program_is_missing_then_the_error_surfaces_and_ctrl_c_is_untouched(
     windows_launcher, tmp_path
 ):
     before = signal.getsignal(signal.SIGINT)
