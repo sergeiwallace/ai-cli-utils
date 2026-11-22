@@ -1610,7 +1610,10 @@ one retry policy from the `[retry]` table of `config.toml`, read on every call, 
 edit applies to the next launch without restarting anything. Attempt *n* may take
 `min(timeout_seconds * growth^(n-1), max_timeout_seconds)` seconds; after a failed
 attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`, less a
-random share of up to `jitter` of it. Only a timeout or a lost connection is retried. A
+random share of up to `jitter` of it. The whole wait, delays included, ends within
+`max_total_seconds`, which cuts each attempt's timeout to what remains of it, so a hung
+optional step costs a launch no more than that total. Only a timeout or a lost connection
+is retried. A
 definite answer, such as a credential the registry's remote refuses, is reported once
 with its cause. When every attempt fails the launch says how many it made and why the
 last one failed, and continues where the step was optional.
@@ -1624,10 +1627,12 @@ max_timeout_seconds = 60
 delay_seconds = 1
 max_delay_seconds = 10
 jitter = 0.5
+max_total_seconds = 300
 
-[retry.wake_sidecar]          # the wake-sidecar ensure before a local launch
+[retry.wake_sidecar]          # the wake-sidecar ensure and show lookup before a local launch
 timeout_seconds = 5
 max_timeout_seconds = 20
+max_total_seconds = 10
 
 [retry.remote_allocation]     # asking a remote host which session `-R` attaches to
 attempts = 2
