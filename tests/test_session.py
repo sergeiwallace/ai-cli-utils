@@ -1633,7 +1633,6 @@ class TestCreateWorktreeEdgeCases2:
             patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
             _stub_worktree_base(),
             patch("ai_cli.session._set_upstream_or_raise", side_effect=fail_creator_upstream) as set_upstream,
-            patch("ai_cli.session._authorize_session_worktree_envrc") as authorize_envrc,
             patch("ai_cli.trust.ensure_workspace_trusted") as ensure_trusted,
             patch("portalocker.Lock", SlotLock),
             patch("subprocess.run", side_effect=fake_run),
@@ -1656,7 +1655,6 @@ class TestCreateWorktreeEdgeCases2:
         else:
             assert (wt_dir / ".venv").is_symlink()
         ensure_trusted.assert_called_once_with([tmp_path, wt_dir])
-        authorize_envrc.assert_called_once_with(tmp_path, wt_dir)
         assert set_upstream.call_count == 1
         assert [
             "git",
