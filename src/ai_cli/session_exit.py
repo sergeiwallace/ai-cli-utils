@@ -309,6 +309,11 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
     return row, targets, self_exit
 
 
+# Windows process-creation flags, spelled out because ``subprocess`` defines them only on Windows.
+WINDOWS_HIDDEN_CONSOLE = 0x08000000  # CREATE_NO_WINDOW
+WINDOWS_NEW_PROCESS_GROUP = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+
+
 def detach_cleanup(name: str, *, host: str, generation: str, timeout: float) -> subprocess.Popen:
     """Continue a committed self-exit outside the agent's terminal/process group."""
     from .session_lifecycle import pinned_python
@@ -321,7 +326,9 @@ def detach_cleanup(name: str, *, host: str, generation: str, timeout: float) -> 
         f"result = exit_session({name!r}, host={host!r}, generation={generation!r}, timeout={timeout!r}); "
         "sys.exit(0 if result.complete else 1)"
     )
-    creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    # On Windows a hidden console of its own, never none at all: a process with no
+    # console gives every console program it starts (tmux, git) a new visible window.
+    creationflags = WINDOWS_HIDDEN_CONSOLE | WINDOWS_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     return subprocess.Popen(
         pinned_python(code),
         stdin=subprocess.DEVNULL,

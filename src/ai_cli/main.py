@@ -340,14 +340,34 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
 
 
-def _exec_handoff(file: str, args: list[str]) -> NoReturn:
+def _exec_handoff(file: str, args: list[str], *, detach_on_windows: bool = False) -> NoReturn:
     """Replace this process with ``file``; the one exec in the package (AI-CLI-8h3u).
 
     An exec skips ``atexit``, so an open line would stay open and buffered output
     would be lost: both are settled here first.
+
+    Windows has no exec. CPython emulates it by starting ``file`` as a new process and
+    ending this one at once, so the shell that ran ``ai`` sees it exit and prints its
+    prompt while ``file`` still runs on the same console. The shell and ``file`` then
+    take turns reading the keyboard, and a tmux client or agent there gets almost none
+    of what is typed. So on Windows ``file`` runs on this console as a child, and this
+    process waits and exits with its status. Ctrl+C reaches every process on the
+    console, so this one ignores it and leaves it to the child.
+
+    ``detach_on_windows`` keeps the emulated exec, for a ``file`` that must not have this
+    program still running: an upgrade replacing this program's own files.
     """
     _out.flush_sinks()
-    os.execvp(file, args)
+    if sys.platform != "win32" or detach_on_windows:
+        os.execvp(file, args)
+    sys.exit(_run_on_this_console(file, args))
+
+
+def _run_on_this_console(file: str, args: list[str]) -> int:
+    """Run ``file`` as a child on this process's console and return its exit status."""
+    from .foreground import run_in_foreground
+
+    return run_in_foreground(args, executable=file)
 
 
 def _exec_tmux(args: list[str]) -> NoReturn:
@@ -442,7 +462,10 @@ def _exec_with_direnv(
 
 
 def _direnv_prefix(project_root: Path) -> list[str]:
-    """``["direnv", "exec", <root>]`` when direnv can actually run there, else ``[]``.
+    """The argv prefix that runs a program under direnv at ``project_root``, else ``[]``.
+
+    That is ``direnv exec <root>``, or on native Windows, where ``direnv exec`` cannot
+    run a native program, :mod:`ai_cli.direnv_exec` (see there).
 
     The single place the "direnv is an enhancement, never a precondition" policy
     described in :func:`_exec_with_direnv` is decided, so every launch path — bare
@@ -452,7 +475,9 @@ def _direnv_prefix(project_root: Path) -> list[str]:
     """
     envrc = _find_envrc(project_root)
     if envrc is not None and _direnv_env_usable(project_root):
-        return ["direnv", "exec", str(project_root)]
+        from .direnv_exec import prefix
+
+        return prefix(project_root)
     if envrc is not None and _direnv_installed():
         _out.warning(
             Tag.LAUNCH,
@@ -7825,7 +7850,7 @@ def cmd_upgrade():
     upgrade_args = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
-    _exec_handoff(uv_bin, upgrade_args)
+    _exec_handoff(uv_bin, upgrade_args, detach_on_windows=True)
 
 
 @_cli_group.command("list-capabilities", help="Print the optional behaviours this launcher has enabled, one per line")
@@ -7939,6 +7964,21 @@ def cmd_doctor(dry_run):
         ("compact", compact.usable, compact_note),
     ):
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
+
+    # Each agent CLI resolved as a launch from here resolves it: on the PATH of this
+    # directory's direnv environment, through shutil.which (PATHEXT on Windows). A shell's
+    # own lookup can find a program the launch cannot, so that answer proves nothing.
+    from .direnv_exec import loaded_environment
+
+    agent_env, agent_env_failure = dict(os.environ), ""
+    if _direnv_setup.find_envrc(root) is not None and not _direnv_setup.is_bypassed(config):
+        agent_env, agent_env_failure = loaded_environment(root, agent_env)
+    where = "the project environment's PATH" if not agent_env_failure else f"PATH ({agent_env_failure})"
+    gemini = (shlex.split(config.get("gemini", {}).get("command", "gemini")) or ["gemini"])[0]
+    for agent in ("claude", "codex", gemini, "pi"):
+        found = shutil.which(agent, path=agent_env.get("PATH"))
+        note = found or f"not found on {where}; a launch of this engine cannot start it"
+        _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if found else 'MISS'}  {agent:<8} {note}")
 
     if _direnv_setup.is_bypassed(config):
         _out.emit(
