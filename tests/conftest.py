@@ -1181,6 +1181,22 @@ def _reject_real_agent_processes(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _windows_handoff_is_an_exec(monkeypatch):
+    """Hand the launcher's Windows run-and-wait handoff to ``os.execvp``.
+
+    ``main._exec_handoff`` runs its program as a waited-for child on Windows, which
+    has no exec. The suite's launch tests intercept the handoff by patching
+    ``os.execvp``, so this routes it there, and every such test intercepts it on
+    Windows, or with ``sys.platform`` faked as Windows, too. Looked up at call time,
+    so a test's own ``os.execvp`` patch applies. Tests of the Windows handoff itself
+    put back the function they imported.
+    """
+    from ai_cli import main
+
+    monkeypatch.setattr(main, "_run_on_this_console", lambda file, args: os.execvp(file, args))
+
+
+@pytest.fixture(autouse=True)
 def _installed_build_reads_this_migration_format(monkeypatch):
     """Report the installed ``ai`` as current, so no migration test probes or updates the real tool.
 

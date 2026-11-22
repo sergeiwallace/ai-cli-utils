@@ -11,6 +11,20 @@ import contextlib
 
 import pytest
 
+
+def legacy_child_generation(script: str) -> str:
+    """The script's legacy child-generation block, runnable alone.
+
+    The block names its shell pid through `_ai_native_pid`, defined in its own bracket, so a
+    harness running the block without the rest of the script takes both.
+    """
+
+    def block(name: str) -> str:
+        return script.split(f"# BEGIN RUN STATE {name}\n", 1)[1].split("# END RUN STATE", 1)[0]
+
+    return block("native-pid") + block("legacy-child-generation")
+
+
 LEGACY_SESSION_STATE_FUNCTIONS = r"""
     # BEGIN RUN STATE helpers
     _ai_mark_running() {
