@@ -68,6 +68,24 @@ def test_given_program_launched_before_plugin_refresh_when_compared_then_it_is_c
     assert session_restart._compatible(current, before_feature)
 
 
+def test_given_program_launched_before_quota_watch_retired_when_compared_then_only_the_old_one_runs_it(programs):
+    legacy, current = programs
+    assert "ai quota watch" in legacy
+    assert "ai quota" not in current
+    anchor = "    ai memory watch &>/dev/null &\n"
+    retired = (
+        "\n"
+        "    # Auto-start quota-watch (idempotent — circusd skips if already registered).\n"
+        "    # Gated on [quota_watch] auto_start in config.toml (default off — see config.py).\n"
+        "    ai quota watch start --auto 2>/dev/null || true\n"
+    )
+    running = current.replace(anchor, anchor + retired, 1)
+    assert running != current
+    assert session_restart._compatible(running, current)
+    tampered = running.replace("ai quota watch start --auto", "ai quota scrape")
+    assert not session_restart._compatible(tampered, current)
+
+
 _STOP_ON_EVERY_CLEAN_EXIT = """    # BEGIN SHELL RETURN interrupt-exit
       # Raw-mode TUIs consume Ctrl+C themselves and may exit successfully;
       # a clean exit or status 130 is a deliberate stop, even immediately after
