@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import is_update_child
 from test_line_discipline import (
     DOLT_LINE,
     Terminal,
@@ -214,7 +215,7 @@ def _child_update(script: str):
     preflight = _preflight_answering(f"{DOLT_LINE}\n")
 
     def run(command, **kwargs):
-        if isinstance(command, list) and command[1:3] == ["update", "--force"]:
+        if is_update_child(command):
             env = kwargs.get("env") or {}
             assert env.get(_out.RECORD_RELAY_ENV) == "1", "the parent must ask its ai child for records"
             child_env = {key: value for key, value in env.items() if key != "PYTHONPATH"}

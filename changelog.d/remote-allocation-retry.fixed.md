@@ -1,0 +1,1 @@
+- The ssh call that asks a remote host which session `ai c -R` attaches to now has a timeout, under `[retry.remote_allocation]`. It used to wait with no bound, and retried only a call killed from outside, once. A call that overruns its timeout or is killed is asked again with a longer timeout; an exit the remote reports itself is still final.

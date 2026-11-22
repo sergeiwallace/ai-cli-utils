@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import hold_file_lock, make_iterm2_config, run_cli
+from conftest import hold_file_lock, is_update_child, make_iterm2_config, run_cli
 
 from ai_cli import session_script as _session_script
 from ai_cli.main import (
@@ -939,7 +939,7 @@ class TestAutoUpdateIfStaleLockContention:
         update_calls = []
 
         def fake_run(cmd, **kwargs):
-            if len(cmd) >= 2 and cmd[1] == "update":
+            if is_update_child(cmd):
                 update_calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -982,7 +982,7 @@ class TestAutoUpdateIfStaleLockContention:
             assert holder.stdout.readline().strip() == "held"
 
             def fake_run(cmd, **kwargs):
-                if len(cmd) >= 2 and cmd[1] == "update":
+                if is_update_child(cmd):
                     raise AssertionError("a live peer owns the update")
                 return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -1099,7 +1099,7 @@ class TestAutoUpdateIfStaleLockContention:
         updates: list[list[str]] = []
 
         def fake_run(cmd, **_kwargs):
-            if len(cmd) >= 2 and cmd[1] == "update":
+            if is_update_child(cmd):
                 updates.append(list(cmd))
                 source.write_text('VALUE = "after"\n')
                 peer_pulled.set()
@@ -1129,7 +1129,7 @@ class TestAutoUpdateIfStaleLockContention:
                 # thread started inside it. An orphaned winner therefore resumed in
                 # `_auto_update_if_stale` against the REAL `subprocess.run` and the
                 # REAL `_find_aicli_project_path`, and the call it was about to make
-                # is `[ai, "update", "--force", "--quiet"]`, which reaches
+                # is `ai update --force --package-only --quiet`, which reaches
                 # `git_repair.pull_rebase_autostash` -- `git pull --rebase
                 # --autostash` against a live checkout. A test that fails must not
                 # rewrite the branch it is being run on.
@@ -1179,7 +1179,7 @@ class TestAutoUpdateRetryBackoff:
 
         def fake_run(cmd, **_kwargs):
             cmd = list(cmd)
-            if len(cmd) >= 2 and cmd[1] == "update":
+            if is_update_child(cmd):
                 updates.append(cmd)
                 return MagicMock(returncode=returncode, stdout="", stderr="uv: no space left on device\n")
             return MagicMock(returncode=0, stdout="", stderr="")

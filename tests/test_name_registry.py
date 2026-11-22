@@ -22,7 +22,7 @@ from click.testing import CliRunner
 from process_ownership import reap, spawn_owned
 
 from ai_cli import config as _config
-from ai_cli import name_list, session_naming
+from ai_cli import name_list, retry, session_naming
 from ai_cli import name_registry as reg
 from ai_cli.main import _cli_group
 
@@ -303,7 +303,7 @@ def test_given_configured_fetch_and_push_timeouts_when_reading_and_publishing_th
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_fetch_timeout_seconds = 42\nregistry_push_timeout_seconds = 43\n",
+        "[session_names]\nregistry_push_timeout_seconds = 43\n[retry.registry_fetch]\ntimeout_seconds = 42\nmax_timeout_seconds = 42\n",
     )
     calls = _recorded_git_calls(monkeypatch)
 
@@ -335,16 +335,22 @@ def test_given_no_configured_fetch_timeout_when_reading_then_the_fetch_gets_the_
     fleet.registry.snapshot()
 
     [(_command, timeout)] = _fetches(calls)
-    assert timeout == _config.REGISTRY_FETCH_TIMEOUT_DEFAULT_S
+    assert timeout == retry.shipped_table()["registry_fetch"]["timeout_seconds"]
     assert timeout > fleet.registry.timeout_s
 
 
 @pytest.mark.parametrize("value", ["0", "-5", "true", '"slow"'])
-def test_given_an_invalid_fetch_timeout_when_reading_then_it_refuses_naming_the_setting(fleet, monkeypatch, value):
-    _user_config(fleet, monkeypatch, f"[session_names]\nregistry_fetch_timeout_seconds = {value}\n")
+def test_given_an_invalid_fetch_timeout_when_reading_then_it_warns_naming_the_setting_and_keeps_the_shipped_one(
+    fleet, monkeypatch, capsys, value
+):
+    _user_config(fleet, monkeypatch, f"[retry.registry_fetch]\ntimeout_seconds = {value}\n")
+    calls = _recorded_git_calls(monkeypatch)
 
-    with pytest.raises(reg.RegistryError, match=r"session_names\.registry_fetch_timeout_seconds"):
-        fleet.registry.snapshot()
+    fleet.registry.snapshot()
+
+    [(_command, timeout)] = _fetches(calls)
+    assert timeout == retry.shipped_table()["registry_fetch"]["timeout_seconds"]
+    assert "invalid retry.registry_fetch.timeout_seconds" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("value", ["0", "-5", "true", '"slow"'])
@@ -392,7 +398,7 @@ def test_given_a_fetch_slower_than_the_publish_timeout_when_reading_then_it_comp
         "remote.origin.uploadpack",
         f'"{python}" -c "import time; time.sleep(2)" && git upload-pack',
     )
-    _user_config(fleet, monkeypatch, "[session_names]\nregistry_fetch_timeout_seconds = 120\n")
+    _user_config(fleet, monkeypatch, "[retry.registry_fetch]\ntimeout_seconds = 120\nmax_timeout_seconds = 120\n")
     registry = reg.GitRegistry(
         fleet.repo, ref=REF, remote="origin", policy_file=fleet.repo / reg.POLICY_MARKER, timeout_s=1, attempts=1
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import re
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -210,6 +211,53 @@ def test_given_a_fetch_that_hangs_when_launching_remote_then_it_is_bounded_and_l
     assert "could not check origin/main (git fetch timed out" in _install_line(stderr)
     execvp.assert_not_called()
     session_launch.assert_called_once()
+
+
+_UPLOAD_PACK_HANGS_ONCE = """\
+import pathlib, time
+counter = pathlib.Path(__file__).with_name("upload-pack-calls")
+n = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(n))
+if n == 1:
+    time.sleep(8)
+"""
+
+
+def test_given_a_fetch_that_hangs_once_when_launching_remote_then_it_is_retried_with_a_longer_timeout_and_syncs(
+    origin_and_checkout, tmp_path, monkeypatch
+):
+    config = tmp_path / "user-config" / "ai-cli-utils" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "[retry.client_fetch]\ntimeout_seconds = 2\ngrowth = 15\nmax_timeout_seconds = 30\ndelay_seconds = 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
+    _, publisher, checkout = origin_and_checkout
+    target = _advance_origin(publisher)
+    # The origin's own upload-pack sleeps past the first attempt's timeout, once: a real hang.
+    stub = tmp_path / "upload_pack.py"
+    stub.write_text(_UPLOAD_PACK_HANGS_ONCE, encoding="utf-8")
+    python = Path(sys.executable).as_posix()
+    _git("config", "remote.origin.uploadpack", f'"{python}" "{stub.as_posix()}" && git upload-pack', cwd=checkout)
+
+    real_run = subprocess.run
+    fetch_timeouts = []
+
+    def recording_run(command, **kwargs):
+        if "fetch" in command:
+            fetch_timeouts.append(kwargs.get("timeout"))
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.client_checkout.subprocess.run", side_effect=recording_run):
+        stderr, execvp, _session_launch = _launch(checkout)
+
+    assert (tmp_path / "upload-pack-calls").read_text() == "2"
+    assert fetch_timeouts == [2, 30]
+    assert _git("rev-parse", "HEAD", cwd=checkout) == target
+    assert "fast-forwarded 1 commit(s) from origin/main; restarting" in _install_line(stderr)
+    execvp.assert_called_once()
 
 
 def test_given_a_checkout_behind_origin_when_launching_locally_then_it_is_not_touched(origin_and_checkout):

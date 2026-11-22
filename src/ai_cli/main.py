@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 import uuid as uuid_module
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -36,6 +37,7 @@ from . import launch_reporter as _launch_reporter
 from . import native_deps as _native_deps
 from . import output as _out
 from . import process_manager as _process_manager
+from . import retry as _retry
 from . import session as _session
 from . import session_launch_state as _session_launch_state
 from . import session_naming as _session_naming
@@ -216,15 +218,32 @@ def _ensure_dolt_server() -> None:
     script = _dolt_server_script()
     if script is None:
         return
-    _out.run_relayed(
-        Tag.DOLT_SERVER,
-        "ensure",
-        [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
-        check=False,
-    )
+
+    def attempt(current: _retry.Attempt) -> None:
+        try:
+            _out.run_relayed(
+                Tag.DOLT_SERVER,
+                "ensure",
+                [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
+                check=False,
+                timeout=current.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise _DoltEnsureTimeoutError(
+                f"the Dolt server ensure did not finish within {current.timeout:g} s"
+            ) from exc
+
+    # Bounded under [retry.dolt_server]. Stopping the ensure stops only this wait: a server it
+    # asked the unit manager to start keeps starting, and the launch continues as it does when
+    # the supervisor reports its embedded fallback.
+    try:
+        _retry.run("dolt_server", attempt, transient=lambda exc: isinstance(exc, _DoltEnsureTimeoutError))
+    except _retry.RetryExhaustedError as exc:
+        _out.error(Tag.DOLT_SERVER, "ensure", f"{exc}; launch continues")
 
 
-_WAKE_SIDECAR_TIMEOUT_SECONDS = 3
+class _DoltEnsureTimeoutError(Exception):
+    """The Dolt supervisor's ensure did not answer within its attempt's timeout."""
 
 
 def _wake_sidecar_script() -> Path | None:
@@ -247,6 +266,47 @@ def _sidecar_unit_manager_available() -> bool:
     return False
 
 
+def _run_wake_sidecar(script: Path, command: str) -> subprocess.CompletedProcess[str]:
+    """``<script> <command> --json`` under the ``wake_sidecar`` retry policy, read now.
+
+    Only a timeout is retried: both commands are idempotent reads or ensures, so a second
+    try cannot start the unit twice, and any answer the CLI gives is definite.
+    """
+
+    def attempt(current: _retry.Attempt) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                [sys.executable, str(script), command, "--json"],
+                capture_output=True,
+                text=True,
+                timeout=current.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise _WakeSidecarTimeoutError(f"{command} did not finish within {current.timeout:g} s") from exc
+
+    # The output vocabulary names the launch's operations, not the sidecar CLI's commands.
+    op = "ensure" if command == "ensure" else "watch"
+
+    def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
+        _out.warning(
+            Tag.DAEMON,
+            op,
+            f"wake sidecar {exc} (attempt {current.number} of {current.of}); retrying with {next_timeout:g} s",
+        )
+
+    return _retry.run(
+        "wake_sidecar",
+        attempt,
+        transient=lambda exc: isinstance(exc, _WakeSidecarTimeoutError),
+        on_retry=retrying,
+    )
+
+
+class _WakeSidecarTimeoutError(Exception):
+    """One wake-sidecar call that did not answer within its attempt's timeout."""
+
+
 def _ensure_wake_sidecar(config: dict) -> None:
     """Ask the optional sidecar CLI to idempotently ensure its machine unit."""
     if not _sidecar_unit_manager_available():
@@ -258,15 +318,9 @@ def _ensure_wake_sidecar(config: dict) -> None:
         return
 
     try:
-        completed = subprocess.run(
-            [sys.executable, str(script), "ensure", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _out.error(Tag.DAEMON, "ensure", "wake sidecar failed: ensure timed out; launch continues")
+        completed = _run_wake_sidecar(script, "ensure")
+    except _retry.RetryExhaustedError as exc:
+        _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {exc}; launch continues")
         return
     except OSError as exc:
         _out.error(Tag.DAEMON, "ensure", f"wake sidecar failed: {exc}; launch continues")
@@ -295,13 +349,7 @@ def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
         if script is None:
             result = _config.get_sidecar_config(config)
         else:
-            completed = subprocess.run(
-                [sys.executable, str(script), "show", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
-                check=False,
-            )
+            completed = _run_wake_sidecar(script, "show")
             if completed.returncode != 0:
                 return None
             result = json.loads(completed.stdout)
@@ -317,7 +365,7 @@ def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
         command = shlex.join([sys.executable, str(script), "watch", "--session", slug])
         # POSIX-only: the shell belongs to the tmux window and retries every exit.
         return f"while :; do {command}; sleep 2; done"
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+    except (OSError, _retry.RetryExhaustedError, ValueError, TypeError):
         _out.warning(Tag.DAEMON, "watch", "wake watcher unavailable; launch continues")
         return None
 
@@ -331,7 +379,8 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         created = subprocess.run(
             tmux_binary.argv("new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop),
             capture_output=True,
-            timeout=_WAKE_SIDECAR_TIMEOUT_SECONDS,
+            # One bounded call, never retried: a second new-window would open a second watcher.
+            timeout=_retry.policy("wake_sidecar").timeout_for(1),
             check=False,
         )
         if created.returncode != 0:
@@ -1576,6 +1625,10 @@ def _clear_update_failure_record() -> None:
         _update_failure_record_path().unlink(missing_ok=True)
 
 
+#: How the launch runs `ai update` as a child: this interpreter and this package's own entry.
+_UPDATE_CHILD = (sys.executable, "-P", "-m", "ai_cli.main")
+
+
 def _auto_update_if_stale(config: dict) -> bool:
     """Reinstall at session launch only when the packaged source has changed, and
     report whether the invoking launcher must restart.
@@ -1651,10 +1704,21 @@ def _auto_update_if_stale(config: dict) -> bool:
         # means a failed install is retried on the next launch rather than being
         # remembered as done.
         verbose = _update_verbose_requested()
-        ai_bin = shutil.which("ai") or "ai"
-        cmd = [ai_bin, "update", "--force"] + ([] if verbose else ["--quiet"])
+        # The child is this running package, never the `ai` first on PATH: that can be another,
+        # older install, which would reject --package-only. -P keeps the checkout the child
+        # runs in (cwd) off sys.path, so nothing there can shadow a module.
+        # --package-only: the bumped version already defeats uv's cache for this package, so
+        # the launch reinstalls it alone and leaves the dependencies as they are.
+        cmd = [*_UPDATE_CHILD, "update", "--force", "--package-only"] + ([] if verbose else ["--quiet"])
         # Captured even when verbose: the child's lines are replayed through the
         # tagged relay below rather than inherited raw.
+        # Deliberately unbounded, not on the retry policy: the child runs `uv pip install`
+        # or `uv tool install --force` into this launcher's own environment, and uv is not
+        # atomic about it. Killed part way it can leave the environment with no packages and
+        # `ai` unable to start (see the repair message below), so a timeout here would turn a
+        # slow launch into a broken install. A retry would repeat a whole pull and install.
+        # The launch reports progress with its "still checking" heartbeat instead, and the
+        # one-line summary times the pull, the install and the work after it.
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=False, env=_out.record_relay_env()
         )
@@ -2030,7 +2094,18 @@ def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> t
     return True, output or "current"
 
 
-_REMOTE_ALLOCATION_RETRY_DELAY_S = 1.0
+class _RemoteCallCutOffError(Exception):
+    """A remote call ended without an answer: it overran its timeout or was killed from outside.
+
+    ``result`` is the call's completed process when there is one, so an exhausted retry can
+    still report the call's own exit status.
+    """
+
+    def __init__(self, message: str, result: subprocess.CompletedProcess | None) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 # Platform difference: Python's ``signal`` module on Windows has no SIGKILL, SIGHUP or
 # SIGQUIT, so signal names come from this fixed POSIX table instead. It is also the
 # right table for a remote status: the remote shell numbers signals the POSIX way
@@ -2100,14 +2175,35 @@ def _request_remote_session_allocation(
         + "".join(f" {shlex.quote(arg)}" for arg in naming_args)
     )
     ssh_command = [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"]
-    result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
-    if _remote_call_killed_silently(result):
-        exit_text = _remote_exit_text(result.returncode)
+
+    def attempt(current: _retry.Attempt) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(ssh_command, capture_output=True, text=True, timeout=current.timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise _RemoteCallCutOffError(f"no answer within {current.timeout:g} s", None) from exc
+        if _remote_call_killed_silently(result):
+            raise _RemoteCallCutOffError(_remote_exit_text(result.returncode), result)
+        return result
+
+    def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
         _launch_reporter.active().warning(
-            "session", f"remote session-name allocation was cut off ({exit_text}); retrying once"
+            "session",
+            f"remote session-name allocation was cut off ({exc}); "
+            f"retrying (attempt {current.number + 1} of {current.of}, {next_timeout:g} s)",
         )
-        time.sleep(_REMOTE_ALLOCATION_RETRY_DELAY_S)
-        result = subprocess.run(ssh_command, capture_output=True, text=True, check=False)
+
+    try:
+        result = _retry.run(
+            "remote_allocation",
+            attempt,
+            transient=lambda exc: isinstance(exc, _RemoteCallCutOffError),
+            on_retry=retrying,
+        )
+    except _retry.RetryExhaustedError as exhausted:
+        cut_off = exhausted.last
+        if not isinstance(cut_off, _RemoteCallCutOffError) or cut_off.result is None:
+            raise RuntimeError(f"remote session-name allocation failed: {exhausted}") from exhausted
+        result = cut_off.result
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "no output"
         raise RuntimeError(f"remote session-name allocation failed ({_remote_exit_text(result.returncode)}): {detail}")
@@ -3193,7 +3289,16 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
 # --- Command implementations (invoked by Click handlers below) ---
 
 
-def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False) -> None:
+def _project_name(pyproject: bytes) -> str | None:
+    """``[project] name`` from pyproject.toml's bytes, or None when it cannot be read."""
+    try:
+        name = tomllib.loads(pyproject.decode("utf-8")).get("project", {}).get("name")
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+    return name if isinstance(name, str) and name.strip() else None
+
+
+def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False, package_only: bool = False) -> None:
     """Pull, bump the version so uv cannot serve a cached build, and install.
 
     ``quiet`` captures git's and uv's output instead of streaming it, and reports
@@ -3212,6 +3317,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             Tag.UPDATE, "update", f"pyproject.toml not found at {project_path}. Set [deploy] project_path in config."
         )
         sys.exit(1)
+    started = time.monotonic()
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
     restored = subprocess.run(
         ["git", "checkout", "--", "pyproject.toml"], cwd=project_path, capture_output=True, text=True, check=False
@@ -3290,6 +3396,21 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         _out.error(Tag.UPDATE, "update", "could not find version in pyproject.toml")
         sys.exit(1)
     old_version = m.group(2).decode("utf-8", "replace")
+    pulled = time.monotonic()
+    # The bumped version already defeats uv's cache for this package. The launch's own update
+    # (package_only) reinstalls this package alone; a hand-typed `ai update --force` keeps uv's
+    # full --reinstall, which also reinstalls every dependency and revalidates each against the
+    # index (--refresh), so it can repair a damaged dependency. On one Linux host, warm cache,
+    # an editable install of this package took 0.87 to 0.91 s with --reinstall and 0.52 to
+    # 0.69 s with --reinstall-package, three runs each: a saving, but not the cost of a slow
+    # launch-time reinstall, which the one-line summary's step times now name.
+    package = _project_name(original) or "ai-cli-utils"
+    if not force_reinstall:
+        reinstall, full_reinstall = [], []
+    elif package_only:
+        reinstall = full_reinstall = ["--reinstall-package", package]
+    else:
+        reinstall, full_reinstall = ["--force-reinstall"], ["--reinstall"]
     base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
     if not quiet:
@@ -3319,14 +3440,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                     _out.emit(Tag.UPDATE, "update", "Preserving editable install.")
                 uv_cmd.append("-e")
             uv_cmd.append(str(project_path))
-            if force_reinstall:
-                uv_cmd.append("--force-reinstall")
+            uv_cmd += reinstall
             if _should_use_uv_link_mode_copy(uv_bin, self_venv):
                 uv_cmd.append("--link-mode=copy")
         else:
-            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
-            if force_reinstall:
-                uv_cmd.append("--reinstall")
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force", *full_reinstall]
             if _should_use_uv_link_mode_copy(uv_bin):
                 uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path, capture_output=True, text=True, check=False)
@@ -3343,9 +3461,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         for venv_path_str in extra_venvs:
             venv_path = Path(venv_path_str).expanduser()
             if venv_path.exists():
-                pip_cmd = [uv_bin, "pip", "install", str(project_path)]
-                if force_reinstall:
-                    pip_cmd.append("--force-reinstall")
+                pip_cmd = [uv_bin, "pip", "install", str(project_path), *reinstall]
                 if _should_use_uv_link_mode_copy(uv_bin, venv_path):
                     pip_cmd.append("--link-mode=copy")
                 pip_result = subprocess.run(
@@ -3364,8 +3480,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                         f"installing into {venv_path} failed (exit {pip_result.returncode}):\n"
                         f"{(pip_result.stdout or '') + (pip_result.stderr or '')}".rstrip(),
                     )
-        # Clear pycache (cross-platform)
-        for _cache_dir in project_path.rglob("__pycache__"):
+        installed = time.monotonic()
+        # Clear the package's own stale bytecode (cross-platform). Only under src/: the
+        # checkout root also holds .worktrees/, every other session's tree and virtualenv,
+        # whose caches are theirs, and walking them cost a cold 10 s on one host.
+        for _cache_dir in (project_path / "src").rglob("__pycache__"):
             if _cache_dir.is_dir():
                 shutil.rmtree(_cache_dir, ignore_errors=True)
         # Record HEAD hash so session start (and each running wrapper's self-update)
@@ -3409,7 +3528,14 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             # The whole quiet path's output: one line, naming what is now installed
             # and why it was rebuilt.
             reason = "cache-bypassing reinstall" if force_reinstall else "fresh build"
-            _out.emit(Tag.UPDATE, "update", f"ai-cli-utils {new_version} installed ({reason})")
+            done = time.monotonic()
+            _out.emit(
+                Tag.UPDATE,
+                "update",
+                f"ai-cli-utils {new_version} installed ({reason}) in {done - started:.1f}s: "
+                f"pull {pulled - started:.1f}s, install {installed - pulled:.1f}s, "
+                f"post-install {done - installed:.1f}s",
+            )
     sys.exit(exit_code)
 
 
@@ -10384,21 +10510,35 @@ def cmd_ssh(alias):
 
 
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    help="Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them",
+)
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-def cmd_update(force, quiet, verbose):
+# Hidden and machine-to-machine: only the launch-time auto-update passes it.
+@click.option("--package-only", is_flag=True, hidden=True)
+def cmd_update(force, quiet, verbose, package_only):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose, package_only=package_only)
 
 
 @_cli_group.command("deploy", help="Alias for update (historical)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    help="Reinstall with uv's --reinstall: bypass its cache and reinstall every dependency, repairing them",
+)
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-def cmd_deploy(force, quiet, verbose):
+# Hidden and machine-to-machine: only the launch-time auto-update passes it.
+@click.option("--package-only", is_flag=True, hidden=True)
+def cmd_deploy(force, quiet, verbose, package_only):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose, package_only=package_only)
 
 
 @_cli_group.command(

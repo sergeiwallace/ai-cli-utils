@@ -32,7 +32,7 @@ from name_fleet import (
     shipped_budget_defaults,
 )
 
-from ai_cli import name_dolt
+from ai_cli import name_dolt, retry
 from ai_cli import name_registry as reg
 from ai_cli import name_schema as schema
 from ai_cli.name_dolt import DoltRegistry
@@ -830,7 +830,7 @@ def test_given_distinct_fetch_and_push_timeouts_when_writing_then_each_dolt_call
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_fetch_timeout_seconds = 401\nregistry_push_timeout_seconds = 407\n",
+        "[session_names]\nregistry_push_timeout_seconds = 407\n[retry.registry_fetch]\ntimeout_seconds = 401\nmax_timeout_seconds = 401\n",
     )
     calls = _dolt_calls(monkeypatch)
 
@@ -843,7 +843,7 @@ def test_given_distinct_fetch_and_push_timeouts_when_writing_then_each_dolt_call
     assert reg.read_spool() == {}
 
 
-@pytest.mark.parametrize("key", ["registry_fetch_timeout_seconds", "registry_push_timeout_seconds"])
+@pytest.mark.parametrize("key", ["registry_push_timeout_seconds"])
 def test_given_an_invalid_timeout_setting_when_writing_then_it_refuses_naming_the_setting(fleet, monkeypatch, key):
     _user_config(fleet, monkeypatch, f"[session_names]\n{key} = -1\n")
     tip = fleet.tip()
@@ -852,6 +852,21 @@ def test_given_an_invalid_timeout_setting_when_writing_then_it_refuses_naming_th
         reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
 
     assert fleet.tip() == tip
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"slow"'])
+def test_given_an_invalid_fetch_timeout_when_writing_then_it_warns_naming_the_setting_and_fetches_on_the_shipped_one(
+    fleet, monkeypatch, capsys, value
+):
+    _user_config(fleet, monkeypatch, f"[retry.registry_fetch]\ntimeout_seconds = {value}\n")
+    calls = _dolt_calls(monkeypatch)
+
+    reservation = reg.reserve_picked(fleet.registry, _slot(), words=frozenset())
+
+    shipped = retry.shipped_table()["registry_fetch"]["timeout_seconds"]
+    assert {timeout for command, _env, timeout in calls if command[1] == "fetch"} == {shipped}
+    assert "invalid retry.registry_fetch.timeout_seconds" in capsys.readouterr().err
+    assert not reservation.offline
 
 
 def test_given_a_host_with_no_clone_yet_when_it_reads_then_the_clone_is_its_only_trip_to_the_remote(fleet, monkeypatch):
@@ -893,7 +908,7 @@ def test_given_a_clone_timeout_setting_when_cloning_then_only_the_clone_uses_it(
     _user_config(
         fleet,
         monkeypatch,
-        "[session_names]\nregistry_clone_timeout_seconds = 601\nregistry_fetch_timeout_seconds = 302\n",
+        "[session_names]\nregistry_clone_timeout_seconds = 601\n[retry.registry_fetch]\ntimeout_seconds = 302\nmax_timeout_seconds = 302\n",
     )
     fresh = fleet.other_machine("configured-clone")
     calls = _dolt_calls(monkeypatch)

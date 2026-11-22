@@ -779,10 +779,12 @@ them on one machine:
 # name_with_label = "keep"  # or "drop"; AI_CLI_SESSION_NAME_WITH_LABEL overrides it
 # min_name_length = 3       # used only where no shared name registry exists
 # max_name_length = 4       # used only where no shared name registry exists
-# registry_fetch_timeout_seconds = 60  # one fetch of a shared registry
 # registry_push_timeout_seconds = 60   # one push to a shared registry
 # registry_clone_timeout_seconds = 60  # a host's first clone of a Dolt registry (300 on Windows)
 ```
+
+A fetch of a shared registry runs under the `[retry.registry_fetch]` policy instead
+(see [Retries](#retries)).
 
 An older release seeded these four keys active. The first `ai` command after an
 upgrade comments out each one that still holds its seeded value, says so on stderr,
@@ -1382,8 +1384,12 @@ goes stale while a change is being tested.
 When a reinstall is needed, the launch runs it quietly and prints one line:
 
 ```
-ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall)
+ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall) in 41.3s: pull 2.1s, install 37.9s, post-install 1.3s
 ```
+
+The times name the slow step: the pull from origin, the `uv` install, or the work after
+it (refreshing live session scripts, deploying bundled config files). Only this
+package is reinstalled (`--reinstall-package`); its dependencies are left as they are.
 
 The version carries a `.post<timestamp>` suffix so uv cannot serve a cached build
 of an already-seen version; the file on disk is restored to its base version
@@ -1393,11 +1399,13 @@ launch retries rather than remembering a failed install as done.
 
 Two escape hatches:
 
-- `AI_CLI_UPDATE_VERBOSE=1` — show the whole transcript at launch instead of the
+- `AI_CLI_UPDATE_VERBOSE=1`: show the whole transcript at launch instead of the
   one-line summary.
-- `ai update --force` — reinstall on demand, bypassing uv's cache and
-  reinstalling dependencies. It never consults the fingerprint, so it is the way
-  to force a refresh when the installed build is suspect.
+- `ai update --force`: reinstall on demand with uv's `--reinstall`, bypassing its
+  cache and reinstalling every dependency too, which repairs a damaged one. It
+  never consults the fingerprint, so it is the way to force a refresh when the
+  installed build is suspect. Only the launch's own automatic update narrows the
+  reinstall to this package.
 
 ### Launch extensions
 
@@ -1595,6 +1603,119 @@ To add another machine, give it a short alias and select it for one launch with
 `ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses
 `[remote] default`. Existing flat `[remote]` configurations remain supported as
 one implicit default machine.
+
+### Retries
+
+A launch waits on things it does not control, such as a remote host or the optional
+wake sidecar's unit manager. Each such wait, one `[retry.<site>]` table below, runs under
+one retry policy from the `[retry]` table of `config.toml`, read on every call, so an
+edit applies to the next launch without restarting anything. Attempt *n* may take
+`min(timeout_seconds * growth^(n-1), max_timeout_seconds)` seconds; after a failed
+attempt the launch waits `min(delay_seconds * growth^(n-1), max_delay_seconds)`, less a
+random share of up to `jitter` of it. The whole wait, delays included, ends within
+`max_total_seconds`, which cuts each retry's timeout to what remains of it, so a hung
+optional step costs a launch no more than that total. The first attempt always gets its
+full timeout, so a total shorter than `timeout_seconds` stretches to it. A total too
+short for every attempt it allows, or one a single timeout fills, is reported when read,
+naming the site and the keys. The shipped sidecar policy holds a launch at most 12 s for
+the ensure and 12 s for the show lookup, 24 s together. Only a timeout or a lost connection
+is retried. A
+definite answer, such as a credential the registry's remote refuses, is reported once
+with its cause. When every attempt fails the launch says how many it made and why the
+last one failed, and continues where the step was optional.
+
+```toml
+[retry]                       # the default for every site
+attempts = 3
+timeout_seconds = 10
+growth = 2.0
+max_timeout_seconds = 60
+delay_seconds = 1
+max_delay_seconds = 10
+jitter = 0.5
+max_total_seconds = 300
+
+[retry.wake_sidecar]          # the wake-sidecar ensure and show lookup before a local launch
+attempts = 2
+timeout_seconds = 4
+growth = 1.5
+max_timeout_seconds = 6
+max_total_seconds = 12
+
+[retry.dolt_server]           # the optional Dolt supervisor's ensure, asked once
+attempts = 1
+timeout_seconds = 120
+max_timeout_seconds = 120
+
+[retry.remote_allocation]     # asking a remote host which session `-R` attaches to
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120
+
+[retry.client_fetch]          # fetching this machine's own checkout before `-R`
+timeout_seconds = 20
+max_timeout_seconds = 60
+
+[retry.registry_fetch]        # every fetch of a shared name registry
+attempts = 2
+timeout_seconds = 60
+max_timeout_seconds = 120
+```
+
+A key your file leaves out takes the shipped value
+([src/ai_cli/data/retry.toml](src/ai_cli/data/retry.toml)); the template
+([docs/reference/config.toml](docs/reference/config.toml)) shows each one commented out,
+so a new config file never pins today's default. Your own `[retry]` values
+apply to every site, ahead of the shipped per-site tables; a `[retry.<site>]` table of
+yours overrides one site. An invalid value is reported, naming the key, and the shipped
+value is used.
+
+A credential helper can mark its own failure as worth retrying. A helper's exit status
+does not survive git's credential-helper protocol, and when a helper cannot answer, git
+prints the same "could not read Username" whether the login was refused or the helper
+merely could not reach its identity service. So a helper that failed for a passing reason
+prints one stderr line of this form, and a registry or client fetch then retries:
+
+```
+<helper-name>: transient: <cause>
+```
+
+`<helper-name>` is letters, digits, `_`, `.` or `-`. The line outranks git's follow-on "could
+not read Username" or "could not read Password", but never a refusal from the remote
+itself: "Authentication failed", an HTTP 401 or 403, or a rejected ssh key stops at once. A
+helper failure without the line is reported once as an authentication refusal.
+
+Some waits stay outside the policy, each for its own reason:
+
+- The launch-time `ai update --force --package-only` child has no timeout. It rewrites
+  the launcher's own environment, and uv is not atomic about it, so a timeout could leave
+  `ai` unable to start; a retry would repeat a whole pull and install. The launch shows a
+  "still checking" heartbeat, and the summary line times each step.
+- A launch waiting for a peer's update polls that peer's lock for up to 90 seconds. It is a
+  wait on another process, not a call that can be asked again.
+- A failed auto-update is retried on a later launch, 15 minutes after the first failure and
+  doubling to 6 hours. That schedule spans launches and is kept on disk, so each launch
+  reads the same wait.
+- Launch extensions carry their own `timeout` and `on_error` in `[extensions.run.<name>]`,
+  because they run commands of yours that may not be safe to repeat.
+- A push to a shared name registry and a host's first Dolt clone keep their single budgets,
+  `[session_names] registry_push_timeout_seconds` and `registry_clone_timeout_seconds`. A
+  timed-out push may have landed, and the publish loop already re-fetches and retries a
+  lost race; a timed-out clone leaves a partial database behind.
+- `ai names`' check that a remote Dolt ref exists makes one call on the first
+  `[retry.registry_fetch]` timeout. Its failure already has a defined outcome.
+- The `AI_HOST` refresh asks a login shell and then tmux, each under
+  `[relaunch] host_refresh_timeout_seconds`. When one probe times out the next answers, so
+  retrying the first would only delay the answer.
+- The session watcher's tmux window is created in one call, because a second call would
+  open a second watcher.
+- A boot relaunch waits up to `[session_relaunch] network_wait_seconds` for the session's
+  directory and the network probe to come up. It polls the host's own readiness until a
+  deadline rather than calling something that could answer differently when asked again;
+  when the deadline passes, the reason (no directory, or no network) is recorded as why
+  that session was not relaunched.
+- The relaunch hold, final-exit persistence and the ssh reconnect loop have their own
+  configured bounds in `[relaunch]`, `[session_relaunch.exit_persistence]` and `[remote]`.
 
 ### Output configuration
 

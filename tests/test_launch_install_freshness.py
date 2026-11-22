@@ -30,6 +30,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import is_update_child
 
 from ai_cli.main import (
     UPDATE_VERBOSE_ENV,
@@ -136,6 +137,7 @@ class _Launch:
                     force_reinstall="--force" in cmd,
                     config={"deploy": {"project_path": str(self.project)}},
                     quiet=quiet,
+                    package_only="--package-only" in cmd,
                 )
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else 0
@@ -149,7 +151,7 @@ class _Launch:
     def run(self, cmd, **kwargs):
         cmd = list(cmd)
         self.commands.append(cmd)
-        if len(cmd) >= 2 and cmd[1] == "update":
+        if is_update_child(cmd):
             return self._child_update(cmd, kwargs)
         if "install" in cmd:
             return self._install(kwargs)
@@ -161,7 +163,7 @@ class _Launch:
 
     @property
     def updates(self) -> list[list[str]]:
-        return [c for c in self.commands if len(c) >= 2 and c[1] == "update"]
+        return [c for c in self.commands if is_update_child(c)]
 
     def launch(self):
         with (
@@ -229,7 +231,7 @@ class TestInstalledCodeIsTheNewCode:
         # And it was rebuilt under a unique version, so uv could not serve its cache.
         bumped = [p for p in launch.install_versions if ".post" in p]
         assert bumped, f"no cache-defeating version was written: {launch.install_versions}"
-        assert any("--reinstall" in cmd for cmd in launch.installs)
+        assert any("--reinstall-package" in cmd for cmd in launch.installs)
 
     def test_given_the_source_was_just_installed_when_a_second_launch_happens_then_it_does_not_reinstall(
         self, project, state, tmp_path
@@ -280,7 +282,7 @@ class TestQuietOutput:
         def failing_run(cmd, **kwargs):
             cmd = list(cmd)
             launch.commands.append(cmd)
-            if len(cmd) >= 2 and cmd[1] == "update":
+            if is_update_child(cmd):
                 return MagicMock(returncode=1, stdout="uv: resolving\n", stderr="uv: no space left on device\n")
             return MagicMock(returncode=0, stdout="", stderr="")
 
