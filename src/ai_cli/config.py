@@ -1008,7 +1008,8 @@ stale_session_timeout = 15
 ## random share of up to `jitter` of that wait (0 waits it in full; 1 is full jitter). The
 ## whole wait, delays included, ends within max_total_seconds, and each retry's timeout is
 ## cut to what remains of it, however many attempts are left. The first attempt always gets
-## its full timeout, so the total is never shorter than timeout_seconds. Only
+## its full timeout, so the total is never shorter than timeout_seconds. A total too short
+## for every attempt it allows, or one a single timeout fills, is reported when read. Only
 ## a timeout or a lost connection is retried: a definite answer, such as a refused
 ## credential, is reported once with its cause. Read on every call, so an edit applies to
 ## the next one. A [retry.<site>] table overrides any of these keys for one site. A key
@@ -1029,10 +1030,13 @@ stale_session_timeout = 15
 ## is idempotent, so a retry cannot start the unit twice. On a loaded host its interpreter
 ## start and unit-manager query took about 3 s, the old fixed budget, so it timed out.
 ## The sidecar is optional, so the total keeps a hung one from holding a launch: each of
-## the ensure and the show lookup ends within it.
-# timeout_seconds = 5
-# max_timeout_seconds = 20
-# max_total_seconds = 10
+## the ensure and the show lookup ends within it, 24 s for the two together at worst. Two
+## attempts of 4 and then 6 s, with up to 1 s between them, fit the 12 s total.
+# attempts = 2
+# timeout_seconds = 4
+# growth = 1.5
+# max_timeout_seconds = 6
+# max_total_seconds = 12
 
 [retry.dolt_server]
 ## The optional local Dolt supervisor's ensure before a launch. It used to wait with no
