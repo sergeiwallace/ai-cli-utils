@@ -1399,9 +1399,9 @@ launch retries rather than remembering a failed install as done.
 
 Two escape hatches:
 
-- `AI_CLI_UPDATE_VERBOSE=1` — show the whole transcript at launch instead of the
+- `AI_CLI_UPDATE_VERBOSE=1`: show the whole transcript at launch instead of the
   one-line summary.
-- `ai update --force` — reinstall this package on demand, bypassing uv's cache
+- `ai update --force`: reinstall this package on demand, bypassing uv's cache
   for it. It never consults the fingerprint, so it is the way to force a refresh
   when the installed build is suspect.
 
