@@ -582,6 +582,9 @@ from pathlib import Path
 if sys.argv[1:2] in (["agents"], ["plugin"], ["mcp"], ["--version"]):
     print("[]" if sys.argv[1:2] == ["agents"] else "")
     sys.exit(0)
+if os.environ.get("FAKE_AGENT_SECONDS"):
+    import time
+    time.sleep(float(os.environ["FAKE_AGENT_SECONDS"]))
 with open(os.environ["FAKE_AGENT_STARTS"], "a") as out:
     started = {"agent": Path(sys.argv[0]).name, "PROJECT_ENV": os.environ.get("PROJECT_ENV")}
     started["launch_log"] = os.environ.get("AI_CLI_LAUNCH_LOG")
@@ -591,8 +594,11 @@ with open(os.environ["FAKE_AGENT_STARTS"], "a") as out:
 # The real `ai` for the commands these tests are about; every other service the child body
 # calls (events, iTerm2, heartbeats) is a no-op, so nothing outside the test is reached.
 _STUB_AI = """\
-import os, sys
+import json, os, sys
 real = ("prepare-project-env", "emit", "progress", "resolve-background-target")
+if os.environ.get("FAKE_AI_CALLS") and sys.argv[1:2] == ["internal"]:
+    with open(os.environ["FAKE_AI_CALLS"], "a") as out:
+        out.write(json.dumps({"action": sys.argv[2:3], "launch_log": os.environ.get("AI_CLI_LAUNCH_LOG")}) + "\\n")
 broken = os.environ.get("FAKE_AI_PREPARE_EXIT")
 if broken and sys.argv[1:3] == ["internal", "prepare-project-env"]:
     sys.exit(int(broken))
@@ -1067,3 +1073,18 @@ def test_given_a_child_body_start_when_it_prints_to_the_pane_then_every_stamp_is
     assert any("[session] direnv:" in line for line in stamped), run.stderr
     assert any("[session] host:" in line for line in stamped), run.stderr
     assert all(_stamp_within(line, started, finished) for line in stamped), stamped
+
+
+def test_given_an_agent_that_ran_when_it_exits_then_the_child_bodys_own_calls_log_again(
+    session_repo, stub_direnv, child_body, tmp_path
+):
+    """The agent is started without the launch log variable; the calls after it still carry it."""
+    calls = tmp_path / "ai-calls"
+
+    run = child_body(session_repo["worktree"], env={"FAKE_AI_CALLS": str(calls), "FAKE_AGENT_SECONDS": "4"})
+
+    assert run.starts and run.starts[0]["launch_log"] is None, run.starts
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    after = [call for call in recorded if call["action"] == ["get-version"]]
+    assert after, f"the child body never reached its post-agent calls: {run.stderr}"
+    assert all(call["launch_log"] for call in after), after

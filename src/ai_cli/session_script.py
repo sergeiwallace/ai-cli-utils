@@ -1193,8 +1193,8 @@ def get_engine_script(
     # BEGIN LAUNCH LOG agent
       # The launch log variable is for this body's own `ai internal` calls; the agent and the
       # hooks it runs must not write into the session's launch log. Unset in the shell, not with
-      # `env -u`, so starting the agent needs no program beyond the agent itself. The calls this
-      # body makes after the agent exits name the log themselves where they report.
+      # `env -u`, so starting the agent needs no program beyond the agent itself; the agent is
+      # forked without it, and it is exported again once the agent has exited (below).
       unset {LAUNCH_LOG_ENV}
     # END LAUNCH LOG
     # BEGIN RUN STATE agent-start-clock
@@ -1230,6 +1230,13 @@ def get_engine_script(
       done
     # END SHELL RETURN
       active_agent_pid=""
+    # BEGIN LAUNCH LOG agent-exit
+      # The agent is gone: this body's own `ai internal` calls after it (the version check,
+      # the template refresh) record into the launch log again.
+      if [[ -n "${{_ai_launch_log:-}}" ]]; then
+        export {LAUNCH_LOG_ENV}="$_ai_launch_log"
+      fi
+    # END LAUNCH LOG
     # BEGIN LAUNCH DIAGNOSTICS
       # Take the pane tail before the reset or a restart destroys its contents.
       # Measure the runtime before starting diagnostics so they cannot move the restart guard.
