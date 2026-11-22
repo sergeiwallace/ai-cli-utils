@@ -877,7 +877,13 @@ class TestRemoteSessionIterm2Emit:
 
 
 def _run_remote_named_launch(
-    argv, live_remote_sessions, allocator_reply=None, allocator_failures=(), calls=None, negative_is_signal=True
+    argv,
+    live_remote_sessions,
+    allocator_reply=None,
+    allocator_failures=(),
+    calls=None,
+    negative_is_signal=True,
+    timeouts=None,
 ):
     """Drive `ai c <name> -R` through cli() with SSH stubbed.
 
@@ -887,20 +893,26 @@ def _run_remote_named_launch(
     ``allocator_failures`` (a ``returncode`` with no output) answers one allocation
     call first, in order; ``calls`` collects every allocation command sent.
     ``negative_is_signal`` pins the POSIX (True) or Windows (False) meaning of a
-    negative status, so both run on every OS.
+    negative status, so both run on every OS. A failure of ``"hang"`` is a call that
+    overran its timeout; ``timeouts`` collects each allocation call's timeout.
     """
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "ssh"}}
     failures = list(allocator_failures)
 
-    def remote_ssh(command, **_kwargs):
+    def remote_ssh(command, **kwargs):
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return MagicMock(returncode=0, stdout="zsh\n", stderr="")
         if "ai update" in command[-1]:
             return MagicMock(returncode=0, stdout="current", stderr="")
         if calls is not None:
             calls.append(command[-1])
+        if timeouts is not None:
+            timeouts.append(kwargs.get("timeout"))
         if failures:
-            return MagicMock(returncode=failures.pop(0), stdout="", stderr="")
+            failure = failures.pop(0)
+            if failure == "hang":
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            return MagicMock(returncode=failure, stdout="", stderr="")
         if allocator_reply is not None:
             return MagicMock(returncode=0, stdout=allocator_reply, stderr="")
         tokens = shlex.split(shlex.split(command[-1])[-1])
@@ -1012,6 +1024,24 @@ def test_given_allocation_killed_once_when_remote_launched_then_retries_and_atta
     assert code in (0, None), stderr
     assert len(calls) == 2
     assert f"remote session-name allocation was cut off ({cause}); retrying once" in stderr
+    assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
+
+
+def test_given_an_allocation_that_overruns_its_timeout_once_when_remote_launched_then_it_is_retried_with_a_longer_one():
+    calls, timeouts = [], []
+    code, handoff, stderr = _run_remote_named_launch(
+        ["ai", "c", "chief-1", "-R"],
+        live_remote_sessions=[],
+        allocator_failures=["hang"],
+        calls=calls,
+        timeouts=timeouts,
+    )
+
+    assert code in (0, None), stderr
+    assert len(calls) == 2
+    assert None not in timeouts, "every allocation call is bounded"
+    assert timeouts[1] > timeouts[0]
+    assert "remote session-name allocation was cut off" in stderr
     assert _remote_session_arg(handoff) == "c-r-hub-chief-1"
 
 
