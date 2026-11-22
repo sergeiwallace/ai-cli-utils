@@ -1785,6 +1785,16 @@ def _trusted_envrc_source(repo_root: Path, worktree_dir: Path) -> str | None:
     is stronger than the other; what neither admits is content that exists only in the
     worktree, which is exactly what a session's own edit produces.
 
+    Residual risk, accepted and documented rather than closed: a session can reach both
+    witnesses. It can write the repository root's ``.envrc`` like any file, and the
+    ``origin/HEAD`` ref lives in the ``.git`` every worktree shares, so a
+    ``git update-ref refs/remotes/origin/<branch> <commit>`` or a commit fetched from a
+    remote of its choosing makes its content a match. This check guards against the
+    ordinary case, a session or a branch editing its own ``.envrc``, not against a
+    session that sets out to forge a witness. Nothing local closes that: ``FETCH_HEAD``
+    and the remote-tracking reflog sit in the same shared ``.git``, and asking the remote
+    (``git ls-remote``) on every agent start would add a network call that fails offline.
+
     Deliberately independent of the root's *approval* state: depending on that made
     the feature a no-op on a host where nothing is approved, the host that needs it most.
     """

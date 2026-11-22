@@ -982,6 +982,13 @@ directory, and worktrees registered anywhere else are never approved automatical
 claim about a directory it merely launched in. It does not vouch for content that
 exists only in the worktree, such as an edit the session itself made.
 
+Both witnesses are files and refs on this machine, so a session that sets out to
+forge one can: it can write the repository root's `.envrc`, or point
+`origin/HEAD`'s branch at a commit of its choosing in the `.git` every worktree
+shares. The check stops a session or a branch editing its own `.envrc`, not that
+deliberate forgery; asking the remote on every agent start would close it at the
+cost of a network call that fails offline, so it is left documented.
+
 When `ai` is responsible for the worktree's `.envrc` and cannot approve it, because
 its content matches neither copy or `direnv allow` fails, no agent starts without
 its environment. The launch stops with an error naming the file and the command to
