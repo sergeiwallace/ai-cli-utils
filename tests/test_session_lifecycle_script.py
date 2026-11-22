@@ -127,8 +127,10 @@ def test_given_missing_registration_when_running_mark_attempted_then_agent_start
 
 def test_given_generated_supervisor_when_failed_start_stops_then_unknown_cause_is_written():
     script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
-    for reason in ("three consecutive agent exits", "agent exited too quickly"):
-        assert f'_ai_persist_exit unknown \'{{"reason":"{reason}"}}\'' in script
+    assert '_ai_persist_exit unknown \'{"reason":"three consecutive agent exits"}\'' in script
+    assert (
+        """_ai_persist_exit unknown '{"reason":"agent exited too quickly","status":'"$agent_exit_code"'}'""" in script
+    )
     assert script.index("_ai_mark_running || exit 76") < script.index('publish-session-event "$tmux_session" "started"')
 
 

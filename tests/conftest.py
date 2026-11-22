@@ -1615,6 +1615,20 @@ def _strip_inherited_supervisor_vars(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _strip_inherited_launch_reason(monkeypatch):
+    """Never inherit the runner's own launch reason into test subprocesses.
+
+    A suite launched from inside a relaunched session carries that session's
+    ``AIH_LAUNCH_REASON``. A session script started by a test reads it and treats its first
+    agent start as a restart, so it resumes a transcript or refuses to launch where the test
+    expected a fresh start. A test that needs a reason sets one itself.
+    """
+    from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
+    monkeypatch.delenv(LAUNCH_REASON_VAR, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_launch_reexec_marker(monkeypatch):
     """No test sees, or leaves behind, the launcher's restart-after-update marker.
 

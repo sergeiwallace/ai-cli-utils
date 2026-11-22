@@ -4,9 +4,43 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from ai_cli import output as _out
-from ai_cli.launch_logging import _MAX_LOGS_PER_SESSION, create_launch_log
+from ai_cli.launch_logging import _MAX_LOGS_PER_SESSION, create_launch_log, record_agent_exit
 from ai_cli.launch_reporter import LaunchReporter
+
+
+@pytest.mark.parametrize(
+    ("status", "logged"),
+    [
+        pytest.param(0, False, id="clean"),
+        pytest.param(7, True, id="failed"),
+    ],
+)
+def test_given_an_exit_after_startup_when_recorded_then_only_failures_are_logged(tmp_path, status, logged):
+    launch_log = tmp_path / "launch.log"
+    remote_log = tmp_path / "remote.log"
+    launch_log.touch()
+    remote_log.touch()
+
+    record_agent_exit(
+        str(launch_log),
+        "session-1",
+        "agent",
+        status,
+        15,
+        diagnostic_path=str(remote_log),
+        terminal_output="Agent terminal output",
+    )
+
+    lines = launch_log.read_text(encoding="utf-8").splitlines()
+    if logged:
+        [line] = lines
+        assert line.endswith(f"[session] exit: Warning: session-1: agent exited with status {status} after 15.0s")
+    else:
+        assert not lines
+    assert remote_log.read_text(encoding="utf-8") == ""
 
 
 def test_given_launch_reporter_when_a_launch_log_is_created_then_it_persists_timestamped_phase_output(
