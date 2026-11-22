@@ -1,0 +1,1 @@
+- `ai quota publish` no longer writes the `quota.scrape.ack.<host>` key to the `hw_state` NATS KV bucket. That key acknowledged a `/usage` scrape, which no longer runs, and its one reader is gone too. The `quota.claude.current.<host>` snapshot key is still written.

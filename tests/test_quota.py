@@ -251,7 +251,7 @@ class TestPublishQuotaSnapshot:
         mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        # Snapshot key written (ack skipped when machine is empty)
+        # Only the unsuffixed snapshot key is written when the machine is empty
         assert mock_kv.put.call_count == 1
         key, value = mock_kv.put.call_args[0]
         assert key == "quota.claude.current"
@@ -406,7 +406,7 @@ class TestQuotaHistory:
 # No assertion needed — must not raise
 
 
-# --- _publish_quota_snapshot — KV key rename + ack (AI-CLI-57) ---
+# --- _publish_quota_snapshot — machine-suffixed KV key (AI-CLI-57) ---
 
 
 class TestPublishQuotaSnapshotKV:
@@ -480,8 +480,8 @@ class TestPublishQuotaSnapshotKV:
         assert "quota.claude.current" in kv_written
         assert "quota.claude.current." not in kv_written
 
-    def test_writes_ack_key_when_machine_set(self, monkeypatch):
-        """Ack is written to quota.scrape.ack.{machine} after snapshot."""
+    def test_given_machine_set_when_publishing_then_only_the_snapshot_key_is_written(self, monkeypatch):
+        """The scrape-ack key had one reader, a mid-run monitor that no longer exists."""
         monkeypatch.setenv("AI_HOST", "hetzner")
 
         mock_client = self._make_mock_client()
@@ -501,12 +501,7 @@ class TestPublishQuotaSnapshotKV:
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(self._snap())
 
-        assert "quota.scrape.ack.hetzner" in kv_written
-        import json
-
-        ack = json.loads(kv_written["quota.scrape.ack.hetzner"])
-        assert "scraped_at" in ack
-        assert isinstance(ack["scraped_at"], float)
+        assert set(kv_written) == {"quota.claude.current.hetzner"}
 
     def test_no_ack_key_when_machine_empty(self, monkeypatch):
         """No ack key written when AI_HOST is unset."""
