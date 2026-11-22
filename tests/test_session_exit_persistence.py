@@ -197,18 +197,38 @@ def test_given_failed_fallback_storage_when_retries_end_then_failure_is_reported
 
 @pytest.mark.parametrize("failure", ["exit", "hang"])
 def test_given_failing_mark_when_sequence_succeeds_then_mark_is_bounded_and_exit_is_denied(exit_shell, failure):
-    _, _, _, attempts, generation = exit_shell
+    shell, env, render, attempts, generation = exit_shell
+    # Wait for the retry itself, not for it to fit a fixed budget: each attempt starts
+    # two processes, which a slow or loaded runner cannot do inside a two-second deadline.
+    config.load_config()["session_relaunch"]["exit_persistence"].update(
+        deadline_seconds=scaled(60), command_timeout_seconds=scaled(2)
+    )
     program = (
         "import sys, time\nfrom pathlib import Path\n"
-        "if sys.argv[2] == '_sequence':\n print(time.monotonic_ns())\n raise SystemExit(0)\n"
+        # Answer slowly, as a process start on a slow or loaded runner does.
+        f"if sys.argv[2] == '_sequence':\n time.sleep({scaled(0.5)})\n print(time.monotonic_ns())\n raise SystemExit(0)\n"
         f"p=Path({str(attempts)!r})\np.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
         + ("time.sleep(60)\n" if failure == "hang" else "raise SystemExit(1)\n")
     )
-    result = run_exit(exit_shell, program, suffix="printf agent-started")
-    assert result.returncode == 77
-    assert "agent-started" not in result.stdout
-    assert len(attempts.read_text()) > 1
-    assert json.loads(state.tombstone_path("c-session-1", "host-a").read_text())["generation"] == generation
+    script = render(program, suffix="printf agent-started")
+    proc = subprocess.Popen([shell, str(script)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + scaled(30)
+        while proc.poll() is None and time.monotonic() < deadline:
+            if attempts.exists() and len(attempts.read_text()) > 1:
+                break
+            time.sleep(0.05)
+        # A second mark proves the first one was bounded: a hung mark was stopped and retried.
+        assert len(attempts.read_text()) > 1
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=scaled(10))
+        assert proc.returncode == 77, stderr
+        assert "agent-started" not in stdout
+        assert json.loads(state.tombstone_path("c-session-1", "host-a").read_text())["generation"] == generation
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=scaled(3))
 
 
 @pytest.mark.parametrize("requested_signal", [signal.SIGINT, signal.SIGTERM])
