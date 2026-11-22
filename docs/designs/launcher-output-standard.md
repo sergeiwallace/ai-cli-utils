@@ -529,7 +529,10 @@ Phase 3, T-4, as built:
   0.45–0.80 s (median 0.55 s) against the base's 0.45–0.90 s (median 0.59 s): no
   measurable change.
 - **Session script.** When `ai internal emit` cannot render, `_ai_emit`'s plain line now
-  leads with `TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z'`, the default format. The
+  leads with a `date` stamp in the configured `[output.elements.datetime]` format and zone,
+  baked into the script when it is generated (`session_script.emit_stamp_command`; a
+  `local` zone runs plain `date`, any other is passed as `TZ`). It once hard-coded
+  `TZ=America/New_York`, which ignored a configured zone. The
   supervisor's stderr relay, which prefixes `[session]` to a line with no tag, also
   passes through a line that starts with a date and carries a `[tag]`, so a rendered
   record is not tagged twice.

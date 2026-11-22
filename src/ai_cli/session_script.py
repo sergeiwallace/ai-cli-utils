@@ -199,6 +199,21 @@ def rendered_terminal_reset() -> str:
     return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
 
 
+def emit_stamp_command() -> str:
+    """The shell command that stamps ``_ai_emit``'s plain fallback line like a rendered one.
+
+    The fallback runs only when ``ai internal emit`` cannot, so it cannot ask the renderer;
+    the configured ``[output.elements.datetime]`` format and zone are baked in instead,
+    read when the script is generated. ``local`` is the host's zone, so it runs ``date``
+    as it is; any other zone (an IANA name or ``UTC``) is passed to ``date`` as ``TZ``.
+    """
+    from . import output as _out
+
+    when = _out.settings().elements.datetime
+    command = f"date {shlex.quote('+' + when.format)}"
+    return command if when.timezone == "local" else f"TZ={shlex.quote(when.timezone)} {command}"
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -277,6 +292,7 @@ def get_engine_script(
     from .tmux_binary import shell_prelude
 
     _terminal_reset = rendered_terminal_reset()
+    _emit_stamp_command = emit_stamp_command()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
@@ -405,7 +421,9 @@ def get_engine_script(
       _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
         # The renderer's default datetime leads the plain line too.
-        _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
+    # BEGIN EMIT STAMP
+        _ai_emit_stamp=$({_emit_stamp_command} 2>/dev/null) || _ai_emit_stamp=""
+    # END EMIT STAMP
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
         if [[ -n "$_ai_launch_log" ]]; then
           printf '%s\n' "$_ai_emit_line" 2>/dev/null >> "$_ai_launch_log"

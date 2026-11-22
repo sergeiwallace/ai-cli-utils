@@ -1054,25 +1054,34 @@ def test_given_a_shell_working_directory_when_it_reaches_the_approval_step_then_
 
 
 @pytest.mark.parametrize("renderer", [True, False], ids=["rendered", "plain-fallback"])
-def test_given_a_child_body_start_when_it_prints_to_the_pane_then_every_stamp_is_the_clock_of_that_line(
+def test_given_a_configured_timezone_when_the_child_body_prints_to_the_pane_then_every_stamp_uses_it(
     session_repo, stub_direnv, child_body, renderer
 ):
-    """The pane's own stamps, not only the launch log's, carry the time each line was printed.
+    """Every pane stamp honours `[output.elements.datetime] timezone`, the renderer's and the fallback's.
 
-    A relaunch's pane lines were reported stamped eight days and two hours off the real
-    time. Both stamp sources the child body has are pinned here: the `ai internal emit`
-    renderer, and the plain line `_ai_emit` falls back to when the renderer cannot run.
+    `_ai_emit` falls back to a plain line when `ai internal emit` cannot run, and that line
+    was stamped with a hard-coded `TZ=America/New_York`, whatever the configured zone. Both
+    stamp sources must show the configured zone, at the clock of the line.
     """
-    started = datetime.now(UTC)
+    from ai_cli import config
+
+    config_file = config.get_xdg_config_home() / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("[output.elements.datetime]\ntimezone = 'UTC'\n", encoding="utf-8")
+    started = datetime.now(UTC) - timedelta(seconds=1)
 
     run = child_body(session_repo["worktree"], env={} if renderer else {"FAKE_AI_NO_RENDERER": "1"})
 
-    finished = datetime.now(UTC)
+    finished = datetime.now(UTC) + timedelta(seconds=1)
     stamped = [line for line in run.stderr.splitlines() if _LOG_STAMP.match(line)]
     # The direnv line comes from the approval helper, the host line from `_ai_emit`.
     assert any("[session] direnv:" in line for line in stamped), run.stderr
-    assert any("[session] host:" in line for line in stamped), run.stderr
-    assert all(_stamp_within(line, started, finished) for line in stamped), stamped
+    host = [line for line in stamped if "[session] host:" in line]
+    assert host, run.stderr
+    for line in stamped:
+        stamp, zone = line.split(" [", 1)[0].rsplit(" ", 1)
+        assert zone == "UTC", f"pane line not in the configured zone: {line!r}"
+        assert started.strftime("%Y-%m-%d %H:%M:%S") <= stamp <= finished.strftime("%Y-%m-%d %H:%M:%S"), line
 
 
 def test_given_an_agent_that_ran_when_it_exits_then_the_child_bodys_own_calls_log_again(

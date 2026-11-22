@@ -1720,7 +1720,8 @@ min_level = "warning"
   %S %U %w %W %x %X %y %Y %z %Z %%`). `timezone` is `UTC`, `local` or an IANA zone
   name such as `Europe/Berlin`. The default is `America/New_York`; set
   `timezone = "local"` for the host's own zone. `%Z` shows the zone's abbreviation, so
-  a line always says which zone its time is in. For a shorter line, set
+  a line always says which zone its time is in. The session script's own plain lines,
+  printed when the renderer cannot run, use the same format and zone. For a shorter line, set
   `format = "%H:%M:%S"` together with `pattern = '^\d{2}:\d{2}:\d{2}$'`, or turn the
   element off with `enabled = false`. A `format` that renders empty or fails the
   `pattern`, or a `timezone` that names no known zone, is refused when the table is read.
