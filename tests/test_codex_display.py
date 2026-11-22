@@ -271,7 +271,7 @@ def test_given_caller_display_and_authority_when_codex_launches_then_they_are_ke
     seen, log, _ = _launch(tmp_path, tools, desktop, caller)
     assert seen == [(":7", caller["XAUTHORITY"])] * 2
     assert _probes(tmp_path) == ""
-    assert log == ""
+    assert "[launch] display:" not in log
 
 
 @pytest.mark.parametrize("variable", ["DISPLAY", "XAUTHORITY"])

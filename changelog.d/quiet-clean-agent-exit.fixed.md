@@ -1,0 +1,1 @@
+- Keep quick-exit and failure diagnostics while leaving ordinary successful exits after startup out of the launch log.

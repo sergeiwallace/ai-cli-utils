@@ -1189,6 +1189,7 @@ def run_once(launch_log, name, command):
         elapsed=time.monotonic() - started,
         failure=failure,
         diagnostic_path=diagnostic_path,
+        record_clean_exit=True,
     )
     while not state.mark_exited(
         name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=time.monotonic_ns()

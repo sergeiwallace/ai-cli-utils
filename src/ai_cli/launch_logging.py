@@ -269,9 +269,12 @@ def record_agent_exit(
     terminal_output: str | None = None,
     shell_status: bool = False,
     force_diagnostic: bool = False,
+    record_clean_exit: bool = False,
 ) -> None:
-    """Write the exit and a bounded startup tail to the launch log and any remote receipt."""
+    """Log failures and startup exits, with an option to log later clean exits."""
     early = elapsed < _STARTUP_DIAGNOSTIC_SECONDS or force_diagnostic
+    if status == 0 and failure is None and not (early or record_clean_exit):
+        return
     save_diagnostic = early and status not in (130, -signal.SIGINT)
     tail = []
     if save_diagnostic:

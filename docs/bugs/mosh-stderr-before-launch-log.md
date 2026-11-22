@@ -82,6 +82,20 @@ At revision `6e797f42`, the regression assertions failed for missing output
 in the managed, one-shot, bare PTY and remote launch logs. The tests keep the
 agent on a PTY and use fake agent and transport commands.
 
+### Clean exits and caller-supplied displays
+
+The display test's fake Codex exits immediately with status zero. The shared
+exit recorder logged both runs even though the supervisor used the caller's
+display without probing. A short successful exit can still leave the remote
+caller without an explanation when tmux returns zero, so the display test now
+checks for display diagnostics specifically.
+
+The recorder skips ordinary status-zero exits at or after 15 seconds.
+Failures still produce an exit record, and one-shot sessions retain their
+existing clean-exit record. The launch-logging test exercises both status zero
+and status seven at the 15-second boundary. Before the fix, the status-zero
+case wrote an unexpected line.
+
 ### Worktree sync warnings
 
 The warning already reached the log, but selecting Git's final stderr line
