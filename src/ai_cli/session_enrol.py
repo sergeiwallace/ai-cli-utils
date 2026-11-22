@@ -39,7 +39,9 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
         if session != name or not Path(cwd).is_absolute() or int(pid) <= 1:
             raise ValueError
         return cwd, psutil.Process(int(pid)).cmdline(), int(pid)
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+    # SystemError: psutil on macOS can raise it reading the leader's argv (sysctl
+    # KERN_PROCARGS2); an unreadable leader is not a readable one.
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error, SystemError) as exc:
         raise ValueError("live pane check failed: expected one readable pane and leader") from exc
 
 
