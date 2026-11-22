@@ -8113,10 +8113,11 @@ def cmd_session_reaper_run():
 
 
 @cmd_quota_group.command("status", help="Print current quota snapshot")
-def cmd_quota_status():
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print Claude and Antigravity quota status as JSON")
+def cmd_quota_status(as_json):
     from .quota import quota_status
 
-    sys.exit(quota_status())
+    sys.exit(quota_status(as_json=as_json))
 
 
 @cmd_quota_group.command("history", help="Print quota history")
@@ -8133,11 +8134,38 @@ def cmd_quota_publish():
     sys.exit(quota_publish())
 
 
-@cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")
-def cmd_quota_statusline_part():
+@cmd_quota_group.command("statusline-part", help="Emit the quota section of a client statusline")
+@click.option(
+    "-p",
+    "--provider",
+    type=click.Choice(["claude", "agy"]),
+    default="claude",
+    show_default=True,
+    help="Quota provider segment to emit",
+)
+def cmd_quota_statusline_part(provider):
     from .quota import quota_statusline_part
 
-    sys.exit(quota_statusline_part())
+    sys.exit(quota_statusline_part(provider=provider))
+
+
+@cmd_quota_group.command(
+    "render-statusline",
+    help="Render a single-line TUI statusline from client stdin JSON and persist quota state",
+)
+@click.option(
+    "-p",
+    "--provider",
+    type=click.Choice(["agy"]),
+    default="agy",
+    show_default=True,
+    help="Client statusline JSON payload format",
+)
+def cmd_quota_render_statusline(provider):
+    from .agy_quota import cmd_render_agy_statusline
+
+    _ = provider
+    sys.exit(cmd_render_agy_statusline())
 
 
 @cmd_quota_group.command("sync", help="Sync quota snapshot from the remote server")
