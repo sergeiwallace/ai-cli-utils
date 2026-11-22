@@ -82,8 +82,14 @@ with status 0, the same status as `/exit`, so the wrapper cannot tell the two
 apart. A clean exit in the first three seconds of a run ends the session. After
 a longer run it restarts the agent, and the Ctrl+C that stops it has to land in
 the three-second window above: Claude Code's own double Ctrl+C followed by one
-more. These rules apply to sessions started with the updated launcher; existing
-supervisors retain their loaded script until they are stopped and relaunched.
+more. The supervisor starts each new child body from the session's current
+script file, so it never needs replacing. A running child body keeps the script
+text it started with, though, and these rules live in the child body: a session
+whose child body started before them ends at its next clean exit. Restarting
+such a session's agent (`ai -X`, or a signal to the agent) is handled by that
+same old child body and ends the session too, so the way to move it onto these
+rules is to exit it and relaunch it. Once a child body runs the current script,
+`ai -X` restarts the agent without ending the session.
 
 A failed remote launch can still offer a recovery shell for fixing credentials.
 In that shell, `exit 78` retries the agent and `exit` closes the remote session,

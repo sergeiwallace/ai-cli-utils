@@ -46,6 +46,7 @@ from . import suspended_session as _suspended_session
 from . import tmux_binary
 from . import tmux_ownership as _tmux_ownership
 from . import tmux_setup as _tmux_setup
+from . import transcript_restore as _transcript_restore
 from . import transport as _transport
 from . import tunnel as _tunnel
 from . import zsh_setup as _zsh_setup
@@ -113,7 +114,7 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .launch_logging import REMOTE_DIAGNOSTIC_ENV, create_launch_log
+from .launch_logging import AGENT_DIAGNOSTIC_ENV, REMOTE_DIAGNOSTIC_ENV, create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
 from .name_commands import COMMANDS as _NAME_COMMANDS
 from .output import Tag, Untagged
@@ -374,7 +375,9 @@ def _refresh_claude_plugins() -> None:
     refresh_plugins(emit)
 
 
-def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
+def _pty_handoff(
+    session: str, *, launch_log: str = "", diagnostic_path: str = ""
+) -> Callable[[str, list[str]], NoReturn]:
     """A handoff that runs the agent on a launcher-owned pty instead of exec'ing it (AI-CLI-0nvi).
 
     Used on the bare paths when the compact transport resolved to the pty, so the
@@ -386,7 +389,7 @@ def _pty_handoff(session: str) -> Callable[[str, list[str]], NoReturn]:
         from . import pty_host
 
         try:
-            sys.exit(pty_host.host(file, args, session=session))
+            sys.exit(pty_host.host(file, args, session=session, launch_log=launch_log, diagnostic_path=diagnostic_path))
         except FileNotFoundError:
             raise
         except OSError as exc:
@@ -877,6 +880,32 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+#: ``ai internal resolve-continue-target`` and ``restore-transcript`` exit status when the
+#: ``[resume_restore]`` command failed; the session script stops instead of resuming.
+_RESTORE_FAILED_STATUS = 74
+
+
+def _pick_with_archive_restore(project_dir: Path, pick: Callable[[], Path | None]) -> tuple[Path | None, set[str]]:
+    """Pick from the live transcripts; restore archived ones and pick again only when that fails.
+
+    Resuming a live session therefore runs no ``[resume_restore]`` command for the archives
+    beside it, which would otherwise be restored, and archived again, on every launch. A
+    restart whose recorded transcript was archived refuses on the first pick, so it is
+    retried the same way. Returns the pick and the session ids restored.
+    """
+    try:
+        matched = pick()
+    except _ClaudeRestartTranscriptError:
+        restored = _transcript_restore.restore_archived(project_dir)
+        if not restored:
+            raise
+        return pick(), restored
+    if matched is not None:
+        return matched, set()
+    restored = _transcript_restore.restore_archived(project_dir)
+    return (pick() if restored else None), restored
+
+
 class _LiveClaudeSessionError(RuntimeError):
     """A bare launch found a live Claude Code process it cannot reattach to."""
 
@@ -1146,17 +1175,23 @@ def _bare_engine_command(
         command = ["claude"]
         if not _is_root():
             command.append("--dangerously-skip-permissions")
-        # Resume this session's own prior conversation by its exact transcript UUID.
-        matched = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(target_root, ai_name)
-            if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
-                matched = lone
+
+        def pick() -> "Path | None":
+            # Resume this session's own prior conversation by its exact transcript UUID.
+            found = _pick_cc_resume_transcript(target_root, ai_name, Tag.LAUNCH)
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(target_root, ai_name)
+                if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
+                    found = lone
+            return found
+
+        matched, restored = _pick_with_archive_restore(_cc_project_dir(target_root), pick)
         if matched is not None:
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
                 raise _LiveClaudeSessionError(ai_name, pid, matched)
+            _transcript_restore.restore_session(session_id, restored)
             command += ["--resume", session_id]
         command += ["--name", ai_name]
         return command + extra_args
@@ -2396,19 +2431,27 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         cwd, title = Path(argv[1]), argv[2]
         restarting = "--restart" in argv[3:]
-        try:
-            matched = (
+
+        def pick() -> "Path | None":
+            found = (
                 _pick_cc_restart_transcript(cwd, title)
                 if restarting
                 else _pick_cc_resume_transcript(cwd, title, Tag.INTERNAL)
             )
+            if found is None:
+                lone = _find_lone_mismatched_cc_session(cwd, title)
+                if lone is not None and _confirm_mismatched_title_resume(title, lone):
+                    found = lone
+            return found
+
+        try:
+            matched, _restored = _pick_with_archive_restore(_cc_project_dir(cwd), pick)
+        except _transcript_restore.TranscriptRestoreError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(_RESTORE_FAILED_STATUS)
         except _ClaudeRestartTranscriptError as exc:
             _out.error(Tag.INTERNAL, "resume", str(exc))
             sys.exit(1)
-        if matched is None:
-            lone = _find_lone_mismatched_cc_session(cwd, title)
-            if lone is not None and _confirm_mismatched_title_resume(title, lone):
-                matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
@@ -2420,6 +2463,16 @@ def _handle_internal(argv: list[str]) -> None:
                     _out.emit(Tag.INTERNAL, "resume", _cc_live_session_warning(title, pid), err=True)
                 sys.exit(2)
             _out.raw(Untagged.INTERNAL_REPLY, str(matched))
+        sys.exit(0)
+    elif action == "restore-transcript":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal restore-transcript <session_id>", err=True)
+            sys.exit(1)
+        try:
+            _transcript_restore.restore_session(argv[1])
+        except _transcript_restore.TranscriptRestoreError as exc:
+            _out.error(Tag.INTERNAL, "resume", str(exc))
+            sys.exit(_RESTORE_FAILED_STATUS)
         sys.exit(0)
     elif action == "update-session-map":
         if len(argv) < 4:
@@ -3586,6 +3639,14 @@ def _print_launch_plan(
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
 
 
+def _remote_agent_diagnostic_setup(path: str) -> str:
+    return (
+        f'export {AGENT_DIAGNOSTIC_ENV}="$HOME/{path}.agent"; '
+        f'( umask 077; mkdir -p "$(dirname "${AGENT_DIAGNOSTIC_ENV}")" '
+        f'&& touch "${AGENT_DIAGNOSTIC_ENV}" ) 2>/dev/null; '
+    )
+
+
 def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     """The shell command mosh runs on the remote host for ``remote_cmd``.
 
@@ -3595,8 +3656,7 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
     the terminal and record a failed command's own status separately from the pipe's status.
     """
     return (
-        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
-        'mkdir -p "$(dirname "$diagnostic_file")"; '
+        _remote_agent_diagnostic_setup(remote_diagnostic_file) + f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
         'rm -f "$diagnostic_file" "$diagnostic_file.status"; '
         "exec 3>&1; "
         f"{{ ( {remote_cmd} ) 3>&-; "
@@ -3606,6 +3666,7 @@ def _mosh_remote_command(remote_cmd: str, remote_diagnostic_file: str) -> str:
         'remote_exit_code=0; if [ -f "$diagnostic_file.status" ]; '
         'then IFS= read -r remote_exit_code < "$diagnostic_file.status"; '
         'else rm -f "$diagnostic_file"; fi; '
+        'if [ ! -s "$diagnostic_file.agent" ]; then rm -f "$diagnostic_file.agent"; fi; '
         'exit "$remote_exit_code"'
     )
 
@@ -4945,6 +5006,7 @@ def _do_session_launch(
     allow_partial_migration: bool = False,
     probe: bool = False,
 ) -> None:
+    agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
     # keeps this function and the helpers below it (worktree creation, the direnv
     # and tmux preflights) on the same quiet/verbose policy and the same stream.
@@ -5532,11 +5594,13 @@ def _do_session_launch(
         # The ssh_config/remote-machine ALIAS only: the registry never holds a host, user
         # or key path, and relaunch_argv is the `ai` command line, never this ssh one.
         _registry_remote = {"alias": remote_alias, "session": _r_ai_name}
-        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
+        ssh_remote_cmd = _remote_agent_diagnostic_setup(remote_diagnostic_file) + remote_cmd
+        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(ssh_remote_cmd)}")
 
         diagnostic_ssh_args = ["ssh", "-T", "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
         if id_file:
             diagnostic_ssh_args += ["-i", str(Path(id_file).expanduser())]
+        ssh_diagnostic_args = [*diagnostic_ssh_args, f"{user}@{vpn_host}"]
         diagnostic_ssh_args.append(f"{user}@{host}")
 
         # Build mosh_args unconditionally — needed for both initial connection
@@ -5575,6 +5639,7 @@ def _do_session_launch(
                         diagnostic_ssh_args=diagnostic_ssh_args,
                         remote_diagnostic_file=remote_diagnostic_file,
                         on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
+                        ssh_diagnostic_args=ssh_diagnostic_args,
                     )
                 )
             finally:
@@ -5615,6 +5680,8 @@ def _do_session_launch(
                         functools.partial(_mark_session_ended, reporter, _record_id) if _record_id else None
                     ),
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
+                    diagnostic_ssh_args=ssh_diagnostic_args,
+                    remote_diagnostic_file=remote_diagnostic_file,
                 )
             )
 
@@ -6081,6 +6148,13 @@ def _do_session_launch(
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
                 pull, stranded = pull_rebase_autostash(worktree_path)
+                _detail = ""
+                if pull.returncode and not stranded:
+                    _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
+                    # Git can print autostash progress after a fetch or rebase error.
+                    _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
+                    if _lines:
+                        _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
                 if pull.returncode != 0 and not stranded and not _conflicted_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
@@ -6100,12 +6174,6 @@ def _do_session_launch(
                         env=_git_env(),
                         check=False,
                     )
-                    # Quote git's own last line. An exit code alone does not say whether
-                    # this was no network, missing credentials for the remote, or something
-                    # that needs attention, and the user cannot re-run the pull to find out
-                    # once the index has been restored.
-                    _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
-                    _detail = f" Last git error: {_reason[-1]}" if _reason else ""
                     reporter.warning(
                         "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
@@ -6117,7 +6185,7 @@ def _do_session_launch(
                         "worktree",
                         f"git pull --rebase failed in worktree {worktree_path.name} "
                         f"(exit {pull.returncode}). Left as-is — this worktree already had "
-                        f"a conflict in progress and nothing here will discard it.",
+                        f"a conflict in progress and nothing here will discard it.{_detail}",
                     )
                 if stranded:
                     # Refuse the launch. Dropping an agent into a worktree whose index
@@ -6238,6 +6306,9 @@ def _do_session_launch(
                 resume=resume,
                 pi_provider=pi_provider,
             )
+        except _transcript_restore.TranscriptRestoreError as exc:
+            reporter.error("resume", str(exc))
+            sys.exit(1)
         except _LiveClaudeSessionError as exc:
             # tmux can reattach only when it already owns the live process. A
             # raw bare process has no shared terminal to attach to, so refuse
@@ -6267,12 +6338,15 @@ def _do_session_launch(
                 _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            handoff = (
+                _pty_handoff(session_id, launch_log=launch_log_path or "", diagnostic_path=agent_diagnostic_path)
+                if on_pty
+                else _exec_handoff
+            )
             _exec_with_direnv(
                 target_root,
                 command,
-                handoff=_session_launch_state.handoff(
-                    session_id, _pty_handoff(session_id) if on_pty else _exec_handoff
-                ),
+                handoff=_session_launch_state.handoff(session_id, handoff),
             )
 
     # tmux panes inherit their session environment from the long-lived server,
@@ -6281,6 +6355,8 @@ def _do_session_launch(
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
     _tmux_env_flags = build_tmux_env_flags(os.environ)
+    if agent_diagnostic_path:
+        _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
 
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
@@ -7672,7 +7748,24 @@ def cmd_p(ctx, **options):
     _dispatch_session("p", ctx, options)
 
 
-@_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
+@_cli_group.command(
+    "cx",
+    context_settings=SESSION_CONTEXT,
+    help=(
+        "Launch a Codex session.\n\n"
+        "For a stopped legacy slot with no identity record, owner-approved recovery is available through "
+        "`python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` "
+        "(short form: -F SESSION). RECORD is the slot's absolute "
+        "`<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. "
+        "Both SESSION values must be the exact tmux session name. "
+        "Then relaunch from the session's worktree with the slot's original launch flags "
+        "(--is-remote, --project-prefix, --project); for example "
+        "`ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r`. "
+        "Approval creates only a missing record, starts a new thread, preserves old native records, "
+        "and is never saved in the launch recipe. This is an option on the prepare/launch module, "
+        "not on ai cx. Windows launch retains its existing exec-identity refusal."
+    ),
+)
 @_session_options
 def cmd_cx(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
@@ -7724,6 +7817,18 @@ def cmd_upgrade():
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
     _exec_handoff(uv_bin, upgrade_args)
+
+
+@_cli_group.command("list-capabilities", help="Print the optional behaviours this launcher has enabled, one per line")
+def cmd_list_capabilities():
+    """Print one token per enabled optional behaviour, for a deployment's tooling to probe.
+
+    \b
+    transcript-restore  [resume_restore] command is set: it runs before every Claude Code
+                        resume, and a failure stops the resume
+    """
+    if _transcript_restore.configured():
+        _out.raw(Untagged.CAPABILITY, _transcript_restore.CAPABILITY)
 
 
 @_cli_group.command("register", help="Register a repository root and its task prefix")
