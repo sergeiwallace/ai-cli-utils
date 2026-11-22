@@ -1754,15 +1754,19 @@ with open(path, 'w') as f:
     # BEGIN PROJECT ENV prepare
       # Every agent start, first and restart alike, approves this worktree's .envrc with the
       # launcher's own policy before run_agent loads it: direnv keys an approval on the file's
-      # content, so a sync or merge since the last start leaves it blocked. A refusal ends the
-      # session like any other stop, never starts an agent without its environment.
+      # content, so a sync or merge since the last start leaves it blocked. The helper exits 0
+      # whenever there is nothing to approve (no direnv, no .envrc, a bypass), so any other
+      # status, its own refusal or a helper that could not run at all, ends the session like
+      # any other stop and never starts an agent without its environment.
       _project_env_status=0
       ai internal prepare-project-env "$PWD" "$tmux_session" || _project_env_status=$?
       if (( _project_env_status == {PROJECT_ENV_REFUSED_EXIT} )); then
         _ai_persist_exit unknown '{{"reason":"project environment not approved"}}'
         break
       elif (( _project_env_status != 0 )); then
-        _ai_emit warning direnv "could not check the .envrc approval (exit $_project_env_status); starting with direnv's own state"
+        _ai_emit error direnv "could not check the .envrc approval: 'ai internal prepare-project-env' exited $_project_env_status, so no agent was started. Run 'ai internal prepare-project-env $PWD' to see why, then 'ai c $ai_name'; or set AI_CLI_SKIP_DIRENV=1 to start without the check."
+        _ai_persist_exit unknown '{{"reason":"project environment check failed"}}'
+        break
       fi
     # END PROJECT ENV
 

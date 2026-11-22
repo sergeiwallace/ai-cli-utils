@@ -591,6 +591,9 @@ with open(os.environ["FAKE_AGENT_STARTS"], "a") as out:
 _STUB_AI = """\
 import os, sys
 real = ("prepare-project-env", "emit", "progress", "resolve-background-target")
+broken = os.environ.get("FAKE_AI_PREPARE_EXIT")
+if broken and sys.argv[1:3] == ["internal", "prepare-project-env"]:
+    sys.exit(int(broken))
 if sys.argv[1:2] == ["internal"] and sys.argv[2:3] and sys.argv[2] in real:
     os.execv(sys.executable, [sys.executable, "-m", "ai_cli.main", *sys.argv[1:]])
 sys.exit(0)
@@ -980,3 +983,19 @@ def test_given_an_edited_envrc_the_operator_approved_when_the_child_body_starts_
     run = child_body(worktree)
 
     assert [start["PROJECT_ENV"] for start in run.starts] == ["reviewed-by-the-operator"], run.stderr
+
+
+@pytest.mark.parametrize("status", [1, 127], ids=["helper-crashed", "helper-missing"])
+def test_given_an_approval_helper_that_cannot_run_when_the_child_body_starts_then_no_agent_starts(
+    session_repo, stub_direnv, child_body, status
+):
+    """D-A3 fails closed: a helper that crashed or is missing never starts an agent beside a blocked .envrc."""
+    worktree = session_repo["worktree"]
+
+    run = child_body(worktree, env={"FAKE_AI_PREPARE_EXIT": str(status)})
+
+    assert run.starts == [], "an agent started although the .envrc check never ran"
+    assert run.returncode == 77, run.stderr
+    assert f"exited {status}" in run.stderr and "ai internal prepare-project-env" in run.stderr, run.stderr
+    errors = [line for line in _session_lines(run.log, "direnv") if "Error:" in line]
+    assert errors and f"exited {status}" in errors[0], run.log

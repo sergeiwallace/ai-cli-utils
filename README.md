@@ -986,7 +986,8 @@ When `ai` is responsible for the worktree's `.envrc` and cannot approve it, beca
 its content matches neither copy or `direnv allow` fails, no agent starts without
 its environment. The launch stops with an error naming the file and the command to
 run after reviewing it (`direnv allow <worktree>`), and a running session stops the
-way any other stop ends it, instead of restarting its agent. Note that this requires
+way any other stop ends it, instead of restarting its agent. A check that cannot run
+at all (a missing or crashed `ai`) stops a restart the same way, naming its exit status. Note that this requires
 a matching copy to *exist*, not to be approved: requiring an approved root would make
 the feature do nothing on a host where nothing is approved yet. A worktree `direnv`
 has already approved is left alone, and a host with no `direnv`, or a worktree with
