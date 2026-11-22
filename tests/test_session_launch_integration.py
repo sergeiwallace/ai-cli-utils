@@ -1675,9 +1675,12 @@ def _run_ai_c() -> object:
             stack.enter_context(patch(target))
         stack.enter_context(patch("ai_cli.main._auto_update_if_stale", return_value=False))
         stack.enter_context(patch("ai_cli.config.load_config", return_value={"worktree": {"enabled": False}}))
-        with pytest.raises(SystemExit) as exited:
+        # A launch with no terminal to attach reports the detached session and returns.
+        try:
             main.cmd_c.main(["1", "--project-prefix", "myproject"], standalone_mode=False)
-    return exited.value.code
+        except SystemExit as exited:
+            return exited.code
+    return None
 
 
 @pytest.mark.parametrize(
