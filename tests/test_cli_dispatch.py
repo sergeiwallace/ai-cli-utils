@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
-from conftest import hold_file_lock, run_cli
+from conftest import hold_file_lock, is_update_child, run_cli
 
 import ai_cli.main
 from ai_cli.copier_update import CopierUpdateInspection, DeliveredUpdate
@@ -484,7 +484,7 @@ class TestAutoUpdateLockfile:
         # The source is unstamped (so stale), but this worker must not run the
         # update while a peer owns the lock.
         calls = [c.args[0] for c in mock_run.call_args_list]
-        update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
+        update_calls = [c for c in calls if is_update_child(c)]
         assert updated is False
         assert not update_calls
         assert "Warning" in capsys.readouterr().err
@@ -520,7 +520,7 @@ class TestAutoUpdateLockfile:
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
 
         calls = [c.args[0] for c in mock_run.call_args_list]
-        update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
+        update_calls = [c for c in calls if is_update_child(c)]
         assert not update_calls  # must skip update due to post-lock re-check
         # the lock is released, so the next launcher can take it
         with hold_file_lock(state_dir / "last_install_fingerprint.lock"):

@@ -2005,6 +2005,13 @@ def make_subprocess_result(returncode=0, stdout="", stderr=""):
     return m
 
 
+def is_update_child(command) -> bool:
+    """Whether ``command`` is the launch's `ai update` child: this interpreter running ``ai_cli.main update``."""
+    from ai_cli.main import _UPDATE_CHILD
+
+    return isinstance(command, (list, tuple)) and tuple(command[:4]) == _UPDATE_CHILD and command[4:5] == ["update"]
+
+
 def remote_allocation_reply(command):
     """What ``ai internal allocate-session-name`` prints on a remote host with no live sessions.
 

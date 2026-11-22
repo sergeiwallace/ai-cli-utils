@@ -1600,6 +1600,10 @@ def _clear_update_failure_record() -> None:
         _update_failure_record_path().unlink(missing_ok=True)
 
 
+#: How the launch runs `ai update` as a child: this interpreter and this package's own entry.
+_UPDATE_CHILD = (sys.executable, "-P", "-m", "ai_cli.main")
+
+
 def _auto_update_if_stale(config: dict) -> bool:
     """Reinstall at session launch only when the packaged source has changed, and
     report whether the invoking launcher must restart.
@@ -1675,10 +1679,12 @@ def _auto_update_if_stale(config: dict) -> bool:
         # means a failed install is retried on the next launch rather than being
         # remembered as done.
         verbose = _update_verbose_requested()
-        ai_bin = shutil.which("ai") or "ai"
+        # The child is this running package, never the `ai` first on PATH: that can be another,
+        # older install, which would reject --package-only. -P keeps the checkout the child
+        # runs in (cwd) off sys.path, so nothing there can shadow a module.
         # --package-only: the bumped version already defeats uv's cache for this package, so
         # the launch reinstalls it alone and leaves the dependencies as they are.
-        cmd = [ai_bin, "update", "--force", "--package-only"] + ([] if verbose else ["--quiet"])
+        cmd = [*_UPDATE_CHILD, "update", "--force", "--package-only"] + ([] if verbose else ["--quiet"])
         # Captured even when verbose: the child's lines are replayed through the
         # tagged relay below rather than inherited raw.
         # Deliberately unbounded, not on the retry policy: the child runs `uv pip install`

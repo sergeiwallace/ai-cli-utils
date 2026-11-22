@@ -30,6 +30,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import is_update_child
 
 from ai_cli.main import (
     UPDATE_VERBOSE_ENV,
@@ -150,7 +151,7 @@ class _Launch:
     def run(self, cmd, **kwargs):
         cmd = list(cmd)
         self.commands.append(cmd)
-        if len(cmd) >= 2 and cmd[1] == "update":
+        if is_update_child(cmd):
             return self._child_update(cmd, kwargs)
         if "install" in cmd:
             return self._install(kwargs)
@@ -162,7 +163,7 @@ class _Launch:
 
     @property
     def updates(self) -> list[list[str]]:
-        return [c for c in self.commands if len(c) >= 2 and c[1] == "update"]
+        return [c for c in self.commands if is_update_child(c)]
 
     def launch(self):
         with (
@@ -281,7 +282,7 @@ class TestQuietOutput:
         def failing_run(cmd, **kwargs):
             cmd = list(cmd)
             launch.commands.append(cmd)
-            if len(cmd) >= 2 and cmd[1] == "update":
+            if is_update_child(cmd):
                 return MagicMock(returncode=1, stdout="uv: resolving\n", stderr="uv: no space left on device\n")
             return MagicMock(returncode=0, stdout="", stderr="")
 
