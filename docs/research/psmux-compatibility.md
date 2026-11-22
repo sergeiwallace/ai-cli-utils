@@ -108,5 +108,15 @@ native Windows programs. Three things follow, and the launcher handles each:
   the same console, and the two shared the keyboard. The launcher waits for the program
   it hands off to instead, and exits with its status.
 
+- `direnv exec` cannot run a native program. Its PATH search splits on `:`, accepts
+  only files with a POSIX execute bit, and ends in Go's `syscall.Exec`, which Windows
+  lacks, so it reported `command 'claude' not found on PATH` with `claude.exe` on that
+  PATH. Bare and one-shot launches run the agent through `python -m ai_cli.direnv_exec`
+  there instead: it loads the environment with `direnv export json` and finds the agent
+  with `shutil.which`, which honours PATHEXT. A managed session already evaluates
+  `direnv export bash`; that export hands the MSYS2 shell PATH in its Windows spelling,
+  so the session script converts it back with `cygpath`. `ai doctor` reports where each
+  agent CLI resolves on the PATH a launch from the current directory uses.
+
 A session that still cannot start, for any reason, can be launched without a
 multiplexer with `ai c <name> -b`.

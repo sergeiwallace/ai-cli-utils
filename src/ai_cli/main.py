@@ -462,7 +462,10 @@ def _exec_with_direnv(
 
 
 def _direnv_prefix(project_root: Path) -> list[str]:
-    """``["direnv", "exec", <root>]`` when direnv can actually run there, else ``[]``.
+    """The argv prefix that runs a program under direnv at ``project_root``, else ``[]``.
+
+    That is ``direnv exec <root>``, or on native Windows, where ``direnv exec`` cannot
+    run a native program, :mod:`ai_cli.direnv_exec` (see there).
 
     The single place the "direnv is an enhancement, never a precondition" policy
     described in :func:`_exec_with_direnv` is decided, so every launch path — bare
@@ -472,7 +475,9 @@ def _direnv_prefix(project_root: Path) -> list[str]:
     """
     envrc = _find_envrc(project_root)
     if envrc is not None and _direnv_env_usable(project_root):
-        return ["direnv", "exec", str(project_root)]
+        from .direnv_exec import prefix
+
+        return prefix(project_root)
     if envrc is not None and _direnv_installed():
         _out.warning(
             Tag.LAUNCH,
@@ -7950,6 +7955,21 @@ def cmd_doctor(dry_run):
         ("compact", compact.usable, compact_note),
     ):
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
+
+    # Each agent CLI resolved as a launch from here resolves it: on the PATH of this
+    # directory's direnv environment, through shutil.which (PATHEXT on Windows). A shell's
+    # own lookup can find a program the launch cannot, so that answer proves nothing.
+    from .direnv_exec import loaded_environment
+
+    agent_env, agent_env_failure = dict(os.environ), ""
+    if _direnv_setup.find_envrc(root) is not None and not _direnv_setup.is_bypassed(config):
+        agent_env, agent_env_failure = loaded_environment(root, agent_env)
+    where = "the project environment's PATH" if not agent_env_failure else f"PATH ({agent_env_failure})"
+    gemini = (shlex.split(config.get("gemini", {}).get("command", "gemini")) or ["gemini"])[0]
+    for agent in ("claude", "codex", gemini, "pi"):
+        found = shutil.which(agent, path=agent_env.get("PATH"))
+        note = found or f"not found on {where}; a launch of this engine cannot start it"
+        _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if found else 'MISS'}  {agent:<8} {note}")
 
     if _direnv_setup.is_bypassed(config):
         _out.emit(
