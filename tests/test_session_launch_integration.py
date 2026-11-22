@@ -13,6 +13,7 @@ import dataclasses
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1749,3 +1750,103 @@ def test_given_reinstall_continuation_inside_tmux_when_it_hands_off_then_the_cli
     assert tmux("list-clients", "-F", "#{session_id}").stdout.split() == [session.id]
     shown = tmux("show-options", "-qv", "-t", session.id, "@ai_cli_return_session").stdout.strip()
     assert shown == attached_caller["session_id"]
+
+
+_REAL_ENTRY_RUNNER = """\
+import sys
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
+
+from ai_cli import main
+
+# Everything above the launch itself is stubbed, as in _run_ai_c. The launch, its tmux
+# session, its end-of-session configuration and the client handoff are the real ones; the
+# session's program is a stand-in that ends on its own, as a supervisor that dies would.
+stubs = [
+    # The suite's hermetic host identity, as conftest gives every in-process launch.
+    ("ai_cli.host_env.refresh_host_env", {"return_value": None}),
+    ("ai_cli.session_naming.host_id", {"return_value": "test-host"}),
+    ("ai_cli.session_naming.alias_sources", {"return_value": [Path(sys.argv[1])]}),
+    ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
+    ("ai_cli.session.cleanup_stale_sessions", {}),
+    ("ai_cli.config.get_current_project_name", {"return_value": "myproject"}),
+    ("ai_cli.config.get_session_map", {"return_value": {}}),
+    ("ai_cli.iterm2._load_iterm2_config", {"return_value": {}}),
+    ("ai_cli.iterm2._assign_iterm2_color_slot", {"return_value": None}),
+    ("ai_cli.iterm2._emit_iterm2_profile_setup", {}),
+    ("ai_cli.iterm2._configure_tmux_for_iterm2", {}),
+    ("ai_cli.session_script.get_engine_script", {"return_value": "sleep 4\\n"}),
+    ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+    ("ai_cli.main._ensure_dolt_server", {}),
+    ("ai_cli.main._ensure_wake_sidecar", {}),
+    ("ai_cli.main.trigger_background_update", {}),
+    ("ai_cli.main._tunnel._ensure_nats_tunnel", {}),
+    ("ai_cli.main._process_manager._start_stale_session_reaper_for_launch", {}),
+    ("ai_cli.main.run_launch_extensions", {}),
+    ("ai_cli.main._auto_update_if_stale", {"return_value": False}),
+    ("ai_cli.config.load_config", {"return_value": {"worktree": {"enabled": False}}}),
+]
+with ExitStack() as stack:
+    for target, options in stubs:
+        stack.enter_context(patch(target, **options))
+    try:
+        main.cmd_c.main(["1", "--project-prefix", "myproject"], standalone_mode=False)
+    except SystemExit as exited:
+        sys.exit(exited.code)
+"""
+
+
+def test_given_ai_c_run_inside_tmux_when_its_session_ends_then_the_client_is_switched_and_returned(
+    attached_caller, tmp_path
+):
+    """The real `ai c` entry, typed into a tmux pane whose terminal is a client of that server."""
+    tmux = attached_caller["tmux"]
+    caller = attached_caller["session_id"]
+    runner = tmp_path / "ai_c.py"
+    runner.write_text(_REAL_ENTRY_RUNNER, encoding="utf-8")
+    aliases = tmp_path / "machine-host-aliases.toml"
+    aliases.write_text('[aliases]\ntest-host = "tst"\n', encoding="utf-8")
+    after = tmp_path / "after"
+    errors = tmp_path / "ai-c.err"
+    assert tmux("respawn-pane", "-k", "-t", "=caller:", "bash --norc -i").returncode == 0
+    # The launch runs in a project of its own, named like every other launch in this file.
+    project = tmp_path / "myproject"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n', encoding="utf-8")
+    command = (
+        f"cd {shlex.quote(str(project))} && "
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(runner))} {shlex.quote(str(aliases))}"
+        f" 2> {shlex.quote(str(errors))}; "
+        f"printf '%s' \"$?\" > {shlex.quote(str(after))}"
+    )
+    assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
+
+    def sessions():
+        listed = tmux("list-sessions", "-F", "#{session_id} #{session_name}").stdout.splitlines()
+        return dict(line.split(" ", 1) for line in listed)
+
+    def client_on():
+        return tmux("list-clients", "-F", "#{session_id}").stdout.split()
+
+    def launched_session():
+        return next((sid for sid in sessions() if sid != caller and client_on() == [sid]), None)
+
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    launched = launched_session()
+    while launched is None and not after.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+        launched = launched_session()
+    shown = errors.read_text(encoding="utf-8", errors="replace") if errors.exists() else ""
+    assert launched is not None, (sessions(), client_on(), shown[-2000:])
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while not (after.exists() and after.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert after.read_text() == "0", "ai c did not hand off and exit cleanly"
+    assert tmux("show-options", "-qv", "-t", launched, "@ai_cli_return_session").stdout.strip() == caller
+
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while launched in sessions() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert launched not in sessions(), "the ended session stayed up in tmux"
+    assert client_on() == [caller], "the client was not returned to the session it came from"
