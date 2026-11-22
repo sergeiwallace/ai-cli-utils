@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ai_cli import output
+from ai_cli.launch_logging import open_launch_log
 from ai_cli.main import (
     _ensure_tailscale_up,
     _ensure_vpn_watcher,
@@ -180,6 +182,35 @@ def _mock_nats_client(subscribe_cb_store=None):
 
 
 class TestRunTransportLoop:
+    def test_given_mosh_writes_stderr_when_the_client_exits_then_the_launch_log_keeps_it(self, tmp_path, capfd):
+        path = tmp_path / "launch.log"
+        path.touch()
+        message = "No response on the transport data channel"
+        launch_log = open_launch_log(str(path))
+        previous = output.attach_file_sink(launch_log.write_line)
+        try:
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=_mock_nats_client()),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 120.0]),
+            ):
+                asyncio.run(
+                    _run_transport_loop(
+                        SSH_ARGS,
+                        [sys.executable, "-c", f"import sys; sys.stderr.write({message!r}); sys.exit(37)"],
+                        [sys.executable, "-c", "pass"],
+                        SESSION,
+                        CONFIG,
+                    )
+                )
+        finally:
+            output.attach_file_sink(previous)
+            launch_log.close()
+
+        assert message in capfd.readouterr().err
+        assert message in path.read_text(encoding="utf-8")
+
     def test_when_no_vpn_then_starts_mosh(self, tmp_path):
         proc = _make_proc(returncode=0, poll_sequence=[None, 0])
         nc = _mock_nats_client()
@@ -253,7 +284,7 @@ class TestRunTransportLoop:
                 patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
                 patch("ai_cli.transport._is_vpn_active", side_effect=vpn_states),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
-                patch("subprocess.Popen", side_effect=lambda args: next(procs)),
+                patch("subprocess.Popen", side_effect=lambda args, **kwargs: next(procs)),
                 patch("asyncio.sleep", side_effect=fake_sleep),
                 # iter 1: start=0.0, end=0.0 (vpn_changed→continue); iter 2: start=0.0, end=10.0
                 patch("ai_cli.transport._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
@@ -367,7 +398,7 @@ class TestRunTransportLoop:
                 patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
                 patch("ai_cli.transport._is_vpn_active", side_effect=vpn_states),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
-                patch("subprocess.Popen", side_effect=lambda args: next(procs)) as mock_popen,
+                patch("subprocess.Popen", side_effect=lambda args, **kwargs: next(procs)) as mock_popen,
                 patch("ai_cli.transport._monotonic", side_effect=[0.0, 5.0, 0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
@@ -656,7 +687,7 @@ class TestRunTransportLoop:
                 patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
                 patch("ai_cli.transport._is_vpn_active", side_effect=vpn_side_effect),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
-                patch("subprocess.Popen", side_effect=lambda args: next(procs)) as mock_popen,
+                patch("subprocess.Popen", side_effect=lambda args, **kwargs: next(procs)) as mock_popen,
                 patch("ai_cli.transport._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
@@ -776,7 +807,7 @@ class TestRunTransportLoop:
                 patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
                 patch("ai_cli.transport._is_vpn_active", return_value=True),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
-                patch("subprocess.Popen", side_effect=lambda args: next(procs)),
+                patch("subprocess.Popen", side_effect=lambda args, **kwargs: next(procs)),
                 patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
