@@ -69,6 +69,7 @@ def pane_session(request, tmp_path, monkeypatch):
     (binaries / "ai").write_text(
         '#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
         f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        f'if [ "$1" = internal ] && [ "$2" = agy-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         "exit 0\n"
     )
     (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
@@ -85,6 +86,13 @@ def pane_session(request, tmp_path, monkeypatch):
         "    event = {'hook_event_name': 'SessionStart', 'session_id': args[args.index('resume') + 1],\n"
         "             'cwd': os.getcwd(), 'transcript_path': os.environ['TEST_CODEX_ROLLOUT']}\n"
         "    subprocess.run(shlex.split(command), input=json.dumps(event), text=True, check=True)\n"
+        "if Path(sys.argv[0]).name == 'agy':\n"
+        "    if sys.argv[1:] == ['--version']:\n"
+        "        print('antigravity 1.5.14'); sys.exit(0)\n"
+        "    if os.environ.get('AI_CLI_AGY_CONFIRM_TOKEN'):\n"
+        "        event = {'hookEventName': 'SessionStart', 'conversationId': '11111111-2222-4333-8444-555555555555',\n"
+        "                 'cwd': os.getcwd()}\n"
+        "        subprocess.run(['ai', 'internal', 'agy-session-confirm'], input=json.dumps(event), text=True, check=True)\n"
         "records = Path.home() / '.claude' / 'sessions'\nrecords.mkdir(parents=True, exist_ok=True)\n"
         "pid = os.getpid()\n"
         "(records / f'{pid}.json').write_text(json.dumps({'pid': pid, 'name': 'session-1', "
@@ -104,7 +112,7 @@ def pane_session(request, tmp_path, monkeypatch):
         "if command == 'crash': os.kill(os.getpid(), signal.SIGKILL)\n"
         "sys.exit(int(command))\n"
     )
-    for name in ("claude", "gemini", "codex"):
+    for name in ("claude", "agy", "gemini", "codex"):
         (binaries / name).write_text(agent)
     (binaries / "python3").symlink_to(sys.executable)
     for binary in binaries.iterdir():
@@ -126,6 +134,10 @@ def pane_session(request, tmp_path, monkeypatch):
         name = "c-session-1"
 
         def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_exit=False):
+            if engine == "g":
+                token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+                token.parent.mkdir(parents=True, exist_ok=True)
+                token.write_text('{"access_token": "tok"}', encoding="utf-8")
             if engine == "cx":
                 # Give prepare real, synthetic confirmation and persistence evidence.
                 # Version queries must not count as an interactive engine launch.

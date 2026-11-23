@@ -33,7 +33,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](#ai-g) | Launch an Antigravity (agy) session. |
 | [`ai import-names`](#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -590,7 +590,9 @@ Session names: find pool names by status, verdict scope, holder and hold state, 
 ai g [OPTIONS] [NAME]
 ```
 
-Launch a Gemini CLI session
+Launch an Antigravity (agy) session.
+
+Requires Google account sign-in (`~/.gemini/antigravity-cli/antigravity-oauth-token`) and refuses API-billed `modelProvider` settings so launches never fall back to API billing. Confirmed sessions bind to their native conversation ID and resume with `--conversation`. For a stopped legacy or manual slot with no identity record, owner-approved recovery is available through `python -m ai_cli.agy_session prepare RECORD CWD SESSION AI_NAME false local-tmux --start-fresh SESSION` (short form: -F SESSION) or `--adopt-conversation UUID SESSION` (short form: -A UUID SESSION).
 
 Arguments:
 

@@ -836,7 +836,7 @@ def locate_session_command(query: str, as_json: bool) -> None:
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
 
 
-CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "gemini": "gemini"}
+CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "agy": "agy", "gemini": "gemini"}
 
 
 def _most_recent_record(client):
@@ -889,7 +889,19 @@ def _probe_cases(client, scratch: Path) -> list[dict]:
         cases.append(case(sc.PRESENT, sc.PRESENT, client.probe_transcript(Path(record.cwd), "")))
     worktree = scratch / "worktree"
     worktree.mkdir()
-    cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    if client.can_probe_absence:
+        cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    else:
+        cases.append(
+            {
+                "case": sc.ABSENT,
+                "expected": sc.ABSENT,
+                "actual": None,
+                "reason": f"{client.client} store cannot prove conversation absence",
+                "skipped": True,
+                "ok": True,
+            }
+        )
     missing_home = scratch / "missing-home"
     cases.append(case(sc.UNKNOWN, sc.UNKNOWN, type(client)(missing_home).probe_transcript(worktree, "")))
     return cases

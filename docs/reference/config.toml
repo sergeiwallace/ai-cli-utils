@@ -109,15 +109,16 @@
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"
 
+[agy]
+## Command used to launch Antigravity (`ai g`). Override if the binary is not on PATH.
+## Quote paths containing spaces.
+# command = "agy"
+
 [gemini]
-## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in your project registry TOML)
+## Legacy configuration table retained for compatibility with existing configs.
+## `ai g` launches Antigravity (`[agy] command`), not the retired Gemini CLI.
 # sandbox_whitelist = ["session"]
-## Set true only after AI-CLI-43 confirms billing credit status.
-## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
 # paid_fallback_enabled = false
-## Command used to launch gemini-cli. Override if the binary is not on PATH
-## (e.g. "npx @google/gemini-cli" for npx-only installs).
 # command = "gemini"
 
 [pi]

@@ -32,7 +32,7 @@ _DEFAULT_ITERM2_CONFIG = """\
 enabled = true
 
 [iterm2.tab_title]
-## Include type symbol (* for CC, ✦ for Gemini, π for Pi) in tab and pane titles
+## Include type symbol (* for CC, ✦ for Antigravity, π for Pi) in tab and pane titles
 show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
 show_status_symbol = false
@@ -437,7 +437,7 @@ def _iterm2_session_type(engine: str) -> str:
     return (
         "cc"
         if engine == "c"
-        else "gemini"
+        else "agy"
         if engine == "g"
         else "pi"
         if engine == "p"

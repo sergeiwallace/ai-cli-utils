@@ -261,13 +261,18 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict,
         # Compare this engine's launch statements, not inactive branches for other
         # engines or the supervisor implementation. An old supervisor need not
         # have leases, replaceable children or generations.
-        command = {"c": "claude", "g": shlex.split(meta.get("gemini_cmd", "gemini"))[0], "p": "pi", "cx": "codex"}[
-            engine
-        ]
+        command = {
+            "c": "claude",
+            "g": shlex.split(meta.get("agy_cmd") or "agy")[0],
+            "p": "pi",
+            "cx": "codex",
+        }[engine]
 
         launch_prefix = f"run_agent {shlex.quote(command)} "
         if engine == "cx":
             launch_prefix = f"run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "
+        elif engine == "g":
+            launch_prefix = f"run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "
 
         def launches(text):
             return {
