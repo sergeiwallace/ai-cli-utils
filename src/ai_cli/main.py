@@ -6747,6 +6747,7 @@ def _do_session_launch(
                 return
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(tmux_binary.argv("attach-session", "-t", once_identity.session_id))
+            return
         once_argv = tmux_binary.argv(
             "new-session",
             "-s",

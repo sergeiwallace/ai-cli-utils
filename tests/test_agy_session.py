@@ -1860,6 +1860,7 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
         ["gemini", "--sandbox"],
         ["gemini", "-m", "ai_cli.agy_session", "launch"],
         ["python3-wrapper", "-m", "ai_cli.agy_session", "launch"],
+        ["/usr/bin/python3/", "-m", "ai_cli.agy_session", "launch"],
     ],
 )
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1872,6 +1873,7 @@ def test_given_legacy_gemini_bare_replay_recipe_when_relaunched_via_cli_then_ref
     from ai_cli import session_run_state as _srs
 
     _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(_sc.sys, "platform", "linux")
     wt_dir = tmp_path / "wt"
     wt_dir.mkdir(exist_ok=True)
     seen_cmds: list[list[str]] = []
@@ -1919,9 +1921,10 @@ def test_given_legacy_gemini_bare_replay_recipe_when_relaunched_via_cli_then_ref
     assert "relaunch with `ai g`" in res.output
     assert not any("new-session" in c or "set-option" in c for c in seen_cmds)
 
-    # Valid Antigravity bare replay commands (direct and via direnv exec) remain accepted.
+    # Valid Antigravity bare replay commands (direct, free-threaded, and via direnv exec) remain accepted.
     for valid_cmd in (
         ["/usr/bin/python3", "-m", "ai_cli.agy_session", "launch", "/tmp/slot.json"],
+        ["/usr/bin/python3.14t", "-m", "ai_cli.agy_session", "launch", "/tmp/slot.json"],
         ["direnv", "exec", str(wt_dir), "python3.14", "-m", "ai_cli.agy_session", "launch", "/tmp/slot.json"],
     ):
         valid_rec = {**record, "boot_recipe": {**record["boot_recipe"], "command": valid_cmd}}

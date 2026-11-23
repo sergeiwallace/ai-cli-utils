@@ -1038,7 +1038,7 @@ def _detect_version(executable: str) -> str:
     return match[1] if match else (text.splitlines()[0] if text else "unknown")
 
 
-_PYTHON_EXE_RE = re.compile(r"^python(?:3(?:\.\d+)*|w)?(?:\.exe)?$")
+_PYTHON_EXE_RE = re.compile(r"^python(?:3(?:\.\d+)*t?|w)?(?:\.exe)?$")
 
 
 def is_agy_replay_command(command: Sequence[str]) -> bool:
@@ -1046,12 +1046,13 @@ def is_agy_replay_command(command: Sequence[str]) -> bool:
     tokens = list(command)
     if (
         len(tokens) >= 3
+        and not tokens[0].endswith(("/", "\\"))
         and Path(tokens[0]).name.lower() in {"direnv", "direnv.exe"}
         and tokens[1] == "exec"
         and bool(tokens[2])
     ):
         tokens = tokens[3:]
-    if len(tokens) < 4:
+    if len(tokens) < 4 or tokens[0].endswith(("/", "\\")):
         return False
     exe = Path(tokens[0]).name.lower()
     if not _PYTHON_EXE_RE.fullmatch(exe):
