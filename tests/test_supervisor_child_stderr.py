@@ -32,6 +32,8 @@ from test_reload_progress import SESSION, Session, harness_environment, session_
 
 from ai_cli import main, session_script
 
+pytestmark = pytest.mark.real_pty
+
 
 @pytest.fixture
 def generation_swap(monkeypatch, tmp_path, session_factory):  # noqa: F811

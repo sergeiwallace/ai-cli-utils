@@ -407,6 +407,7 @@ def _reload_rows(rows: list[str]) -> list[int]:
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
+@pytest.mark.real_pty
 def test_given_quick_agent_exit_when_session_ends_then_no_interactive_shell_starts(
     session_factory, monkeypatch, exit_code
 ):
@@ -436,6 +437,7 @@ def test_given_quick_agent_exit_when_session_ends_then_no_interactive_shell_star
     assert b"Returning to an interactive shell." not in session.received
 
 
+@pytest.mark.real_pty
 def test_given_repeated_reloads_on_a_pty_when_the_supervisor_restarts_then_one_row_updates_in_place(
     session_factory,
 ):
@@ -453,6 +455,7 @@ def test_given_repeated_reloads_on_a_pty_when_the_supervisor_restarts_then_one_r
     assert "session script updated — reloading..." not in "\n".join(rows)
 
 
+@pytest.mark.real_pty
 def test_given_reloads_past_both_thresholds_when_rendered_then_the_warning_and_persistent_error_appear(
     session_factory,
 ):
@@ -489,6 +492,7 @@ def test_given_supervisor_fixture_when_sequence_requested_then_reply_is_numeric(
 
 
 @pytest.mark.parametrize("closer", ["agent", "record", "exit"])
+@pytest.mark.real_pty
 def test_given_an_open_reload_row_when_the_agent_starts_then_its_output_begins_on_the_next_row(session_factory, closer):
     if closer == "agent":
         session = session_factory(reload_on=(1,))
@@ -526,6 +530,7 @@ def test_given_redirected_output_when_reloads_repeat_then_each_is_one_plain_coun
     assert "\r" not in text and "\x1b" not in text, repr(text)
 
 
+@pytest.mark.real_pty
 def test_given_no_ai_entry_point_when_a_reload_happens_then_a_plain_counted_line_is_printed(session_factory):
     session = session_factory(reload_on=(1, 2), renderer=False)
     session.wait_for_agents(1)
@@ -539,6 +544,7 @@ def test_given_no_ai_entry_point_when_a_reload_happens_then_a_plain_counted_line
         assert re.search(rf"session script updated, reloading \(attempt {attempt}, \d+s\)$", line), line
 
 
+@pytest.mark.real_pty
 def test_given_tostop_on_the_pty_when_reloads_repeat_then_the_supervisor_is_never_stopped(session_factory):
     session = session_factory(reload_on=(1, 2, 3), tostop=True)
     session.wait_for_agents(1)
@@ -547,6 +553,7 @@ def test_given_tostop_on_the_pty_when_reloads_repeat_then_the_supervisor_is_neve
     assert "attempt 3" in session.rows()[_reload_rows(session.rows())[0]]
 
 
+@pytest.mark.real_pty
 def test_given_a_reload_then_an_agent_failure_when_reloading_again_then_the_count_restarts_at_1(
     session_factory,
 ):
@@ -560,6 +567,7 @@ def test_given_a_reload_then_an_agent_failure_when_reloading_again_then_the_coun
     assert len(_reload_rows(rows)) == 2, rows
 
 
+@pytest.mark.real_pty
 def test_given_an_update_reload_after_each_agent_run_when_reloading_again_then_the_count_restarts_at_1(
     session_factory,
 ):
@@ -577,6 +585,7 @@ def test_given_an_update_reload_after_each_agent_run_when_reloading_again_then_t
     assert [re.search(r"attempt (\d+)", row)[1] for row in rows] == ["1", "1"], rows  # type: ignore[index]
 
 
+@pytest.mark.real_pty
 def test_given_one_reload_when_the_agent_starts_then_no_escalation_is_shown(session_factory):
     session = session_factory(reload_on=(1,))
     session.wait_for_agents(1)

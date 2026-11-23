@@ -318,6 +318,7 @@ def session_factory(tmp_path, agent, repo):
 
 @posix_pty
 @pytest.mark.timeout(60)
+@pytest.mark.real_pty
 def test_given_an_agent_slower_to_start_than_the_drive_waits_when_the_drive_gives_up_then_the_launch_still_ends(
     session_factory, monkeypatch
 ):
@@ -342,6 +343,7 @@ def test_given_an_agent_slower_to_start_than_the_drive_waits_when_the_drive_give
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_agent_when_it_exits_at_startup_then_the_launch_log_keeps_the_terminal_output(
     session_factory, tmp_path
 ):
@@ -356,6 +358,7 @@ def test_given_a_bare_agent_when_it_exits_at_startup_then_the_launch_log_keeps_t
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_launch_when_text_is_written_to_the_submission_fifo_then_the_agent_reads_it(session_factory):
     def drive(session: _Session) -> None:
         fifo = session.fifo()
@@ -381,6 +384,7 @@ def _input_at(session: _Session) -> Path:
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_the_operator_types_then_the_input_sidecar_records_that_time(session_factory):
     seen: dict[str, object] = {}
 
@@ -415,6 +419,7 @@ def test_given_a_bare_pty_session_when_the_operator_types_then_the_input_sidecar
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_only_the_fifo_submits_then_the_input_sidecar_does_not_move(session_factory):
     """Negative control: a submission is not operator input, so the idle proof must not see one."""
     seen: dict[str, float] = {}
@@ -467,6 +472,7 @@ def test_given_no_pty_api_when_a_bare_launch_runs_then_no_submission_fifo_exists
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_the_operator_types_then_keys_and_ctrl_c_reach_the_agent_unchanged(
     session_factory,
 ):
@@ -489,6 +495,7 @@ def test_given_a_bare_pty_session_when_the_operator_types_then_keys_and_ctrl_c_r
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_the_terminal_is_resized_then_the_agent_sees_the_new_size(session_factory):
     def drive(session: _Session) -> None:
         session.terminal.resize(41, 132)
@@ -524,6 +531,7 @@ def _assert_terminal_restored(session: _Session) -> None:
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_the_agent_exits_then_status_and_terminal_are_restored(session_factory):
     session = session_factory(lambda s: s.terminal.type(b"EXIT"))
     code = session.run()
@@ -534,6 +542,7 @@ def test_given_a_bare_pty_session_when_the_agent_exits_then_status_and_terminal_
 
 @posix_pty
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
+@pytest.mark.real_pty
 def test_given_a_bare_pty_session_when_the_launcher_gets_a_termination_signal_then_it_exits_128_plus_signum_restored(
     session_factory, signame
 ):

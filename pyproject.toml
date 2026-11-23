@@ -133,7 +133,7 @@ dev = [
 tmp_path_retention_policy = "failed"
 pythonpath = ["src", "."]
 testpaths = ["tests"]
-addopts = "-n auto -p pytest_memory_guard"
+addopts = "-n auto -p pytest_memory_guard -p pytest_terminal_group"
 # A default bound for every test, so one stuck test fails with every thread's stack instead of
 # holding a whole run for hours (a bare-pty test once held one for 3h19m). The slowest real test
 # measured 49 s at about 2.5 load per core (the migrate store-hang case, which waits out a hang on
@@ -149,6 +149,7 @@ faulthandler_timeout = 600
 markers = [
     "registry_backends(*names): collect a registry_backend-parametrized test only for these backends",
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
+    "real_pty: test uses a real pseudo-terminal outside tmux",
     "real_nats: test drives NATSClient.connect itself (opts out of the conftest connection block)",
     "real_reaper_spawn: test drives _start_stale_session_reaper_for_launch itself (opts out of the conftest no-op; must mock subprocess.Popen itself)",
     "shipped_output_datetime: test renders the shipped datetime element (opts out of the conftest switch that leaves it off; must freeze the clock itself)",
