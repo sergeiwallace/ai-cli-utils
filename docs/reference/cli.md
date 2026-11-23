@@ -95,6 +95,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions publish-timer status`](#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions render-title`](#ai-sessions-render-title) | Render a plain-text terminal window title from Antigravity stdin JSON |
 | [`ai sessions repair-policy`](#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
@@ -1564,6 +1565,18 @@ Arguments:
 | `-b` | `--boot` |  | Replay eligible owning-host sessions after boot |
 | `-d` | `--dry-run` |  | Print decisions without writing or launching |
 | `-P` | `--allow-partial-migration` |  | Relaunch a session even though a recorded migration to its name is partial; the parts left are written into its launch log |
+| `-h` | `--help` |  | Show this message and exit. |
+
+## ai sessions render-title
+
+```text
+ai sessions render-title [OPTIONS]
+```
+
+Render a plain-text terminal window title from Antigravity stdin JSON
+
+| Short | Long | Value | Description |
+|---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai sessions repair-policy

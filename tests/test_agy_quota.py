@@ -442,3 +442,77 @@ def test_given_fresh_agy_state_when_publish_agy_quota_runs_then_nats_subjects_an
     kv_keys = [k for k, _ in kv_puts]
     assert "quota.agy.current.box-1" in kv_keys
     assert "quota.agy.current" in kv_keys
+
+
+def test_given_fresh_and_stale_codex_cache_when_render_agy_statusline_runs_then_fresh_cxwk_is_included(
+    tmp_path: Path, agy_state_file: Path, isolated_quota_db: Path, monkeypatch: pytest.MonkeyPatch
+):
+    now = datetime.now(UTC)
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    cache = tmp_path / f".ai-sl-codexweeklypct-{uid}"
+    cache.write_text(
+        f"{int(now.timestamp())}\n"
+        + json.dumps(
+            {"used_percent": 65, "resets_at": int((now + timedelta(days=3)).timestamp()), "window_duration_mins": 10080}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(agy_quota, "publish_agy_quota", lambda **kwargs: False)
+    payload = _sample_agy_payload(
+        remaining_fraction=0.90,
+        reset_time=(now + timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        reset_in_seconds=4 * 86400,
+    )
+    line = agy_quota.render_agy_statusline(payload, now=now, state_path=agy_state_file, publish=False)
+    clean = _strip_ansi(line)
+    assert "agyWk 10%" in clean
+    assert "cxWk 65%" in clean
+    assert "\033[1;38;2;16;163;127m" in line
+
+    # Stale cache (>900s) is omitted cleanly without failing.
+    cache.write_text(
+        f"{int(now.timestamp()) - 1200}\n" + json.dumps({"used_percent": 65}),
+        encoding="utf-8",
+    )
+    stale_line = agy_quota.render_agy_statusline(payload, now=now, state_path=agy_state_file, publish=False)
+    assert "cxWk" not in _strip_ansi(stale_line)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_sym"),
+    [
+        ({"agent_state": "working"}, "▶"),
+        ({"agent_state": "idle"}, "✓"),
+        ({"agent_state": "error"}, "✗"),
+        ({"agent_state": "idle", "tool_confirmation_pending": True}, "⏸"),
+        ({}, "✦"),
+    ],
+)
+def test_given_agy_state_payload_when_render_title_runs_then_plain_text_title_is_emitted(
+    monkeypatch: pytest.MonkeyPatch, payload: dict, expected_sym: str
+):
+    monkeypatch.setenv("AI_SESSION_NAME", "myproject-wt-1")
+    res = CliRunner().invoke(_cli_group, ["sessions", "render-title"], input=json.dumps(payload))
+    assert res.exit_code == 0, res.output
+    out = res.stdout.strip()
+    assert out == f"{expected_sym} myproject-wt-1"
+    assert "\033[" not in out
+
+
+def test_given_no_session_name_and_malformed_stdin_when_render_title_runs_then_falls_back_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("AI_SESSION_NAME", raising=False)
+    monkeypatch.delenv("AI_CLI_SESSION_NAME", raising=False)
+    res_wt = CliRunner().invoke(
+        _cli_group,
+        ["sessions", "render-title"],
+        input=json.dumps({"agent_state": "working", "cwd": "/home/user/myproject/.worktrees/myproject-wt-1"}),
+    )
+    assert res_wt.exit_code == 0, res_wt.output
+    assert res_wt.stdout.strip() == "▶ myproject-wt-1"
+
+    res_bad = CliRunner().invoke(_cli_group, ["sessions", "render-title"], input="not json")
+    assert res_bad.exit_code == 0, res_bad.output
+    assert res_bad.stdout.strip().startswith("✦")

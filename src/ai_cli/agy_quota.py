@@ -45,6 +45,7 @@ _GOOGLE_BLUE = _quota._STATUSLINE_GOOGLE_BLUE
 _AGY_QUOTA_STATE_FILENAME = "agy-quota.json"
 _AGY_QUOTA_MAX_AGE_SECONDS_DEFAULT = 1800
 _AGY_PUBLISH_THROTTLE_SECONDS = 60
+_CODEX_CACHE_MAX_AGE_SECONDS = 900
 _FIVE_HOUR_SECONDS = 5 * 60 * 60
 _WEEKLY_SECONDS = 7 * 24 * 60 * 60
 
@@ -659,6 +660,46 @@ def _read_claude_segment_for_agy() -> str:
     return segment.render_without_pace(snap.weekly_all_models_pct)
 
 
+def _read_codex_segment_for_agy(now_ts: float) -> str:
+    """Read cached Codex weekly quota written by statusline helpers with zero subprocesses.
+
+    Matches the POSIX ``statusline-command.sh`` writer path (``${TMPDIR:-/tmp}/.ai-sl-codexweeklypct-${UID:-0}``);
+    on Windows, Git Bash's ``$UID`` is not exposed via ``os.getuid``, so cached ``cxWk`` display is POSIX-only
+    for now unless ``TMPDIR`` and uid 0 are explicitly seeded.
+    """
+    from .quota import CodexQuotaAdapter, QuotaStatuslineSegment
+
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    # Platform-specific: mirror POSIX `${TMPDIR:-/tmp}` literally so TMP/TEMP cannot diverge from the shell writer.
+    tmp_dir = Path(os.environ.get("TMPDIR") or ("/tmp" if os.name == "posix" else tempfile.gettempdir()))
+    cache_path = tmp_dir / f".ai-sl-codexweeklypct-{uid}"
+    try:
+        lines = cache_path.read_text(encoding="utf-8").splitlines()
+        if len(lines) < 2:
+            return ""
+        cached_ts = float(lines[0].strip())
+        if now_ts - cached_ts > _CODEX_CACHE_MAX_AGE_SECONDS or cached_ts > now_ts + 60:
+            return ""
+        raw_json = lines[1].strip()
+        if not raw_json or raw_json == "NONE":
+            return ""
+        doc = json.loads(raw_json)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    used_pct = _finite_number(doc.get("used_percent"))
+    reset_epoch = _finite_number(doc.get("resets_at"))
+    window_mins = _finite_number(doc.get("window_duration_mins")) or 10080.0
+    if used_pct is None or not (0.0 <= used_pct <= 100.0):
+        return ""
+    window_seconds = int(window_mins * 60) if window_mins > 0 else _WEEKLY_SECONDS
+    segment = QuotaStatuslineSegment(CodexQuotaAdapter("cxWk", window_seconds))
+    if reset_epoch is not None and reset_epoch >= now_ts:
+        return segment.render(used_pct, reset_epoch, now_ts)
+    return segment.render_without_pace(used_pct)
+
+
 def _should_publish_throttled(state_path: Path, now_ts: float) -> bool:
     stamp_path = state_path.parent / ".agy-quota-publish-ts"
     try:
@@ -700,6 +741,7 @@ def render_agy_statusline(
         include_reset=True,
     )
     cc_part = _read_claude_segment_for_agy()
+    cx_part = _read_codex_segment_for_agy(now_dt.timestamp())
 
     sep = f"{_DIM}│{_RESET}"
     if wt:
@@ -713,11 +755,50 @@ def render_agy_statusline(
         segments.append(agy_part)
     if cc_part:
         segments.append(cc_part)
+    if cx_part:
+        segments.append(cx_part)
     plan_tier = payload.get("plan_tier")
     if isinstance(plan_tier, str) and plan_tier.strip():
         segments.append(f"{_GOOGLE_BLUE}{plan_tier.strip()}{_RESET}")
     line = f" {sep} ".join(segments)
     return line.replace("\r", " ").replace("\n", " ") + _RESET
+
+
+def render_agy_title(payload: dict[str, Any]) -> str:
+    """Render a plain-text single-line terminal title for Antigravity's ``title`` setting."""
+    if payload.get("tool_confirmation_pending"):
+        sym = "⏸"
+    else:
+        state = str(payload.get("agent_state") or "").lower()
+        sym = {
+            "working": "▶",
+            "tool_use": "▶",
+            "reviewing": "▶",
+            "idle": "✓",
+            "error": "✗",
+            "initializing": "↻",
+            "authenticating": "↻",
+        }.get(state, "✦")
+    session_name = os.environ.get("AI_SESSION_NAME") or os.environ.get("AI_CLI_SESSION_NAME")
+    if session_name:
+        label = session_name
+    else:
+        project, wt = _project_and_worktree(payload)
+        label = wt or project
+    return f"{sym} {label}".replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+
+
+def cmd_render_agy_title() -> int:
+    """CLI entrypoint for ``ai sessions render-title``: read stdin JSON and emit plain text."""
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+    except (OSError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    _out.raw(Untagged.STATUSLINE, render_agy_title(payload))
+    return 0
 
 
 def cmd_render_agy_statusline() -> int:
