@@ -1146,6 +1146,18 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         ),
         (
             ["-p", "hi", "--mode", "plan"],
+            "Example:\n```\nTool call denied by policy\n```\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "> Tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
             "Partial answer\n",
             "tool call auto-denied by policy\n",
             agy_session.EXIT_PRINT_AUTO_DENIED,
@@ -1413,6 +1425,7 @@ def test_given_existing_legacy_gemini_tmux_session_when_ai_g_1_runs_then_refuses
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.chdir(worktree)
     monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
     monkeypatch.setattr(
@@ -1667,6 +1680,7 @@ def test_given_conflicting_pane_start_command_when_attach_paths_run_then_all_ref
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.chdir(worktree)
     monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
     monkeypatch.setattr(
@@ -1712,7 +1726,80 @@ def test_given_conflicting_pane_start_command_when_attach_paths_run_then_all_ref
     assert not attached
 
 
-def test_given_tmux_supervisor_restart_after_signout_when_run_agy_invoked_twice_then_consumes_token_and_reprobes(
+def test_given_split_window_with_live_agy_and_node_dev_server_when_ai_g_1_runs_then_attaches(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    home = tmp_path / "home"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    state_dir = tmp_path / "state"
+    (state_dir / "sessions").mkdir(parents=True)
+    (state_dir / "sessions" / "g-myproject-1.agy.json").write_text("{}", encoding="utf-8")
+    _seed_agy_home(home, oauth=True)
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "trigger_background_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: ("g-myproject-1", "myproject-1"))
+
+    attached: list[list[str]] = []
+
+    def fake_attach(argv):
+        attached.append(list(argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "_exec_tmux", fake_attach)
+
+    saw_client_probe = False
+
+    def fake_run(cmd, **kwargs):
+        nonlocal saw_client_probe
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "list-panes" in cmd:
+            if any("pane_current_command" in str(arg) for arg in cmd):
+                saw_client_probe = True
+                # Split window: pane 0 runs live agy, pane 1 runs an independent Node dev server.
+                return type(
+                    "R",
+                    (),
+                    {"returncode": 0, "stdout": "agy\tagy\t1001\nnode\tnode server.js\t1002\n", "stderr": ""},
+                )()
+            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
+        if "list-sessions" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    res = CliRunner().invoke(main._cli_group, ["g", "1", "--no-worktree"])
+    assert res.exit_code == 0, res.output
+    assert saw_client_probe
+    assert "handing off to Antigravity" in res.output
+    assert (state_dir / "sessions" / "g-myproject-1.sh").exists()
+
+
+def test_given_tmux_supervisor_child_replacement_after_signout_when_two_children_spawn_then_second_reprobes(
     tmp_path, monkeypatch
 ):
     import shlex
@@ -1735,42 +1822,56 @@ def test_given_tmux_supervisor_restart_after_signout_when_run_agy_invoked_twice_
         str(tmp_path),
         agy_cmd="agy",
     )
-    start_marker = "# BEGIN AGY THREAD"
-    end_marker = "# END AGY THREAD"
-    block = script[script.index(start_marker) : script.index(end_marker) + len(end_marker)]
+    # Verify the persistent supervisor itself consumes AI_CLI_AGY_SIGN_IN_VERIFIED before spawning
+    # replacement children (and non-g scripts do not include this agy-only supervisor code).
+    assert "_supervisor_agy_signin_token" in script
+    c_script = session_script.get_engine_script(
+        "c", AI_NAME, "c-myproject-1", "c-myproject-", "myproject", None, False, str(tmp_path)
+    )
+    assert "_supervisor_agy_signin_token" not in c_script
 
-    log_file = tmp_path / "invocations.log"
+    # Extract the real supervisor init + before-child + after-child lines from the generated script
+    # and run a real persistent-supervisor -> two-replaceable-child-shells replacement loop in bash.
+    init_start = script.index('      _supervisor_agy_signin_token="${AI_CLI_AGY_SIGN_IN_VERIFIED:-}"')
+    init_end = script.index("      while true; do", init_start)
+    init_block = script[init_start:init_end]
+
+    before_start = script.index('        if [[ -n "$_supervisor_agy_signin_token" ]]; then', init_end)
+    before_end = script.index("        fi\n", before_start) + len("        fi\n")
+    before_block = script[before_start:before_end]
+
+    after_marker = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+    assert after_marker in script[before_end:]
+
+    log_file = tmp_path / "children.log"
+    child_script = tmp_path / "child.sh"
+    child_script.write_text(
+        f'printf "child=%s|token=%s\\n" "$1" "${{AI_CLI_AGY_SIGN_IN_VERIFIED:-UNSET}}" >> {shlex.quote(str(log_file))}\n'
+        "unset AI_CLI_AGY_SIGN_IN_VERIFIED\n",
+        encoding="utf-8",
+    )
     token = agy_session.sign_in_cache_token("agy", tmp_path)
     harness = f"""
 set -u
-agent_direnv_initialized=true
-_ai_state_dir={shlex.quote(str(tmp_path))}
 tmux_session={shlex.quote(SLOT)}
-ai_name={shlex.quote(AI_NAME)}
-first_run=true
-agent_exit_code=0
 tmux() {{ :; }}
-run_agent() {{
-  printf 'sup_env=%s|argv=%s\\n' "${{AI_CLI_AGY_SIGN_IN_VERIFIED:-UNSET}}" "$*" >> {shlex.quote(str(log_file))}
-}}
-{block}
 export AI_CLI_AGY_SIGN_IN_VERIFIED={shlex.quote(token)}
-_run_agy
-_run_agy
+{init_block}
+for iter in 1 2; do
+{before_block}
+  {shlex.quote(bash)} {shlex.quote(str(child_script))} "$iter"
+{after_marker}
+done
 """
-    harness_path = tmp_path / "run_agy_restart.sh"
+    harness_path = tmp_path / "supervisor_two_children.sh"
     harness_path.write_text(harness, encoding="utf-8")
     res = agy_session.subprocess.run([bash, str(harness_path)], capture_output=True, text=True, check=False)
     assert res.returncode == 0, res.stderr
     lines = log_file.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 2
-    # Before first child spawns, supervisor env already consumed/unset the token while passing it via env to child 1.
-    assert lines[0].startswith("sup_env=UNSET|argv=env AI_CLI_AGY_SIGN_IN_VERIFIED=")
-    # Restart (child 2) does NOT receive the cached token and must re-probe sign-in.
-    assert lines[1].startswith("sup_env=UNSET|argv=")
-    assert "AI_CLI_AGY_SIGN_IN_VERIFIED" not in lines[1]
+    assert lines == [f"child=1|token={token}", "child=2|token=UNSET"]
 
-    # Confirm child 2 without the token re-probes agy models and refuses after sign-out.
+    # Confirm replacement child #2 (with AI_CLI_AGY_SIGN_IN_VERIFIED unset) re-probes agy models
+    # and refuses after sign-out.
     monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
     signed_out = type("Res", (), {"returncode": 1, "stdout": "", "stderr": "Error: Please sign in."})()
     with patch.object(agy_session.subprocess, "run", return_value=signed_out) as probe:

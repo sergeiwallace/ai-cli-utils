@@ -3705,13 +3705,15 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
                 )
             if start_detected == "agy":
                 saw_agy = True
+    # If any pane positively proves live Antigravity (and no pane proved legacy Gemini CLI above),
+    # allow attaching even when a sibling split pane runs an unrelated Node process (e.g. a dev server).
+    if saw_agy:
+        return None
     if saw_node:
         return (
             f"cannot resume {session_name} with ai g: live tmux pane runs a Node process (possible legacy Gemini CLI), "
             f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
         )
-    if saw_agy:
-        return None
     if saw_wrapper:
         client = _g_session_client(session_name)
         if client == "agy":

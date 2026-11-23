@@ -295,6 +295,26 @@ def get_engine_script(
     agy_post_run = (
         'exit "${agent_exit_code:-0}"' if agy_is_print else 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi'
     )
+    agy_supervisor_init = (
+        '      _supervisor_agy_signin_token="${AI_CLI_AGY_SIGN_IN_VERIFIED:-}"\n'
+        "      unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        '      if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '        tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true\n'
+        "      fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_before_child = (
+        '        if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '          export AI_CLI_AGY_SIGN_IN_VERIFIED="$_supervisor_agy_signin_token"\n'
+        '          _supervisor_agy_signin_token=""\n'
+        "        else\n"
+        "          unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        "        fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_after_child = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n" if engine == "g" else ""
     agy_sandbox_arg = " --sandbox" if sandbox else ""
     agy_extra_tokens = " ".join(shlex.quote(arg) for arg in resolved_agy_args)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
@@ -972,7 +992,7 @@ def get_engine_script(
         _heartbeat_pid=$!
         disown "$_heartbeat_pid" 2>/dev/null || true
       fi
-      while true; do
+{agy_supervisor_init}      while true; do
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
@@ -984,8 +1004,8 @@ def get_engine_script(
     # BEGIN RUN STATE promotion-int-baseline
         _supervisor_spawn_int_count=$_supervisor_int_count
     # END RUN STATE
-{_child_run}
-        rm -f "$_supervisor_child_ready_path"
+{agy_supervisor_before_child}{_child_run}
+{agy_supervisor_after_child}        rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
     # BEGIN RUN STATE supervisor-interrupt
           _ai_final_manual_exit

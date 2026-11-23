@@ -434,6 +434,21 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
     return "\n".join(texts), denied
 
 
+def _has_plain_text_auto_denial(text: str) -> bool:
+    """Return True when ``text`` has an unquoted, non-fenced auto-denial diagnostic line."""
+    in_fence = False
+    for line in text.splitlines():
+        stripped_line = line.lstrip()
+        if stripped_line.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence or stripped_line.startswith(">"):
+            continue
+        if _STDOUT_AUTO_DENIAL_LINE_RE.match(line):
+            return True
+    return False
+
+
 def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_format: str = "text") -> int:
     """Classify headless print exit status so empty or auto-denied runs never look successful."""
     if returncode != 0:
@@ -495,7 +510,7 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
             if not text:
                 return EXIT_PRINT_EMPTY
             return 0
-    if any(_STDOUT_AUTO_DENIAL_LINE_RE.match(line) for line in stripped.splitlines()):
+    if _has_plain_text_auto_denial(stripped):
         return EXIT_PRINT_AUTO_DENIED
     return 0
 
