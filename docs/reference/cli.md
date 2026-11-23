@@ -64,7 +64,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai quota history`](#ai-quota-history) | Print quota history |
 | [`ai quota publish`](#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](#ai-quota-record) | Record a single AI-usage event into the quota DB |
-| [`ai quota render-statusline`](#ai-quota-render-statusline) | Render a single-line TUI statusline from client stdin JSON and persist quota state |
+| [`ai quota render-statusline`](#ai-quota-render-statusline) | Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state |
 | [`ai quota status`](#ai-quota-status) | Print current quota snapshot |
 | [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of a client statusline |
 | [`ai quota sync`](#ai-quota-sync) | Sync quota snapshot from the remote server |
@@ -1121,11 +1121,10 @@ Arguments:
 ai quota render-statusline [OPTIONS]
 ```
 
-Render a single-line TUI statusline from client stdin JSON and persist quota state
+Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state
 
 | Short | Long | Value | Description |
 |---|---|---|---|
-| `-p` | `--provider` | `[agy]` | Client statusline JSON payload format  [default: agy] |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai quota status

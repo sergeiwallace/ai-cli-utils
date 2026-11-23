@@ -6,7 +6,7 @@ bucket ID (for example ``gemini-weekly`` or five-hour buckets) with ``remaining_
 or ``remaining_amount``, ``reset_time``, ``reset_in_seconds``, and optional ``disabled``.
 
 This module ingests those readings into an atomic local state file
-(``~/.local/state/ai-cli/agy-quota.json`` by default), preserves ``unknown`` whenever a
+(``$XDG_STATE_HOME/ai-cli-utils/agy-quota.json`` by default), preserves ``unknown`` whenever a
 route is absent, disabled, stale, expired, or incomparable (such as ``remaining_amount``
 without ``remaining_fraction``), publishes fresh snapshots to NATS for cross-machine
 consumers, and renders compact statusline output for both Antigravity and Claude Code.
@@ -42,11 +42,18 @@ _CYAN = _quota._STATUSLINE_CYAN
 _MAGENTA = _quota._STATUSLINE_MAGENTA
 _GOOGLE_BLUE = _quota._STATUSLINE_GOOGLE_BLUE
 
-_AGY_QUOTA_STATE_FILE_DEFAULT = "~/.local/state/ai-cli/agy-quota.json"
+_AGY_QUOTA_STATE_FILENAME = "agy-quota.json"
 _AGY_QUOTA_MAX_AGE_SECONDS_DEFAULT = 1800
 _AGY_PUBLISH_THROTTLE_SECONDS = 60
 _FIVE_HOUR_SECONDS = 5 * 60 * 60
 _WEEKLY_SECONDS = 7 * 24 * 60 * 60
+
+
+def default_agy_quota_state_path() -> Path:
+    """Return the default XDG state path for Antigravity quota readings."""
+    from .config import get_xdg_state_home
+
+    return get_xdg_state_home() / _AGY_QUOTA_STATE_FILENAME
 
 
 def agy_quota_settings() -> tuple[Path, float]:
@@ -59,8 +66,11 @@ def agy_quota_settings() -> tuple[Path, float]:
         section = {}
     if not isinstance(section, dict):
         section = {}
-    raw_path = section.get("agy_state_file", _AGY_QUOTA_STATE_FILE_DEFAULT)
-    path = Path(str(raw_path)).expanduser()
+    raw_path = section.get("agy_state_file")
+    if isinstance(raw_path, str) and raw_path.strip():
+        path = Path(raw_path.strip()).expanduser()
+    else:
+        path = default_agy_quota_state_path()
     try:
         max_age = float(section.get("max_age_seconds", _AGY_QUOTA_MAX_AGE_SECONDS_DEFAULT))
     except (TypeError, ValueError):

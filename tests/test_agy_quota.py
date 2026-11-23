@@ -211,7 +211,7 @@ def test_given_agy_statusline_cli_when_invoked_with_stdin_then_persists_and_outp
 
     result = CliRunner().invoke(
         _cli_group,
-        ["quota", "render-statusline", "-p", "agy"],
+        ["quota", "render-statusline"],
         input=json.dumps(payload),
     )
     assert result.exit_code == 0, result.output
@@ -303,20 +303,37 @@ def test_given_fresh_agy_state_when_quota_publish_runs_then_agy_publisher_is_cal
     assert "agy snapshot sent" in capsys.readouterr().out
 
 
+def test_given_xdg_state_home_when_agy_quota_settings_loaded_then_uses_ai_cli_utils_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ai_cli import config as _config
+
+    custom_state = tmp_path / "xdg-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(custom_state))
+    monkeypatch.setattr(_config, "load_config", lambda *a, **kw: {"quota": {}})
+    path, max_age = agy_quota.agy_quota_settings()
+    assert path == _config.get_xdg_state_home() / "agy-quota.json"
+    assert path.parent.name == "ai-cli-utils"
+    assert max_age == 1800.0
+
+
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
 @pytest.mark.skipif(sys.platform == "win32", reason="statusline-command.sh requires POSIX bash")
-def test_given_agy_quota_file_when_cc_statusline_runs_then_agy_segment_is_included(tmp_path: Path):
+def test_given_agy_quota_when_cc_statusline_runs_then_refreshes_in_background_without_hardcoded_path(tmp_path: Path):
+    import time
+
     home = tmp_path / "home"
-    (home / ".local" / "state" / "ai-cli").mkdir(parents=True)
-    (home / ".local" / "state" / "ai-cli" / "agy-quota.json").write_text('{"buckets":{}}', encoding="utf-8")
+    home.mkdir()
     tmpdir = tmp_path / "tmp"
     tmpdir.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    val_file = tmp_path / "agy-val.txt"
+    val_file.write_text("agyWk 12%\n", encoding="utf-8")
     fake_ai = bin_dir / "ai"
     fake_ai.write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "$*" == *"-p agy"* ]]; then echo "agyWk 12%"; '
+        f'if [[ "$*" == *"-p agy"* ]]; then cat "{val_file}"; '
         'elif [[ "$*" == *"statusline-part"* ]]; then echo "ccWk 40%"; fi\n',
         encoding="utf-8",
     )
@@ -339,14 +356,41 @@ def test_given_agy_quota_file_when_cc_statusline_runs_then_agy_segment_is_includ
         "GIT_BRANCH_CACHE": "main",
         "CC_BILLING_MODE": "subscription",
     }
-    res = subprocess.run(
+    cache_file = tmpdir / f".ai-sl-agy-quota-{os.getuid()}"
+    # 1. Cold start works with NO hardcoded ~/.local/state/ai-cli/agy-quota.json file and refreshes in background.
+    res1 = subprocess.run(
         ["bash", str(script)], input=sample_cc, capture_output=True, text=True, env=env, timeout=30, check=False
     )
-    assert res.returncode == 0, res.stderr
-    lines = [line for line in res.stdout.splitlines() if line]
+    assert res1.returncode == 0, res1.stderr
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and (
+        not cache_file.is_file() or "agyWk 12%" not in cache_file.read_text(encoding="utf-8")
+    ):
+        time.sleep(0.05)
+    assert cache_file.is_file() and "agyWk 12%" in cache_file.read_text(encoding="utf-8")
+
+    # 2. Warm render serves cached segment immediately.
+    res2 = subprocess.run(
+        ["bash", str(script)], input=sample_cc, capture_output=True, text=True, env=env, timeout=30, check=False
+    )
+    assert res2.returncode == 0, res2.stderr
+    lines = [line for line in res2.stdout.splitlines() if line]
     assert len(lines) == 1
-    assert "ccWk 40%" in res.stdout
-    assert "agyWk 12%" in res.stdout
+    assert "ccWk 40%" in res2.stdout
+    assert "agyWk 12%" in res2.stdout
+
+    # 3. Stale cache (45s old) serves stale value immediately while refreshing to new value in background.
+    val_file.write_text("agyWk 15%\n", encoding="utf-8")
+    cache_file.write_text(f"{int(time.time()) - 45}\nagyWk 12%\n", encoding="utf-8")
+    res3 = subprocess.run(
+        ["bash", str(script)], input=sample_cc, capture_output=True, text=True, env=env, timeout=30, check=False
+    )
+    assert res3.returncode == 0, res3.stderr
+    assert "agyWk 12%" in res3.stdout
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and "agyWk 15%" not in cache_file.read_text(encoding="utf-8"):
+        time.sleep(0.05)
+    assert "agyWk 15%" in cache_file.read_text(encoding="utf-8")
 
 
 def test_given_fresh_agy_state_when_publish_agy_quota_runs_then_nats_subjects_and_kv_are_written(

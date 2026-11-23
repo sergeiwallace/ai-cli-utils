@@ -683,22 +683,42 @@ EOF_PACE
   fi
 fi
 
-# --- Antigravity (agy) quota segment (only when local state file exists, 30s cache) ---
+# --- Antigravity (agy) quota segment (stale-while-revalidate, never blocks render) ---
+# Delegates path resolution (`[quota] agy_state_file` or `$XDG_STATE_HOME/ai-cli-utils/agy-quota.json`)
+# to `ai quota statusline-part -p agy`. Serves cached output immediately (fresh < 30s, or 300s when
+# empty so hosts without agy do not poll often) and refreshes in a lock-deduped background subshell.
 agy_quota_part=""
-if [ -f "$HOME/.local/state/ai-cli/agy-quota.json" ]; then
-  _agyqcache="${TMPDIR:-/tmp}/.ai-sl-agy-quota-${UID:-0}"
-  _agyq_valid=0
-  _agyq_now=$(date +%s)
-  if [ -f "$_agyqcache" ]; then
-    { IFS= read -r _agyq_ts && IFS= read -r agy_quota_part; } < "$_agyqcache" 2>/dev/null
-    if [[ "$_agyq_ts" =~ ^[0-9]+$ ]] && (( _agyq_now - _agyq_ts < 30 )); then
-      _agyq_valid=1
+_agyqcache="${TMPDIR:-/tmp}/.ai-sl-agy-quota-${UID:-0}"
+_agyqlock="${TMPDIR:-/tmp}/.ai-sl-agy-quota-lock-${UID:-0}"
+_agyq_need_bg=1
+_agyq_now=$(date +%s)
+if [[ -f "$_agyqcache" ]]; then
+  { IFS= read -r _agyq_ts && IFS= read -r agy_quota_part; } < "$_agyqcache" 2>/dev/null
+  if [[ "$_agyq_ts" =~ ^[0-9]+$ ]]; then
+    _agyq_age=$(( _agyq_now - _agyq_ts ))
+    _agyq_ttl=30
+    [[ -z "$agy_quota_part" ]] && _agyq_ttl=300
+    if (( _agyq_age < _agyq_ttl )); then
+      _agyq_need_bg=0
     fi
+    # Drop cached display value if very old (>300s) while refreshing in background.
+    (( _agyq_age >= 300 )) && agy_quota_part=""
   fi
-  if (( ! _agyq_valid )); then
-    agy_quota_part=$(ai quota statusline-part -p agy 2>/dev/null)
-    agy_quota_part="${agy_quota_part//$'\n'/ }"
-    printf '%d\n%s\n' "$_agyq_now" "$agy_quota_part" > "$_agyqcache" 2>/dev/null
+fi
+if (( _agyq_need_bg )); then
+  _agyq_spawn=1
+  if [[ -f "$_agyqlock" ]]; then
+    IFS= read -r _agyqlts < "$_agyqlock" 2>/dev/null
+    [[ "$_agyqlts" =~ ^[0-9]+$ ]] && (( _agyq_now - _agyqlts <= 120 )) && _agyq_spawn=0
+    (( _agyq_spawn )) && rm -f "$_agyqlock" 2>/dev/null
+  fi
+  if (( _agyq_spawn )); then
+    printf '%d' "$_agyq_now" > "$_agyqlock" 2>/dev/null
+    ( _agyqfresh=$(ai quota statusline-part -p agy 2>/dev/null)
+      _agyqfresh="${_agyqfresh//$'\n'/ }"
+      printf '%d\n%s\n' "$(date +%s)" "$_agyqfresh" > "$_agyqcache" 2>/dev/null
+      rm -f "$_agyqlock" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
   fi
 fi
 

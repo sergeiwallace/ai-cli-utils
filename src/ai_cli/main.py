@@ -8452,20 +8452,11 @@ def cmd_quota_statusline_part(provider):
 
 @cmd_quota_group.command(
     "render-statusline",
-    help="Render a single-line TUI statusline from client stdin JSON and persist quota state",
+    help="Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state",
 )
-@click.option(
-    "-p",
-    "--provider",
-    type=click.Choice(["agy"]),
-    default="agy",
-    show_default=True,
-    help="Client statusline JSON payload format",
-)
-def cmd_quota_render_statusline(provider):
+def cmd_quota_render_statusline():
     from .agy_quota import cmd_render_agy_statusline
 
-    _ = provider
     sys.exit(cmd_render_agy_statusline())
 
 
