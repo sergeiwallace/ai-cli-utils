@@ -885,6 +885,9 @@ notify_on_exit = true
 ## reads it on every call. A window counts as current while its newest reading is at most
 ## max_age_seconds old and its reset time has not passed.
 # state_file = "~/.claude/state/quota.json"
+## State file written by `ai quota render-statusline` from Antigravity's statusLine quota payload.
+## Defaults to $XDG_STATE_HOME/ai-cli-utils/agy-quota.json (e.g. ~/.local/state/ai-cli-utils/agy-quota.json).
+# agy_state_file = "~/.local/state/ai-cli-utils/agy-quota.json"
 # max_age_seconds = 1800
 ## Fallback weekly reset anchor, used until a reading carries its own reset time.
 # reset_anchor_utc = "2026-04-04T06:00:00Z"

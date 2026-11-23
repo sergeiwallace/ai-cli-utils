@@ -130,8 +130,9 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai quota history`](../reference/cli.md#ai-quota-history) | Print quota history |
 | [`ai quota publish`](../reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](../reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
+| [`ai quota render-statusline`](../reference/cli.md#ai-quota-render-statusline) | Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state |
 | [`ai quota status`](../reference/cli.md#ai-quota-status) | Print current quota snapshot |
-| [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
+| [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of a client statusline |
 | [`ai quota sync`](../reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
 | [`ai reassign-name`](../reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](../reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
