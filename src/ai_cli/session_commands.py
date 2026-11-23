@@ -1195,3 +1195,13 @@ def run_once(launch_log, name, command):
         output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
     sys.exit(status)
+
+
+@sessions.command(
+    "render-title",
+    help="Render a plain-text terminal window title from Antigravity stdin JSON",
+)
+def render_title():
+    from .agy_quota import cmd_render_agy_title
+
+    sys.exit(cmd_render_agy_title())

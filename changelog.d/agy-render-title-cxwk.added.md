@@ -1,0 +1,1 @@
+- Add cached Codex weekly quota (`cxWk`) display to `ai quota render-statusline` and add `ai sessions render-title` for plain-text Antigravity terminal window titles (`AI-CLI-9s4ud`).

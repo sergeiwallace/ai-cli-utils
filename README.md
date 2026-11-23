@@ -274,6 +274,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions publish-timer status`](docs/reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](docs/reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions render-title`](docs/reference/cli.md#ai-sessions-render-title) | Render a plain-text terminal window title from Antigravity stdin JSON |
 | [`ai sessions repair-policy`](docs/reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
