@@ -98,7 +98,7 @@ def test_given_valid_agy_payload_when_parsed_then_used_pct_and_no_email_are_reco
     assert "email" not in json.dumps(parsed)
     weekly = parsed["buckets"]["gemini-weekly"]
     assert weekly["comparable"] is True
-    assert weekly["window_kind"] == "weekly"
+    assert weekly["window_kind"] == "seven_day"
     assert weekly["remaining_fraction"] == pytest.approx(0.9378)
     assert weekly["used_percent"] == pytest.approx(6.22)
     assert weekly["reset_at"] == "2026-07-06T07:50:32Z"

@@ -93,15 +93,15 @@ def _classify_window(
     bucket_id: str, reset_in_seconds: float | None, reset_epoch: float | None, now_ts: float
 ) -> tuple[str, int]:
     lower = bucket_id.lower()
-    if any(token in lower for token in ("week", "7d", "weekly")):
-        return "weekly", _WEEKLY_SECONDS
+    if any(token in lower for token in ("week", "7d", "weekly", "seven_day")):
+        return "seven_day", _WEEKLY_SECONDS
     if any(token in lower for token in ("5h", "five", "hour", "session", "short")):
         return "five_hour", _FIVE_HOUR_SECONDS
     remaining = reset_in_seconds
     if remaining is None and reset_epoch is not None:
         remaining = reset_epoch - now_ts
     if remaining is not None and remaining > 24 * 3600:
-        return "weekly", _WEEKLY_SECONDS
+        return "seven_day", _WEEKLY_SECONDS
     if remaining is not None and remaining > 0:
         return "five_hour", _FIVE_HOUR_SECONDS
     return "other", _WEEKLY_SECONDS
@@ -321,12 +321,12 @@ def _evaluate_bucket(bucket: dict[str, Any], now_ts: float, max_age: float) -> d
 
 
 def _select_primary_bucket(buckets: dict[str, dict[str, Any]]) -> str | None:
-    """Choose the primary bucket: prefer fresh weekly, then fresh five-hour, then highest used."""
+    """Choose the primary bucket: prefer fresh seven-day, then fresh five-hour, then highest used."""
     ok_items = [item for item in buckets.values() if item["status"] == "ok"]
     candidates = ok_items or [item for item in buckets.values() if item["status"] == "stale"]
     if not candidates:
         return None
-    rank = {"weekly": 0, "five_hour": 1, "other": 2}
+    rank = {"seven_day": 0, "five_hour": 1, "other": 2}
     candidates.sort(
         key=lambda item: (
             rank.get(item["window_kind"], 2),
@@ -556,7 +556,7 @@ def render_agy_statusline_segment(
     parts: list[str] = []
     buckets = status["buckets"]
     ok_buckets = [b for b in buckets.values() if b["status"] == "ok"]
-    rank = {"weekly": 0, "five_hour": 1, "other": 2}
+    rank = {"seven_day": 0, "five_hour": 1, "other": 2}
     ok_buckets.sort(key=lambda b: (rank.get(b["window_kind"], 2), b["bucket_id"]))
 
     seen_kinds: set[str] = set()
@@ -569,7 +569,7 @@ def render_agy_statusline_segment(
         used_pct = bucket["used_percent"]
         if used_pct is None:
             continue
-        if kind == "weekly":
+        if kind == "seven_day":
             adapter = AGY_WEEKLY_QUOTA
         elif kind == "five_hour":
             adapter = AGY_FIVE_HOUR_QUOTA
