@@ -13,6 +13,8 @@ related_docs:
 
 # iTerm2 Title & Color System Redesign — Plan
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** ACTIVE
 
 **Created:** 2026-04-02
