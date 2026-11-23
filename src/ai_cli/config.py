@@ -996,6 +996,10 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
+## Session names skipped by automatic launch pickers (ai c, ai cx, ai p, ai g),
+## even when no live session currently holds them. Read on every call and matched
+## case-insensitively; explicit -N/--name still allows launching one directly.
+# reserved = ["ada", "max"]
 ## Seconds one fetch, and one push, of a shared name registry may take before the
 ## registry counts as unreachable, each read on every call. Separate from the
 ## registry's publish timeout.

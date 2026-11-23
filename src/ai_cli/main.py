@@ -4685,6 +4685,7 @@ def _resolve_session_identity(
             host=host,
             policy_source=_names.policy_source(registry) if registry else "config/session-names.toml",
         )
+        session_title.resolve_reserved_names()
     except session_title.TitleError as exc:
         _naming_exit(reporter, str(exc), 2)
     if not settings["enabled"].value and not naming.custom:

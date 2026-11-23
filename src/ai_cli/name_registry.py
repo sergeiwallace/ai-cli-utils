@@ -1059,7 +1059,7 @@ def pick_request(
     Only approved names are candidates, and none a verdict rejects for this launch;
     ``session`` is the session a migration renames. Unusable status data refuses.
     """
-    from . import session_naming
+    from . import session_naming, session_title
 
     policy = snapshot.policy
     low, high = name_list.limits(policy)
@@ -1078,6 +1078,7 @@ def pick_request(
         letters=letters,
         pick_floor=int(policy.get("pick_floor", 10)),
         reserved_words=alias_words() | {slot.repo_alias, slot.host_alias},
+        reserved_names=session_title.resolve_reserved_names(),
         denylist=frozenset(policy.get("denylist", [])),
         manual=frozenset(snapshot.manual),
         passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
@@ -1092,10 +1093,11 @@ def _spare_writes(
     snapshot: Snapshot, slot: Slot, held: frozenset[str], words: frozenset[str] | None, rng
 ) -> tuple[dict[str, bytes | None], list[str]]:
     """Rows that bring this machine's spares up to ``offline_spares``, each passing the picker's guard."""
-    from . import session_naming
+    from . import session_naming, session_title
 
     policy = snapshot.policy
     approved = snapshot.approved()
+    reserved_names = session_title.resolve_reserved_names()
     here = session_naming.machine_identity(slot.machine)
     host_rejected = frozenset(
         held for (held, kind, value), row in (snapshot.verdicts or {}).items()
@@ -1118,6 +1120,7 @@ def _spare_writes(
             letters=frozenset(),
             pick_floor=1,
             reserved_words=alias_words() | {slot.repo_alias, slot.host_alias},
+            reserved_names=reserved_names,
             denylist=frozenset(policy.get("denylist", [])),
             manual=frozenset(snapshot.manual),
             passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
@@ -1649,6 +1652,9 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
     machine can never take the same spare. ``cause`` is the failure that sent the caller
     here; a refusal for want of a spare quotes it.
     """
+    from . import session_title
+
+    reserved_names = session_title.resolve_reserved_names()
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
         approved = snapshot.approved()
@@ -1658,6 +1664,7 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
                 row
                 for row in snapshot.rows_of(slot.machine, "spare")
                 if row["token"] not in spool
+                and row["token"] not in reserved_names
                 and (approved is None or row["token"] in approved)
                 and not rejecting_scope(snapshot, row["token"], slot)
             ),
