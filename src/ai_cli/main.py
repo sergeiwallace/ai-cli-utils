@@ -4685,7 +4685,7 @@ def _resolve_session_identity(
             host=host,
             policy_source=_names.policy_source(registry) if registry else "config/session-names.toml",
         )
-        session_title.resolve_reserved_names()
+        reserved_names = session_title.resolve_reserved_names()
     except session_title.TitleError as exc:
         _naming_exit(reporter, str(exc), 2)
     if not settings["enabled"].value and not naming.custom:
@@ -4744,9 +4744,24 @@ def _resolve_session_identity(
             )
         if kind == session_title.CUSTOM:
             return _reserve_custom_title(
-                engine, slot, naming.custom or "", registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter
+                engine,
+                slot,
+                naming.custom or "",
+                registry,
+                is_remote=is_remote,
+                dry_run=dry_run,
+                reporter=reporter,
+                reserved_names=reserved_names,
             )
-        return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
+        return _reserve_picked_title(
+            engine,
+            slot,
+            registry,
+            is_remote=is_remote,
+            dry_run=dry_run,
+            reporter=reporter,
+            reserved_names=reserved_names,
+        )
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
     except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
@@ -5123,7 +5138,17 @@ def _prompt_line(prompt: str) -> str | None:
     return None if line == "" else line.rstrip("\r\n")
 
 
-def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote: bool, dry_run: bool, reporter):
+def _reserve_custom_title(
+    engine: str,
+    slot,
+    value: str,
+    registry,
+    *,
+    is_remote: bool,
+    dry_run: bool,
+    reporter,
+    reserved_names: frozenset[str] | None = None,
+):
     """The ``--name`` flow: the checks, the prompts and the reservation of AC-SM-1."""
     from . import name_prompt
     from . import name_registry as _names
@@ -5159,13 +5184,23 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
         io=io,
         words=words,
         added_by=f"{os.environ.get('AI_TMUX_SESSION') or 'cli'}@{slot.machine}",
+        reserved_names=reserved_names,
     )
     added = " and added it to the name database" if reservation.added_to_database else ""
     reporter.detail("session", f"reserved {reservation.name}{added}")
     return _session_id(engine, reservation.title, is_remote), reservation.title
 
 
-def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_run: bool, reporter):
+def _reserve_picked_title(
+    engine: str,
+    slot,
+    registry,
+    *,
+    is_remote: bool,
+    dry_run: bool,
+    reporter,
+    reserved_names: frozenset[str] | None = None,
+):
     """Pick a name, reserve it (or take a spare when the registry is unreachable), and report the pick."""
     from . import name_registry as _names
 
@@ -5182,7 +5217,9 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
             words = _names.common_words(snapshot.policy)
     if dry_run:
         snapshot = snapshot or registry.snapshot(fetch=False)
-        request, warnings = _names.pick_request(registry, snapshot, slot, spool=spool, words=words)
+        request, warnings = _names.pick_request(
+            registry, snapshot, slot, spool=spool, words=words, reserved_names=reserved_names
+        )
         for warning in warnings:
             reporter.warning("session", warning)
         pick = _session_naming.pick_name(request)
@@ -5199,10 +5236,10 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
             reporter,
             "reserving a name in the name registry",
             "name reserved",
-            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words),
+            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words, reserved_names=reserved_names),
         )
     except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
-        reservation = _names.take_spare(registry, slot, cause=str(failure))
+        reservation = _names.take_spare(registry, slot, cause=str(failure), reserved_names=reserved_names)
         reporter.warning("session", f"offline: using reserved spare {reservation.name} ({failure})")
         return _session_id(engine, reservation.title, is_remote), reservation.title
     for warning in reservation.warnings:
@@ -9391,6 +9428,7 @@ def _migrate_one_to_name(
     """``ai migrate-session OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
     from . import migrate_names, session_clients
     from . import name_registry as _names
+    from . import session_title as _session_title
     from .session_adopt import AdoptionError
     from .session_migrate import PartialMigrationError
 
@@ -9512,7 +9550,7 @@ def _migrate_one_to_name(
         _out.error(Tag.MIGRATE, "migrate", str(exc))
         _print_migration_refusal(str(exc), partial=True)
         return 1
-    except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+    except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError, _session_title.TitleError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
         _print_migration_refusal(str(exc))
         return 2
@@ -9532,6 +9570,7 @@ def _migrate_all_to_names(
     from . import migrate_names, session_clients
     from . import name_list as _name_list
     from . import name_registry as _names
+    from . import session_title as _session_title
     from .session_adopt import AdoptionError
 
     registry = _names_registry_or_exit()
@@ -9621,7 +9660,12 @@ def _migrate_all_to_names(
                 )
             else:
                 done = migrate_names.migrate_transcript_only(registry, entry, slot, max_length=high, words=frozenset())
-        except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+        except (
+            AdoptionError,
+            RuntimeError,
+            _session_naming.NamePoolExhaustedError,
+            _session_title.TitleError,
+        ) as exc:
             refused += 1
             _out.error(Tag.MIGRATE, "migrate", f"{entry.title}: {exc}")
             continue

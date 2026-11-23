@@ -209,3 +209,76 @@ def test_given_reserved_names_in_user_config_when_show_name_config_runs_then_it_
     assert "reserved" in result.output
     assert "ada, max" in result.output
     assert "[session_names]" in result.output
+
+
+def test_given_malformed_reserved_config_when_releasing_names_then_release_succeeds_and_skips_spare_top_up(
+    fleet, monkeypatch
+):
+    import json
+    from pathlib import Path
+
+    from name_fleet import git
+
+    repo = fleet.projects / REPO
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "init")
+    (Path.home() / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
+    title = _resolve_launch("c")
+    token = title.rsplit("-", 1)[-1]
+    # Remove the seeded spare so reconcile attempts a spare top-up under the malformed config.
+    spares = [r["token"] for r in fleet.rows().values() if r["kind"] == "spare"]
+    for spare in spares:
+        reg._release_spare(fleet.registry, spare, HOST)
+
+    _write_reserved('"ada"')
+
+    monkeypatch.setattr("ai_cli.name_commands._projects_root", lambda: fleet.projects)
+    monkeypatch.setattr("ai_cli.name_commands._host_alias", lambda: HOST_ALIAS)
+    result = CliRunner().invoke(_cli_group, ["reconcile-names", "--json"])
+
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.output.strip().splitlines()[-1])
+    assert token in summary["released"]
+    assert summary["top_up_skipped"] is not None
+    assert "reserved" in summary["top_up_skipped"]
+
+
+def test_given_malformed_reserved_config_when_offline_prompt_auto_runs_then_it_raises_clean_prompt_exit(
+    fleet,
+):
+    from ai_cli import name_prompt
+
+    slot = reg.Slot(
+        repo=REPO,
+        repo_alias=REPO,
+        host_alias=HOST_ALIAS,
+        label=None,
+        machine=HOST,
+        client="claude-code",
+        worktree=True,
+    )
+    _write_reserved('"ada"')
+    io = name_prompt.PromptIO(terminal=False, ask=lambda _: None, say=lambda _: None)
+
+    with pytest.raises(name_prompt.PromptExit) as caught:
+        name_prompt._write_picked(fleet.registry, slot, io, frozenset(), None)
+
+    assert caught.value.code == name_prompt.EXIT_REFUSED
+    assert "reserved" in caught.value.message
+
+
+def test_given_malformed_reserved_config_when_list_name_candidates_runs_then_it_exits_cleanly_without_traceback(
+    fleet, monkeypatch
+):
+    _write_reserved('"ada"')
+    monkeypatch.setattr("ai_cli.name_commands._host_alias", lambda: HOST_ALIAS)
+
+    result = CliRunner().invoke(_cli_group, ["list-name-candidates", "-r", REPO])
+
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "reserved" in result.output
