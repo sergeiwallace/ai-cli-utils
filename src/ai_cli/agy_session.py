@@ -83,17 +83,17 @@ _PRINT_DENIAL_MARKERS = (
     "requires confirmation",
     "tool confirmation",
 )
-# Narrower markers safe to match in plain-text stdout without flagging ordinary
-# assistant prose such as "The file returned permission denied when inspected."
-_STDOUT_AUTO_DENIAL_MARKERS = (
-    "tool call auto-denied",
-    "tool call auto denied",
-    "tool call denied",
-    "tool denied",
-    "auto-denied by",
-    "auto denied by",
-    "tool confirmation required",
-    "requires tool confirmation",
+# Line-framed diagnostic matcher for plain-text stdout auto-denials so ordinary
+# prose or quoted examples (e.g. "The example shows a tool call denied by policy")
+# are never misclassified as exit 78.
+_STDOUT_AUTO_DENIAL_LINE_RE = re.compile(
+    r"^\s*(?:(?:\[[^\]]+\]|error|warning|policy|denied|tool)\s*:\s*)*"
+    r"(?:tool\s+call\s+(?:was\s+)?(?:auto[- ]?denied|denied)|"
+    r"tool\s+(?:was\s+)?(?:auto[- ]?denied|denied)|"
+    r"auto[- ]?denied\s+by\b|"
+    r"tool\s+confirmation\s+required\b|"
+    r"requires\s+tool\s+confirmation\b)",
+    re.IGNORECASE,
 )
 
 
@@ -495,7 +495,7 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
             if not text:
                 return EXIT_PRINT_EMPTY
             return 0
-    if any(marker in stripped.lower() for marker in _STDOUT_AUTO_DENIAL_MARKERS):
+    if any(_STDOUT_AUTO_DENIAL_LINE_RE.match(line) for line in stripped.splitlines()):
         return EXIT_PRINT_AUTO_DENIED
     return 0
 

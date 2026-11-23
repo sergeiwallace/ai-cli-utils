@@ -1886,7 +1886,16 @@ with open(path, 'w') as f:
             fi
           fi
         fi
-        if [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+        local _agy_signin_token="${{AI_CLI_AGY_SIGN_IN_VERIFIED:-}}"
+        unset AI_CLI_AGY_SIGN_IN_VERIFIED
+        if [[ -n "$_agy_signin_token" ]]; then
+          tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true
+          if [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+          else
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg}
+          fi
+        elif [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
           run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
         else
           run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg}

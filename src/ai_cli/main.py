@@ -3551,10 +3551,12 @@ def _pane_command_client(pane_line: str) -> str | None:
         if first == "gemini":
             return "gemini"
         # Check commands invoked via `sh -c '...'` or `run_agent <cmd>` by inspecting command position only.
+        # Scan every segment so a later `exec gemini` overrides an earlier `agy` token.
         if first in {"sh", "bash", "zsh", "fish"} and "-c" in start_tokens:
             c_idx = start_tokens.index("-c")
             if c_idx + 1 < len(start_tokens):
                 shell_body = start_tokens[c_idx + 1]
+                saw_agy_segment = False
                 for segment in re.split(r"&&|\|\||;|\n", shell_body):
                     try:
                         seg_tokens = shlex.split(segment)
@@ -3570,12 +3572,14 @@ def _pane_command_client(pane_line: str) -> str | None:
                             and s_idx + 1 < len(seg_tokens)
                             and seg_tokens[s_idx + 1] == "ai_cli.agy_session"
                         ):
-                            return "agy"
+                            saw_agy_segment = True
                     cmd_name = _tok_name(seg_tokens[0])
-                    if cmd_name == "agy":
-                        return "agy"
                     if cmd_name == "gemini":
                         return "gemini"
+                    if cmd_name == "agy":
+                        saw_agy_segment = True
+                if saw_agy_segment:
+                    return "agy"
     return None
 
 
@@ -3669,27 +3673,45 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
         start_raw = parts[1] if len(parts) > 1 else ""
         pid_raw = parts[2] if len(parts) > 2 else ""
         proc = Path(current_raw.strip()).name.lower() if current_raw.strip() else ""
-        detected = _pane_command_client(f"{current_raw}\t{start_raw}")
-        if detected is None and pid_raw:
-            detected = _pane_pid_client(pid_raw)
-        if detected == "gemini":
+
+        # Prefer live process evidence (pane_current_command + pane_pid process tree) over
+        # historical pane_start_command so a pane started with `sh -c 'agy; exec gemini'`
+        # can never pass verification while running legacy Gemini CLI / Node.
+        if proc == "gemini":
             return (
                 f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
                 f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
             )
-        if detected == "agy":
+        pid_client = _pane_pid_client(pid_raw) if pid_raw else None
+        if pid_client == "gemini":
+            return (
+                f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
+                f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
+            )
+        if proc == "agy" or pid_client == "agy":
             saw_agy = True
-        elif proc in {"node", "nodejs"}:
+            continue
+        if proc in {"node", "nodejs"}:
             saw_node = True
-        elif proc in _WRAPPER_PANE_COMMANDS or proc.startswith("python"):
+            continue
+
+        if proc in _WRAPPER_PANE_COMMANDS or proc.startswith("python"):
             saw_wrapper = True
-    if saw_agy:
-        return None
+            start_detected = _pane_command_client(f"{current_raw}\t{start_raw}")
+            if start_detected == "gemini":
+                return (
+                    f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, "
+                    f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
+                )
+            if start_detected == "agy":
+                saw_agy = True
     if saw_node:
         return (
             f"cannot resume {session_name} with ai g: live tmux pane runs a Node process (possible legacy Gemini CLI), "
             f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
         )
+    if saw_agy:
+        return None
     if saw_wrapper:
         client = _g_session_client(session_name)
         if client == "agy":

@@ -1134,6 +1134,18 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         ),
         (
             ["-p", "hi", "--mode", "plan"],
+            "The example shows a tool call denied by policy.\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            'Quoted: "tool call auto-denied by policy"\n',
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
             "Partial answer\n",
             "tool call auto-denied by policy\n",
             agy_session.EXIT_PRINT_AUTO_DENIED,
@@ -1141,6 +1153,12 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         (
             ["-p", "hi", "--mode", "plan"],
             "tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Error: tool call auto-denied by policy\n",
             "",
             agy_session.EXIT_PRINT_AUTO_DENIED,
         ),
@@ -1335,7 +1353,8 @@ def test_given_node_legacy_gemini_pane_with_stale_agy_record_when_verified_then_
         refusal = main._verify_live_agy_tmux_session("g-myproject-1")
     assert refusal is not None and "Node" in refusal
 
-    # 2. Wrapper shell hosting a child `node @google/gemini-cli` process with stale .agy.json MUST refuse.
+    # 2. Wrapper shell hosting a child `node @google/gemini-cli` process with conflicting
+    #    historical `pane_start_command` (`sh -c 'agy; exec gemini'`) + stale .agy.json MUST refuse.
     class FakeChild:
         def cmdline(self):
             return ["node", "/usr/local/lib/node_modules/@google/gemini-cli/dist/index.js"]
@@ -1355,13 +1374,28 @@ def test_given_node_legacy_gemini_pane_with_stale_agy_record_when_verified_then_
             main.subprocess,
             "run",
             return_value=type(
-                "R", (), {"returncode": 0, "stdout": "bash\tbash /tmp/session.sh\t4242\n", "stderr": ""}
+                "R",
+                (),
+                {"returncode": 0, "stdout": "bash\tsh -c 'agy; exec gemini'\t4242\n", "stderr": ""},
             )(),
         ),
         patch.object(main.psutil, "Process", FakeRoot),
     ):
         child_refusal = main._verify_live_agy_tmux_session("g-myproject-1")
     assert child_refusal is not None and "legacy Gemini CLI" in child_refusal
+
+    # 3. Live node process whose historical start command mentions agy (`sh -c 'agy; exec gemini'`) MUST refuse.
+    with patch.object(
+        main.subprocess,
+        "run",
+        return_value=type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": "node\tsh -c 'agy; exec gemini'\t999999\n", "stderr": ""},
+        )(),
+    ):
+        conflict_refusal = main._verify_live_agy_tmux_session("g-myproject-1")
+    assert conflict_refusal is not None and "Node" in conflict_refusal
 
 
 def test_given_existing_legacy_gemini_tmux_session_when_ai_g_1_runs_then_refuses_attach(tmp_path, monkeypatch):
@@ -1606,3 +1640,142 @@ def test_given_darwin_signin_probe_timeout_when_ai_g_runs_then_warns_allows_and_
     assert len(probe_calls) == 1
     assert execed_agy and execed_agy[0][0] == "agy"
     assert execed_agy[0][2] is None
+
+
+@pytest.mark.parametrize(
+    ("cli_args", "session_name"),
+    [
+        (["g", "1"], "g-myproject-1"),
+        (["g", "1", "--is-remote"], "g-r-myproject-1"),
+        (["g", "-r"], "g-myproject-1"),
+    ],
+)
+def test_given_conflicting_pane_start_command_when_attach_paths_run_then_all_refuse(
+    tmp_path, monkeypatch, cli_args, session_name
+):
+    from click.testing import CliRunner
+
+    home = tmp_path / "home"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    state_dir = tmp_path / "state"
+    (state_dir / "sessions").mkdir(parents=True)
+    (state_dir / "sessions" / f"{session_name}.agy.json").write_text("{}", encoding="utf-8")
+    _seed_agy_home(home, oauth=True)
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda *_a, **_kw: [session_name])
+    monkeypatch.setattr(main, "trigger_background_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: (session_name, "myproject-1"))
+
+    attached: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: attached.append(list(argv)))
+
+    def fake_run(cmd, **kwargs):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "list-panes" in cmd:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "node\tsh -c 'agy; exec gemini'\t999999\n", "stderr": ""},
+            )()
+        if "list-sessions" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": f"{session_name}\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    res = CliRunner().invoke(main._cli_group, cli_args)
+    assert res.exit_code != 0
+    assert "Antigravity" in res.output
+    assert not attached
+
+
+def test_given_tmux_supervisor_restart_after_signout_when_run_agy_invoked_twice_then_consumes_token_and_reprobes(
+    tmp_path, monkeypatch
+):
+    import shlex
+    import shutil
+
+    from ai_cli import session_script
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+
+    script = session_script.get_engine_script(
+        "g",
+        AI_NAME,
+        SLOT,
+        "g-myproject-",
+        "myproject",
+        None,
+        False,
+        str(tmp_path),
+        agy_cmd="agy",
+    )
+    start_marker = "# BEGIN AGY THREAD"
+    end_marker = "# END AGY THREAD"
+    block = script[script.index(start_marker) : script.index(end_marker) + len(end_marker)]
+
+    log_file = tmp_path / "invocations.log"
+    token = agy_session.sign_in_cache_token("agy", tmp_path)
+    harness = f"""
+set -u
+agent_direnv_initialized=true
+_ai_state_dir={shlex.quote(str(tmp_path))}
+tmux_session={shlex.quote(SLOT)}
+ai_name={shlex.quote(AI_NAME)}
+first_run=true
+agent_exit_code=0
+tmux() {{ :; }}
+run_agent() {{
+  printf 'sup_env=%s|argv=%s\\n' "${{AI_CLI_AGY_SIGN_IN_VERIFIED:-UNSET}}" "$*" >> {shlex.quote(str(log_file))}
+}}
+{block}
+export AI_CLI_AGY_SIGN_IN_VERIFIED={shlex.quote(token)}
+_run_agy
+_run_agy
+"""
+    harness_path = tmp_path / "run_agy_restart.sh"
+    harness_path.write_text(harness, encoding="utf-8")
+    res = agy_session.subprocess.run([bash, str(harness_path)], capture_output=True, text=True, check=False)
+    assert res.returncode == 0, res.stderr
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    # Before first child spawns, supervisor env already consumed/unset the token while passing it via env to child 1.
+    assert lines[0].startswith("sup_env=UNSET|argv=env AI_CLI_AGY_SIGN_IN_VERIFIED=")
+    # Restart (child 2) does NOT receive the cached token and must re-probe sign-in.
+    assert lines[1].startswith("sup_env=UNSET|argv=")
+    assert "AI_CLI_AGY_SIGN_IN_VERIFIED" not in lines[1]
+
+    # Confirm child 2 without the token re-probes agy models and refuses after sign-out.
+    monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
+    signed_out = type("Res", (), {"returncode": 1, "stdout": "", "stderr": "Error: Please sign in."})()
+    with patch.object(agy_session.subprocess, "run", return_value=signed_out) as probe:
+        refusal = agy_session.subscription_refusal(
+            home=tmp_path, executable="agy", platform="darwin", allow_cached=True
+        )
+    assert probe.call_count == 1
+    assert refusal is not None and "Google sign-in" in refusal
