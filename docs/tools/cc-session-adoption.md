@@ -479,7 +479,7 @@ A rename that finished but whose completion was never published completes itself
 next `ai reconcile-names` or `ai migrate-session`.
 
 The host sweep inventories, for one repository, every index-named worktree, tmux session
-and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
+and resumable record in each client's session store (Claude Code, Codex, Pi, Antigravity CLI),
 including sessions whose worktree was already retired. Such a transcript-only session is
 named by retitling its client records; no worktree is made for it. A record the sweep
 cannot read stops it with the record named, so a sweep never reports a host as finished

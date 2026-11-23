@@ -16,7 +16,7 @@
 | Layer | Technology |
 |-------|-----------|
 | Core | Python |
-| AI orchestration | Claude Code CLI + Gemini CLI |
+| AI orchestration | Claude Code CLI + Antigravity CLI (`agy`) |
 
 ## Terminology
 
@@ -151,16 +151,16 @@ All markdown docs with 3+ sections must include a `## Table of Contents` as the 
 
 ## File Naming
 
-- **Standard names** (ALL_CAPS): README, CLAUDE, GEMINI, SKILL, MEMORY, SCRATCH
+- **Standard names** (ALL_CAPS): README, CLAUDE, SKILL, MEMORY, SCRATCH
 - **All other markdown docs**: kebab-case (e.g., `api-design.md`, `migration-plan.md`)
 
 ## MCP Servers
 
-Required: `github`, `gemini-cli`.
+Required: `github`.
 
 ## AI Orchestration
 
-Claude is the lead — it owns the conversation, writes code, uses tools, and makes final decisions. Gemini is a specialist invoked via `mcp__gemini-cli__ask-gemini` for research, review, and analysis. Agent teams coordinate multiple Claude agents for parallel work.
+Claude is the lead — it owns the conversation, writes code, uses tools, and makes final decisions. Agent teams coordinate multiple Claude agents for parallel work. Use `ai g` to launch the Antigravity CLI (`agy`) in a managed session.
 
 ### Collaboration Principles
 
@@ -183,19 +183,9 @@ Claude is the lead — it owns the conversation, writes code, uses tools, and ma
 9. **Fail fast.** Report blockers immediately. Don't retry silently.
 10. **Clean up.** Shut down teammates and delete team resources when done.
 
-### Gemini CLI
-
-**Always pass an explicit `model` argument.** Do not rely on defaults. On quota exhaustion, fall down the tier list. `gemini-3.0-flash` is the universal safety net.
-
-```text
-mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3.0-flash")
-```
-
-Models ranked by capability: `gemini-3.1-pro-preview` (preview, high quota risk) → `gemini-3.0-pro` (flagship, high) → `gemini-3.0-flash` (workhorse, low) → `gemini-2.5-pro` (previous gen, moderate) → `gemini-2.5-flash` (bulk, low) → `gemini-2.5-flash-lite` (simple extraction, minimal).
-
 ### Agents
 
-Custom agents in `.claude/agents/` — each file defines its role, tools, model, and Gemini fallback chain.
+Custom agents in `.claude/agents/` — each file defines its role, tools, and model.
 
 | Agent | Claude Model | Role | Edits Code |
 |-------|-------------|------|:---:|
