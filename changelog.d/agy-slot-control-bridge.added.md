@@ -1,0 +1,1 @@
+An `ai`-launched Antigravity (`agy`) TUI slot now runs a live slot attestation bridge (`*.agy.<generation>.control-v1.json`), mirroring `codex_control`, so harness prompt injectors and wake daemons can kernel-prove the slot owner, listener, and confirmed `conversation_id` across both fresh launches and corroborated `--conversation` resumes.
