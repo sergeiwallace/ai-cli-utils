@@ -1,0 +1,1 @@
+Pane lookups for a session now name it exactly, so on tmux 3.7 a window that shares the session's name no longer answers for a session that has exited.
