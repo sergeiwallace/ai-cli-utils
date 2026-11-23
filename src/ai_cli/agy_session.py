@@ -1038,6 +1038,27 @@ def _detect_version(executable: str) -> str:
     return match[1] if match else (text.splitlines()[0] if text else "unknown")
 
 
+_PYTHON_EXE_RE = re.compile(r"^python(?:3(?:\.\d+)*|w)?(?:\.exe)?$")
+
+
+def is_agy_replay_command(command: Sequence[str]) -> bool:
+    """Return True only when a bare replay recipe's launcher prefix runs ``python -m ai_cli.agy_session launch``."""
+    tokens = list(command)
+    if (
+        len(tokens) >= 3
+        and Path(tokens[0]).name.lower() in {"direnv", "direnv.exe"}
+        and tokens[1] == "exec"
+        and bool(tokens[2])
+    ):
+        tokens = tokens[3:]
+    if len(tokens) < 4:
+        return False
+    exe = Path(tokens[0]).name.lower()
+    if not _PYTHON_EXE_RE.fullmatch(exe):
+        return False
+    return tokens[1] == "-m" and tokens[2] == "ai_cli.agy_session" and tokens[3] == "launch"
+
+
 def launch_command(
     command: str,
     record: Path | str,

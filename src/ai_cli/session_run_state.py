@@ -12,7 +12,7 @@ from pathlib import Path
 
 import portalocker
 
-from . import config, session_naming
+from . import agy_session, config, session_naming
 from . import session_registry as registry
 
 LOGGER = logging.getLogger(__name__)
@@ -107,6 +107,8 @@ def boot_recipe_problem(record: dict) -> str | None:
         shell, command = recipe.get("shell"), recipe.get("command")
         if not (isinstance(shell, str) and shell and _string_list(command) and command):
             return "a bare recipe needs a non-empty shell and command list"
+        if engine == "g" and not agy_session.is_agy_replay_command(command):
+            return "legacy Gemini CLI bare recipe cannot replay with ai g; relaunch with `ai g`"
     return None
 
 

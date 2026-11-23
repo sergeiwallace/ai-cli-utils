@@ -787,14 +787,17 @@ def test_given_legacy_gemini_live_pane_when_ai_g_resumes_or_ls_runs_then_identif
         refusal_missing = main._verify_live_agy_tmux_session("g-myproject-new")
     assert refusal_missing is not None and "Relaunch with `ai g`" in refusal_missing
 
-    # 3. Authoritative @ai_cli_client=agy marker verifies exact literal 'agy' only (never AGY or padded).
+    # 3. Authoritative @ai_cli_client=agy marker verifies exact literal 'agy' only (never AGY, padded, or CR on POSIX).
     with patch.object(
         main.subprocess,
         "run",
-        return_value=type("R", (), {"returncode": 0, "stdout": "agy\n"})(),
+        return_value=type("R", (), {"returncode": 0, "stdout": b"agy\n"})(),
     ):
         assert main._verify_live_agy_tmux_session("g-myproject-new") is None
-    for bad_marker in ("AGY\n", " agy \n", "agy \n", " agy\n"):
+    bad_markers = [b"AGY\n", b" agy \n", b"agy \n", b" agy\n"]
+    if sys.platform != "win32":
+        bad_markers.append(b"agy\r\n")
+    for bad_marker in bad_markers:
         with patch.object(
             main.subprocess,
             "run",
@@ -1851,8 +1854,26 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
     assert "failed to mark tmux session" in capsys.readouterr().err
 
 
-def test_given_legacy_gemini_bare_replay_recipe_when_replayed_then_refuses_before_marking(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "legacy_command",
+    [
+        ["gemini", "--sandbox"],
+        ["gemini", "-m", "ai_cli.agy_session", "launch"],
+        ["python3-wrapper", "-m", "ai_cli.agy_session", "launch"],
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_given_legacy_gemini_bare_replay_recipe_when_relaunched_via_cli_then_refuses_before_marking(
+    tmp_path, monkeypatch, legacy_command, dry_run
+):
+    from click.testing import CliRunner
+
+    from ai_cli import session_commands as _sc
+    from ai_cli import session_run_state as _srs
+
     _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    wt_dir = tmp_path / "wt"
+    wt_dir.mkdir(exist_ok=True)
     seen_cmds: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -1862,84 +1883,118 @@ def test_given_legacy_gemini_bare_replay_recipe_when_replayed_then_refuses_befor
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
-    recipe = {
-        "options": {"bare": True},
-        "shell": "/bin/bash",
-        "command": ["gemini", "--sandbox"],
-        "cwd": str(tmp_path / "wt"),
-        "project": "myproject",
-        "session_name": "g-myproject-1",
+    record = {
+        "id": "rec-legacy-g",
+        "name": "g-myproject-1",
+        "kind": "local",
+        "owning_host": "test-host",
+        "relaunch": "auto",
+        "boot_recipe": {
+            "engine": "g",
+            "session_name": "g-myproject-1",
+            "owning_host": "test-host",
+            "project": "myproject",
+            "cwd": str(wt_dir),
+            "shell": "/bin/bash",
+            "argv": ["ai", "g", "1", "--bare"],
+            "extra_args": [],
+            "options": {"bare": True},
+            "command": legacy_command,
+        },
     }
-    with pytest.raises(RuntimeError, match="relaunch with `ai g`"):
-        main._do_session_launch(
-            "g",
-            "1",
-            False,
-            False,
-            False,
-            False,
-            False,
-            True,
-            False,
-            "",
-            False,
-            "",
-            [],
-            {"agy": {"command": "agy"}},
-            detached=True,
-            replay_recipe=recipe,
-        )
+    doc = {"machine": "test-host", "sessions": [record]}
+    monkeypatch.setattr(_sc.session_reconcile, "reconcile", lambda **kw: None)
+    monkeypatch.setattr(_sc.registry, "load_registry", lambda: doc)
+    monkeypatch.setattr(_sc.registry, "_mutate", lambda fn, **kw: fn(doc))
+    monkeypatch.setattr(_sc.registry, "current_boot_id", lambda: "boot-test")
+    monkeypatch.setattr(_sc.registry, "_local_session_alive", lambda _name: False)
+    monkeypatch.setattr(_sc.state, "cause", lambda _rec, _boot: "reboot")
+    monkeypatch.setattr(_sc.state.config, "load_config", lambda *a, **kw: {"machine": {"host_id": "test-host"}})
+
+    args = ["sessions", "relaunch", "g-myproject-1"]
+    if dry_run:
+        args.insert(2, "--dry-run")
+    res = CliRunner().invoke(main._cli_group, args)
+    assert res.exit_code != 0
+    assert "relaunch with `ai g`" in res.output
     assert not any("new-session" in c or "set-option" in c for c in seen_cmds)
 
+    # Valid Antigravity bare replay commands (direct and via direnv exec) remain accepted.
+    for valid_cmd in (
+        ["/usr/bin/python3", "-m", "ai_cli.agy_session", "launch", "/tmp/slot.json"],
+        ["direnv", "exec", str(wt_dir), "python3.14", "-m", "ai_cli.agy_session", "launch", "/tmp/slot.json"],
+    ):
+        valid_rec = {**record, "boot_recipe": {**record["boot_recipe"], "command": valid_cmd}}
+        assert _srs.boot_recipe_problem(valid_rec) is None
 
-def test_given_once_agy_launch_when_configured_mux_used_and_marker_fails_then_uses_configured_bin_and_fails_closed(
+
+def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_uses_fenced_marker_before_handoff(
     tmp_path, monkeypatch, capsys
 ):
     _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["/custom/bin/psmux", *args])
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "capture_tmux_session_identity",
+        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+    )
 
-    # 1. Attached --once uses configured multiplexer binary with fail-closed `&&` (never bare tmux / || true).
+    # 1. Attached --once: ONE ownership-fenced marker write on configured mux binary BEFORE respawn-pane and handoff.
     execed: list[list[str]] = []
+    seen_ok: list[list[str]] = []
 
     def fake_exec(argv):
         execed.append(list(argv))
         raise SystemExit(0)
 
+    def fake_run_ok(cmd, **kw):
+        seen_ok.append(list(cmd))
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$11\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
     monkeypatch.setattr(main, "_exec_tmux", fake_exec)
-    monkeypatch.setattr(
-        main.subprocess,
-        "run",
-        lambda cmd, **kw: type(
-            "R", (), {"returncode": 0, "stdout": "tmux 3.4\n" if "-V" in cmd else "", "stderr": ""}
-        )(),
-    )
+    monkeypatch.setattr(main.subprocess, "run", fake_run_ok)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 0
-    assert execed
-    pane_cmd = execed[0][-1]
-    assert "/custom/bin/psmux set-option -t =g-myproject-1 @ai_cli_client agy && " in pane_cmd
-    assert "|| true" not in pane_cmd
+    new_idx = next(i for i, c in enumerate(seen_ok) if "new-session" in c)
+    mark_idx = seen_ok.index(["/custom/bin/psmux", "set-option", "-t", "$11", main._TMUX_CLIENT_OPTION, "agy"])
+    respawn_idx = next(i for i, c in enumerate(seen_ok) if "respawn-pane" in c)
+    assert "sleep 60" in seen_ok[new_idx]
+    assert new_idx < mark_idx < respawn_idx
+    assert "ai_cli.agy_session" in seen_ok[respawn_idx][-1]
+    assert "@ai_cli_client" not in seen_ok[respawn_idx][-1]
+    assert execed == [["/custom/bin/psmux", "attach-session", "-t", "$11"]]
 
-    # 2. Detached/non-attached --once fails closed and kills the created session when set-option fails.
-    seen_cmds: list[list[str]] = []
+    # 2. Attached --once marker write failure: kills owned session by identity, never respawns, never hands off!
+    execed.clear()
+    seen_fail: list[list[str]] = []
+    killed: list[object] = []
+    monkeypatch.setattr(main._tmux_ownership, "kill_owned_tmux_session", lambda ident: (killed.append(ident), True)[1])
 
     def fake_run_fail(cmd, **kw):
-        seen_cmds.append(list(cmd))
+        seen_fail.append(list(cmd))
         if "-V" in cmd:
             return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$12\n", "stderr": ""})()
         if "set-option" in cmd and main._TMUX_CLIENT_OPTION in cmd:
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run_fail)
-    monkeypatch.setattr(main.sys, "stdin", type("NonTTY", (), {"isatty": lambda self: False})())
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc2:
         main.cli()
     assert exc2.value.code == 1
-    assert ["/custom/bin/psmux", "kill-session", "-t", "=g-myproject-1"] in seen_cmds
+    assert len(killed) == 1
+    assert not any("respawn-pane" in c for c in seen_fail)
+    assert not any("kill-session" in c for c in seen_fail)
+    assert not execed
     assert "failed to mark tmux session" in capsys.readouterr().err
 
 

@@ -3533,7 +3533,7 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
         res = subprocess.run(
             tmux_binary.argv("show-options", "-t", f"={session_name}", "-v", _TMUX_CLIENT_OPTION),
             capture_output=True,
-            text=True,
+            text=False,
             check=False,
             timeout=5,
         )
@@ -3542,9 +3542,19 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
             f"cannot attach to {session_name} with ai g: failed to read tmux {_TMUX_CLIENT_OPTION} marker. "
             f"Relaunch with `ai g` or inspect with `ai attach {session_name}`."
         )
-    raw_marker = res.stdout[:-1] if res.stdout.endswith("\n") else res.stdout
-    raw_marker = raw_marker[:-1] if raw_marker.endswith("\r") else raw_marker
-    marker = raw_marker if res.returncode == 0 else ""
+    raw_out = res.stdout
+    if isinstance(raw_out, bytes):
+        if sys.platform == "win32":
+            # Platform-specific Windows psmux emits CRLF line endings.
+            trimmed = (
+                raw_out[:-2] if raw_out.endswith(b"\r\n") else (raw_out[:-1] if raw_out.endswith(b"\n") else raw_out)
+            )
+        else:
+            trimmed = raw_out[:-1] if raw_out.endswith(b"\n") else raw_out
+        marker = trimmed.decode("utf-8", errors="replace") if res.returncode == 0 else ""
+    else:
+        trimmed_str = raw_out[:-1] if raw_out.endswith("\n") else raw_out
+        marker = trimmed_str if res.returncode == 0 else ""
     if marker == "agy":
         return None
     if marker:
@@ -3559,11 +3569,98 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
 
 
 def _is_agy_replay_command(command: list[str]) -> bool:
-    """Return True only when a saved bare replay recipe launches Antigravity via ``ai_cli.agy_session``."""
-    for idx, tok in enumerate(command):
-        if tok == "-m" and idx + 1 < len(command) and command[idx + 1] == "ai_cli.agy_session":
-            return True
-    return False
+    """Return True only when a saved bare replay recipe's launcher prefix runs ``python -m ai_cli.agy_session launch``."""
+    return _agy_session.is_agy_replay_command(command)
+
+
+def _create_marked_agy_once_session(
+    session_id: str,
+    tmux_env_flags: list[str],
+    session_shell: str,
+    pane_command: str,
+) -> _tmux_ownership.TmuxSessionIdentity:
+    """Create a detached one-shot ``ai g`` tmux session with ownership-fenced ``@ai_cli_client agy`` before startup."""
+    result = subprocess.run(
+        tmux_binary.argv(
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
+            "-s",
+            session_id,
+            *tmux_env_flags,
+            "--",
+            session_shell,
+            "-c",
+            "sleep 60",
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        result = subprocess.run(
+            tmux_binary.argv(
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_id}",
+                "-s",
+                session_id,
+                *tmux_env_flags,
+                session_shell,
+                "-c",
+                "sleep 60",
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(f"could not create one-shot tmux session '{session_id}'")
+    id_status, created_session_id = _tmux_ownership.classify_new_session_output(
+        result.stdout if isinstance(result.stdout, str) else ""
+    )
+    if id_status != "ok":
+        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+    generation = secrets.token_urlsafe(32)
+    gen_marked = subprocess.run(
+        tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
+        capture_output=True,
+        check=False,
+    )
+    if gen_marked.returncode != 0:
+        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+    identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
+    if identity is None:
+        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+    client_marked = subprocess.run(
+        tmux_binary.argv("set-option", "-t", identity.session_id, _TMUX_CLIENT_OPTION, "agy"),
+        capture_output=True,
+        check=False,
+    )
+    if client_marked.returncode != 0:
+        _tmux_ownership.kill_owned_tmux_session(identity)
+        raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+    started = subprocess.run(
+        tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, "--", session_shell, "-c", pane_command),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if started.returncode != 0:
+        started = subprocess.run(
+            tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, session_shell, "-c", pane_command),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if started.returncode != 0:
+        _tmux_ownership.kill_owned_tmux_session(identity)
+        raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
+    return identity
 
 
 def _do_attach(session_name: str) -> NoReturn:
@@ -6570,9 +6667,9 @@ def _do_session_launch(
             and not _is_agy_replay_command(replay_recipe["command"])
         ):
             msg = f"cannot replay legacy Gemini CLI recipe for {session_id} with ai g; relaunch with `ai g`."
+            reporter.error("session", msg)
             if detached:
                 raise RuntimeError(msg)
-            reporter.error("session", msg)
             sys.exit(1)
         _register_run_state(new_start=True)
         if engine == "c":
@@ -6625,11 +6722,31 @@ def _do_session_launch(
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
-        _once_marker_prefix = (
-            shlex.join(tmux_binary.argv("set-option", "-t", f"={session_id}", _TMUX_CLIENT_OPTION, "agy")) + " && "
-            if engine == "g"
-            else ""
+        once_pane_cmd = cd_prefix + _session_launch_state.single_run_shell(
+            session_id, command if replay_bare else [*_direnv, *command], launch_log_path
         )
+        if engine == "g":
+            if detached and _session_registry._local_session_alive(session_id) is not False:
+                raise RuntimeError("session already exists or tmux could not be checked")
+            try:
+                once_identity = _create_marked_agy_once_session(
+                    session_id, _tmux_env_flags, _session_shell, once_pane_cmd
+                )
+            except RuntimeError as exc:
+                if detached:
+                    raise
+                reporter.error("tmux", str(exc))
+                sys.exit(1)
+            if detached:
+                return
+            loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
+            if loop is not None:
+                _start_session_wake_watcher(config, once_identity.session_id, ai_name, loop=loop)
+            if not attach:
+                _report_detached_launch(session_id, reporter)
+                return
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            _exec_tmux(tmux_binary.argv("attach-session", "-t", once_identity.session_id))
         once_argv = tmux_binary.argv(
             "new-session",
             "-s",
@@ -6638,11 +6755,7 @@ def _do_session_launch(
             "--",
             _session_shell,
             "-c",
-            _once_marker_prefix
-            + cd_prefix
-            + _session_launch_state.single_run_shell(
-                session_id, command if replay_bare else [*_direnv, *command], launch_log_path
-            ),
+            once_pane_cmd,
         )
         if detached:
             if _session_registry._local_session_alive(session_id) is not False:
@@ -6654,19 +6767,6 @@ def _do_session_launch(
             )
             if result.returncode != 0:
                 raise RuntimeError("could not create detached one-shot session")
-            if engine == "g":
-                client_marked = subprocess.run(
-                    tmux_binary.argv("set-option", "-t", f"={session_id}", _TMUX_CLIENT_OPTION, "agy"),
-                    capture_output=True,
-                    check=False,
-                )
-                if client_marked.returncode != 0:
-                    subprocess.run(
-                        tmux_binary.argv("kill-session", "-t", f"={session_id}"),
-                        capture_output=True,
-                        check=False,
-                    )
-                    raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
@@ -6681,20 +6781,6 @@ def _do_session_launch(
         if result.returncode != 0:
             reporter.error("tmux", "could not create one-shot session")
             sys.exit(1)
-        if engine == "g":
-            client_marked = subprocess.run(
-                tmux_binary.argv("set-option", "-t", f"={session_id}", _TMUX_CLIENT_OPTION, "agy"),
-                capture_output=True,
-                check=False,
-            )
-            if client_marked.returncode != 0:
-                subprocess.run(
-                    tmux_binary.argv("kill-session", "-t", f"={session_id}"),
-                    capture_output=True,
-                    check=False,
-                )
-                reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-                sys.exit(1)
         _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
         if not attach:
             _report_detached_launch(session_id, reporter)

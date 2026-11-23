@@ -1159,6 +1159,14 @@ class TestCliOncePath:
 
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
         real_which = shutil.which
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$7\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
         with (
             patch("sys.argv", ["ai", "g", "-o", "research"]),
             patch("ai_cli.config.load_config", return_value={}),
@@ -1173,18 +1181,32 @@ class TestCliOncePath:
             patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
             patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
             patch("ai_cli.session.detect_repo_root", return_value=None),
-            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch(
+                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                side_effect=lambda sid, expected_generation=None: MagicMock(session_id=sid),
+            ),
+            patch("subprocess.run", side_effect=fake_run),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
                 cli()
-        bash_cmd = mock_exec.call_args[0][1][-1]
+        respawn_cmd = next(c for c in run_calls if "respawn-pane" in c)
+        bash_cmd = respawn_cmd[-1]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "g-session-research.agy.json" in bash_cmd
+        assert mock_exec.call_args[0][1][-1] == "$7"
 
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
         real_which = shutil.which
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$8\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
         with (
             patch("sys.argv", ["ai", "g", "-o", "research"]),
             patch("ai_cli.config.load_config", return_value={}),
@@ -1199,15 +1221,21 @@ class TestCliOncePath:
             patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
             patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
             patch("ai_cli.session.detect_repo_root", return_value=None),
-            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+            patch(
+                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                side_effect=lambda sid, expected_generation=None: MagicMock(session_id=sid),
+            ),
+            patch("subprocess.run", side_effect=fake_run),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
                 cli()
-        bash_cmd = mock_exec.call_args[0][1][-1]
+        respawn_cmd = next(c for c in run_calls if "respawn-pane" in c)
+        bash_cmd = respawn_cmd[-1]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "--command agy" in bash_cmd
+        assert mock_exec.call_args[0][1][-1] == "$8"
 
 
 class TestConfigureTmuxForIterm2:
