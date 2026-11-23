@@ -113,6 +113,7 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     assert data["task_list"] == "myproject-1"
     assert data["api_key"] is None
 
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
     real_which = main.shutil.which
     monkeypatch.setattr(
@@ -121,6 +122,7 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     listed = CliRunner().invoke(main._cli_group, ["ls"])
     assert listed.exit_code == 0, listed.output
     assert SLOT in listed.output
+    assert "[agy]" in listed.output
 
     attached = []
     monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)

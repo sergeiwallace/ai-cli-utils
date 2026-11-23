@@ -6,13 +6,15 @@ a metered API key. Before exec, this module:
 1. Refuses a missing ``~/.gemini/antigravity-cli/antigravity-oauth-token`` file (existence
    only; token bytes are never read) and refuses an API-billed ``modelProvider`` in
    ``~/.gemini/antigravity-cli/settings.json``.
-2. Strips API-key environment variables so an ambient key in the caller's shell can never
-   be billed.
-3. Enforces an explicit ``--mode`` whenever headless print flags are passed.
-4. Reserves a versioned slot record under ``<state>/ai-cli-utils/sessions/<slot>.agy.json``,
-   ensures the lightweight global ``SessionStart`` confirmation plugin is present, and
-   resumes confirmed slots with ``--conversation <uuid>`` after corroborating the native
-   store. Wrong-client (legacy Gemini) or unconfirmed slots are refused rather than guessed.
+2. Strips API-key environment variables from both version probes and launches so an ambient
+   key in the caller's shell can never be billed.
+3. Refuses native resume overrides (``-c``/``--continue``, ``--conversation``, ``-r``/``--resume``)
+   and enforces effective read-only ``--mode plan`` (never with ``--disable-slash-commands``),
+   validated prompt framing, and output classification whenever headless print flags are passed.
+4. Reserves a versioned slot record under ``<state>/ai-cli-utils/sessions/<slot>.agy.json``
+   with cross-slot conversation exclusivity, ensures the owned global ``SessionStart``
+   confirmation plugin is present only after slot preparation succeeds, and resumes confirmed
+   slots with exact ``--conversation <uuid>`` after corroborating the native store.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -40,16 +43,46 @@ SCHEMA_VERSION = 1
 SIGN_IN_FILE = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
 SETTINGS_FILE = Path(".gemini") / "antigravity-cli" / "settings.json"
 PLUGIN_REL_DIR = Path(".gemini") / "config" / "plugins" / "ai-cli-slot-confirm"
+PLUGIN_OWNER = "ai-cli-utils"
 #: ``modelProvider`` values that bill an API key or cloud project instead of Google sign-in.
 API_PROVIDERS = frozenset({"gemini", "vertex"})
-#: Removed from the agent's environment on every launch.
+#: Removed from the agent's environment on every version probe and launch.
 API_KEY_VARIABLES = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "AGY_ADC_AUTH")
 SIGN_IN_STEP = "run `agy` once in a terminal and finish the Google sign-in, then retry"
 HOOK_COMMAND = "ai internal agy-session-confirm"
 SLOT_RECORD_ENV = "AI_CLI_AGY_SLOT_RECORD"
 LAUNCH_TOKEN_ENV = "AI_CLI_AGY_LAUNCH_TOKEN"
+EXIT_PRINT_EMPTY = 77
+EXIT_PRINT_AUTO_DENIED = 78
 _UUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
 _PRINT_FLAGS = frozenset({"-p", "--print", "--prompt"})
+_PRINT_PREFIXES = ("--print=", "--prompt=")
+_RESUME_OVERRIDE_FLAGS = frozenset({"-c", "--continue", "--conversation", "-r", "--resume"})
+_RESUME_OVERRIDE_PREFIXES = ("--continue=", "--conversation=", "--resume=")
+_ALLOWED_PRINT_MODES = frozenset({"plan"})
+_VALUE_FLAGS = frozenset(
+    {
+        "--mode",
+        "--model",
+        "--input-format",
+        "--output-format",
+        "--print-timeout",
+        "-i",
+        "--prompt-interactive",
+        "--agent",
+        "--profile",
+        "--workspace",
+    }
+)
+_PRINT_DENIAL_MARKERS = (
+    "tool call denied",
+    "tool denied",
+    "auto-denied",
+    "auto denied",
+    "permission denied",
+    "requires confirmation",
+    "tool confirmation",
+)
 
 
 class IdentityError(ValueError):
@@ -88,28 +121,228 @@ def strip_api_keys(environ: dict[str, str] | os._Environ[str]) -> None:
         environ.pop(name, None)
 
 
+def _sanitized_env() -> dict[str, str]:
+    env = dict(os.environ)
+    strip_api_keys(env)
+    return env
+
+
+def is_print_mode(args: Sequence[str]) -> bool:
+    """Return True when ``args`` request non-interactive headless print execution."""
+    return any(arg in _PRINT_FLAGS or arg.startswith(_PRINT_PREFIXES) for arg in args)
+
+
+def _option_value(args: Sequence[str], flag: str, default: str = "") -> str:
+    prefix = f"{flag}="
+    value = default
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == flag and index + 1 < len(args):
+            value = args[index + 1]
+            index += 2
+            continue
+        if arg.startswith(prefix):
+            value = arg.split("=", 1)[1]
+        index += 1
+    return value
+
+
 def validate_launch_args(args: Sequence[str]) -> None:
-    """Refuse unguarded headless print invocations without an explicit ``--mode``."""
-    has_print = any(arg in _PRINT_FLAGS or arg.startswith(("--print=", "--prompt=")) for arg in args)
-    if not has_print:
+    """Refuse native resume overrides and unguarded headless print invocations."""
+    for arg in args:
+        if arg in _RESUME_OVERRIDE_FLAGS or arg.startswith(_RESUME_OVERRIDE_PREFIXES):
+            raise IdentityError(
+                f"native resume flag {arg!r} is refused on managed Antigravity slots; "
+                "let the slot record own conversation binding or use --adopt-conversation"
+            )
+
+    if not is_print_mode(args):
         return
-    has_mode = False
-    for index, arg in enumerate(args):
-        if arg == "--mode" and index + 1 < len(args) and args[index + 1].strip():
-            has_mode = True
-            break
-        if arg.startswith("--mode=") and arg.split("=", 1)[1].strip():
-            has_mode = True
-            break
-    if not has_mode:
-        raise IdentityError("headless agy print mode requires an explicit --mode flag (for example --mode plan)")
+
+    modes: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--mode":
+            if index + 1 >= len(args) or not args[index + 1].strip():
+                raise IdentityError("headless agy print mode requires --mode plan")
+            modes.append(args[index + 1].strip().lower())
+            index += 2
+            continue
+        if arg.startswith("--mode="):
+            raw_mode = arg.split("=", 1)[1].strip().lower()
+            if not raw_mode:
+                raise IdentityError("headless agy print mode requires --mode plan")
+            modes.append(raw_mode)
+        if arg == "--disable-slash-commands" or (
+            arg.startswith("--disable-slash-commands=")
+            and arg.split("=", 1)[1].strip().lower() not in {"", "false", "0", "no"}
+        ):
+            raise IdentityError(
+                "headless agy print mode refuses --disable-slash-commands because it disables --mode plan enforcement"
+            )
+        index += 1
+
+    if not modes:
+        raise IdentityError("headless agy print mode requires an explicit read-only --mode plan flag")
+    invalid = [m for m in modes if m not in _ALLOWED_PRINT_MODES]
+    if invalid:
+        raise IdentityError(
+            f"headless agy print mode only allows read-only --mode plan (refused --mode {invalid[0]!r})"
+        )
+
+    input_fmt = _option_value(args, "--input-format", "text").strip().lower()
+    if input_fmt not in {"text", "stream-json"}:
+        raise IdentityError(f"unsupported headless agy --input-format {input_fmt!r}; use text or stream-json")
 
 
-def _has_explicit_conversation_flag(args: Sequence[str]) -> bool:
-    return any(
-        arg in ("-c", "--continue", "--conversation") or arg.startswith(("--continue=", "--conversation="))
-        for arg in args
-    )
+def _extract_argv_prompt(args: Sequence[str]) -> str:
+    """Return the explicit prompt passed in ``args``, or empty string if absent."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg.startswith(_PRINT_PREFIXES):
+            return arg.split("=", 1)[1]
+        if arg in _PRINT_FLAGS:
+            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                return args[index + 1]
+            index += 1
+            continue
+        if arg in _VALUE_FLAGS:
+            index += 2
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return arg
+    return ""
+
+
+def validate_print_prompt_and_stdin(
+    args: Sequence[str],
+    *,
+    stdin_text: str | None = None,
+    stdin_is_tty: bool | None = None,
+) -> str | None:
+    """Validate prompt framing for headless print mode.
+
+    Returns the validated NDJSON stdin payload when ``--input-format stream-json`` is
+    used, or ``None`` (meaning the child receives ``DEVNULL``) when an argv prompt is
+    supplied. Plain-text stdin is always refused.
+    """
+    input_fmt = _option_value(args, "--input-format", "text").strip().lower()
+    is_tty = sys.stdin.isatty() if stdin_is_tty is None else stdin_is_tty
+
+    if input_fmt == "stream-json":
+        if stdin_text is None:
+            if is_tty:
+                raise IdentityError("headless agy --input-format stream-json requires NDJSON user input on stdin")
+            raw_stdin = sys.stdin.read()
+        else:
+            raw_stdin = stdin_text
+        lines = [line.strip() for line in raw_stdin.splitlines() if line.strip()]
+        if not lines:
+            raise IdentityError("headless agy --input-format stream-json requires at least one NDJSON user line")
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except ValueError as exc:
+                raise IdentityError("headless agy stream-json stdin must contain valid NDJSON objects") from exc
+            if not isinstance(obj, dict) or (obj.get("type") != "user" and obj.get("role") != "user"):
+                raise IdentityError(
+                    'headless agy stream-json stdin lines must be user JSON objects ({"type":"user", ...})'
+                )
+        return "\n".join(lines) + "\n"
+
+    prompt = _extract_argv_prompt(args)
+    if not prompt.strip():
+        raise IdentityError(
+            "headless agy print mode requires an explicit argv prompt or --input-format stream-json; "
+            "plain-text stdin is refused"
+        )
+    if stdin_text is not None and stdin_text.strip():
+        raise IdentityError("headless agy print mode refuses plain-text stdin; pass the prompt in argv or stream-json")
+    return None
+
+
+def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
+    """Return ``(response_text, auto_denied)`` from a single parsed JSON print payload."""
+    if not isinstance(payload, dict):
+        return "", False
+    denied = bool(payload.get("is_error"))
+    denials = payload.get("permission_denials")
+    if isinstance(denials, list) and len(denials) > 0:
+        denied = True
+    subtype = payload.get("subtype")
+    if isinstance(subtype, str) and subtype.lower() in {"error_during_execution", "permission_denied", "auto_denied"}:
+        denied = True
+    texts: list[str] = []
+    for key in ("result", "response", "text", "content", "delta"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            texts.append(val.strip())
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            texts.append(content.strip())
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                    texts.append(item["text"].strip())
+    return "\n".join(texts), denied
+
+
+def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_format: str = "text") -> int:
+    """Classify headless print exit status so empty or auto-denied runs never look successful."""
+    if returncode != 0:
+        return returncode
+
+    fmt = output_format.strip().lower() or "text"
+    combined_lower = f"{stdout}\n{stderr}".lower()
+    has_denial_marker = any(marker in combined_lower for marker in _PRINT_DENIAL_MARKERS)
+
+    if fmt == "json":
+        try:
+            parsed = json.loads(stdout)
+        except ValueError:
+            return EXIT_PRINT_AUTO_DENIED if has_denial_marker else EXIT_PRINT_EMPTY
+        text, denied = _extract_json_text_and_denial(parsed)
+        if denied or (has_denial_marker and not text):
+            return EXIT_PRINT_AUTO_DENIED
+        if not text:
+            return EXIT_PRINT_EMPTY
+        return 0
+
+    if fmt == "stream-json":
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        if not lines:
+            return EXIT_PRINT_AUTO_DENIED if has_denial_marker else EXIT_PRINT_EMPTY
+        texts: list[str] = []
+        denied = False
+        for line in lines:
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            part_text, part_denied = _extract_json_text_and_denial(parsed)
+            if part_denied:
+                denied = True
+            if part_text:
+                texts.append(part_text)
+        if denied or (has_denial_marker and not texts):
+            return EXIT_PRINT_AUTO_DENIED
+        if not texts:
+            return EXIT_PRINT_EMPTY
+        return 0
+
+    stripped = stdout.strip()
+    if has_denial_marker and (not stripped or any(m in stripped.lower() for m in _PRINT_DENIAL_MARKERS)):
+        return EXIT_PRINT_AUTO_DENIED
+    if not stripped:
+        return EXIT_PRINT_EMPTY
+    return 0
 
 
 def _plugin_hook_command() -> str:
@@ -122,11 +355,22 @@ def _plugin_hook_command() -> str:
     )
 
 
+def _plugin_is_owned(manifest_path: Path) -> bool:
+    try:
+        doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(doc, dict) or doc.get("name") != "ai-cli-slot-confirm":
+        return False
+    owner = doc.get("managed_by")
+    return owner is None or owner == PLUGIN_OWNER
+
+
 def ensure_confirm_plugin(home: Path | None = None) -> Path:
-    """Install or update the lightweight global ``SessionStart`` confirmation plugin."""
+    """Install or update the owned lightweight global ``SessionStart`` confirmation plugin."""
     root = home if home is not None else Path.home()
     plugin_dir = root / PLUGIN_REL_DIR
-    manifest_text = json.dumps({"name": "ai-cli-slot-confirm"}, indent=2) + "\n"
+    manifest_text = json.dumps({"name": "ai-cli-slot-confirm", "managed_by": PLUGIN_OWNER}, indent=2) + "\n"
     hooks_doc = {
         "ai-cli-slot-confirm": {
             "SessionStart": [
@@ -149,11 +393,25 @@ def ensure_confirm_plugin(home: Path | None = None) -> Path:
             and hooks_path.read_text(encoding="utf-8") == hooks_text
         ):
             return plugin_dir
+        if manifest_path.exists() and not _plugin_is_owned(manifest_path):
+            raise IdentityError(
+                f"refusing to overwrite unmanaged Antigravity plugin at {plugin_dir}; "
+                "inspect or remove it before retrying"
+            )
+        if not manifest_path.exists() and hooks_path.exists():
+            raise IdentityError(
+                f"refusing to overwrite unmanaged Antigravity hooks at {hooks_path}; "
+                "inspect or remove it before retrying"
+            )
         plugin_dir.mkdir(parents=True, exist_ok=True)
         for target, text in ((manifest_path, manifest_text), (hooks_path, hooks_text)):
+            if target.is_file() and target.read_text(encoding="utf-8") != text:
+                shutil.copy2(target, target.with_name(f"{target.name}.bak"))
             staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
             staged.write_text(text, encoding="utf-8")
             staged.replace(target)
+    except IdentityError:
+        raise
     except OSError as exc:
         raise IdentityError(f"could not write Antigravity confirmation hook under {plugin_dir}: {exc}") from None
     return plugin_dir
@@ -265,6 +523,33 @@ def _write(path: Path, doc: dict) -> None:
     staged.replace(path)
 
 
+def _registry_lock_path(record_path: Path) -> Path:
+    return record_path.parent / ".agy-slots.lock"
+
+
+def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> None:
+    """Refuse binding or adopting a conversation UUID already owned by another slot."""
+    resolved = record_path.resolve()
+    for sibling in sorted(resolved.parent.glob("*.agy.json")):
+        if sibling.resolve() == resolved:
+            continue
+        try:
+            other = json.loads(sibling.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(other, dict):
+            continue
+        other_cid = other.get("conversation_id")
+        saved = other.get("resumable")
+        saved_cid = saved.get("conversation_id") if isinstance(saved, dict) else None
+        if conversation_id in {other_cid, saved_cid}:
+            owner = other.get("slot") or sibling.stem
+            raise IdentityError(
+                f"Antigravity conversation {conversation_id} is already owned by slot {owner}; "
+                "concurrent multi-slot reuse refused"
+            )
+
+
 def _legacy_gemini_records(cwd: Path, home: Path | None = None) -> list:
     client = Gemini(home)
     if client._root_problem() is not None:
@@ -320,7 +605,10 @@ def prepare(
     path.parent.mkdir(parents=True, exist_ok=True)
     agy_client = Antigravity(home)
 
-    with portalocker.Lock(str(path) + ".lock", timeout=5):
+    with (
+        portalocker.Lock(str(_registry_lock_path(path)), timeout=5),
+        portalocker.Lock(str(path) + ".lock", timeout=5),
+    ):
         doc = _read(path) if path.exists() else None
         target = "new"
         decision = None
@@ -328,9 +616,11 @@ def prepare(
             if doc.get("slot") != slot or Path(doc["cwd"]).resolve() != resolved_cwd:
                 raise IdentityError("Antigravity slot identity does not match this launch")
             _check_writer(doc["in_flight"])
-            if start_fresh is not None or adopt_conversation is not None:
-                raise IdentityError("recovery approval requires a missing slot record; existing identity is preserved")
             if doc["phase"] == "confirmed":
+                if start_fresh is not None or adopt_conversation is not None:
+                    raise IdentityError(
+                        "recovery approval requires a missing or unconfirmed slot record; existing identity is preserved"
+                    )
                 probe = agy_client.probe_conversation(resolved_cwd, doc["conversation_id"])
                 if probe.state == PRESENT:
                     if doc["result"] == "live-only":
@@ -348,10 +638,38 @@ def prepare(
                     if proof.state != PRESENT:
                         raise IdentityError(proof.reason)
                     target = saved["conversation_id"]
-            decision = "resume-confirmed" if target != "new" else "abandoned-unconfirmed; start-fresh"
+                _ensure_conversation_unowned(path, target)
+                decision = "resume-confirmed"
+            else:
+                if adopt_conversation is not None:
+                    adopt_id = adopt_conversation[0]
+                    _ensure_conversation_unowned(path, adopt_id)
+                    proof = agy_client.probe_conversation(resolved_cwd, adopt_id)
+                    if proof.state != PRESENT:
+                        raise IdentityError(proof.reason)
+                    doc.update(
+                        phase="confirmed",
+                        conversation_id=adopt_id,
+                        transcript_path=None,
+                        result="confirmed",
+                        resumable={"conversation_id": adopt_id, "transcript_path": None},
+                        client_version=client_version,
+                        route=route,
+                    )
+                    target = adopt_id
+                    decision = "adopt-confirmed"
+                elif not fresh and start_fresh is None:
+                    raise IdentityError(
+                        "Antigravity slot has an unconfirmed abandoned launch; refusing silent fresh start on resume. "
+                        "With owner approval, repeat prepare with --start-fresh SESSION or "
+                        "--adopt-conversation UUID SESSION naming this exact slot."
+                    )
+                else:
+                    decision = "abandoned-unconfirmed; start-fresh"
         else:
             if adopt_conversation is not None:
                 adopt_id = adopt_conversation[0]
+                _ensure_conversation_unowned(path, adopt_id)
                 proof = agy_client.probe_conversation(resolved_cwd, adopt_id)
                 if proof.state != PRESENT:
                     raise IdentityError(proof.reason)
@@ -402,6 +720,7 @@ def prepare(
             "launched_at": datetime.now(UTC).isoformat(),
             "client_version": client_version,
             "route": route,
+            "expected_conversation_id": None if target == "new" else target,
         }
         _write(path, doc)
         if decision:
@@ -413,8 +732,12 @@ def confirm(path: Path, token: str, event: object) -> None:
     """Bind a native Antigravity ``SessionStart`` event to the current launch."""
     if not token or not path.is_file():
         raise IdentityError("missing Antigravity launch confirmation identity")
-    with portalocker.Lock(str(path) + ".lock", timeout=5):
-        doc = _read(path)
+    resolved = path.resolve()
+    with (
+        portalocker.Lock(str(_registry_lock_path(resolved)), timeout=5),
+        portalocker.Lock(str(resolved) + ".lock", timeout=5),
+    ):
+        doc = _read(resolved)
         if doc["in_flight"]["token"] != token:
             raise IdentityError("stale Antigravity launch confirmation refused")
         if not isinstance(event, dict) or event.get("hookEventName") != "SessionStart":
@@ -430,6 +753,15 @@ def confirm(path: Path, token: str, event: object) -> None:
             or not (transcript_path is None or transcript_path == "" or _is_abs_path(transcript_path))
         ):
             raise IdentityError("Antigravity confirmation identity is incompatible with the launch")
+        assert isinstance(conversation_id, str)
+        expected = doc["in_flight"].get("expected_conversation_id")
+        if expected is None and doc["phase"] == "confirmed":
+            expected = doc.get("conversation_id")
+        if expected is not None and conversation_id != expected:
+            raise IdentityError(
+                f"Antigravity confirmation conversation {conversation_id} does not match pinned slot {expected}"
+            )
+        _ensure_conversation_unowned(resolved, conversation_id)
         normalized_transcript = transcript_path if isinstance(transcript_path, str) and transcript_path else None
         doc["resumable"] = {"conversation_id": conversation_id, "transcript_path": normalized_transcript}
         doc.update(
@@ -440,7 +772,7 @@ def confirm(path: Path, token: str, event: object) -> None:
             client_version=doc["in_flight"]["client_version"],
             route=doc["in_flight"]["route"],
         )
-        _write(path, doc)
+        _write(resolved, doc)
 
 
 def confirm_from_environment(args: list[str]) -> int:
@@ -463,7 +795,14 @@ def confirm_from_environment(args: list[str]) -> int:
 
 
 def _detect_version(executable: str) -> str:
-    result = subprocess.run([executable, "--version"], capture_output=True, text=True, check=False, timeout=10)
+    result = subprocess.run(
+        [executable, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env=_sanitized_env(),
+    )
     if result.returncode != 0:
         return "unknown"
     text = result.stdout.strip()
@@ -504,6 +843,47 @@ def launch_command(
         argv.append("--")
         argv.extend(extra_args)
     return argv
+
+
+def _run_print_child(exec_argv: list[str], stdin_payload: str | None) -> int:
+    """Execute headless print ``agy`` as a supervised child and classify its outcome."""
+    output_fmt = _option_value(exec_argv[1:], "--output-format", "text")
+    if stdin_payload is None:
+        result = subprocess.run(
+            exec_argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=dict(os.environ),
+        )
+    else:
+        result = subprocess.run(
+            exec_argv,
+            input=stdin_payload,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=dict(os.environ),
+        )
+    if result.stdout:
+        output.raw(Untagged.INTERNAL_REPLY, result.stdout.rstrip("\r\n"))
+    status = classify_print_output(result.returncode, result.stdout, result.stderr, output_format=output_fmt)
+    if status == EXIT_PRINT_AUTO_DENIED:
+        output.error(
+            output.Tag.SESSION,
+            "session",
+            "Antigravity headless print run was auto-denied or failed tool confirmation.",
+        )
+    elif status == EXIT_PRINT_EMPTY:
+        output.error(
+            output.Tag.SESSION,
+            "session",
+            "Antigravity headless print run exited 0 with an empty response.",
+        )
+    elif status != 0 and result.stderr.strip():
+        output.error(output.Tag.SESSION, "session", result.stderr.strip())
+    return status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -551,15 +931,19 @@ def main(argv: list[str] | None = None) -> int:
         if not base_argv or not base_argv[0]:
             raise IdentityError("empty Antigravity command")
 
+        combined_args = [*base_argv[1:], *extra_args]
+        stdin_payload: str | None = None
+        print_launch = False
         if action == "launch":
             refusal = subscription_refusal()
             if refusal:
                 raise IdentityError(refusal)
-            validate_launch_args([*base_argv[1:], *extra_args])
+            validate_launch_args(combined_args)
+            print_launch = is_print_mode(combined_args)
+            if print_launch:
+                stdin_payload = validate_print_prompt_and_stdin(combined_args)
 
         client_version = _detect_version(base_argv[0])
-        if action == "launch":
-            ensure_confirm_plugin()
 
         target, record, token = prepare(
             record_path,
@@ -572,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
             adopt_conversation=adopt_conversation,
         )
         if action == "launch":
+            ensure_confirm_plugin()
             strip_api_keys(os.environ)
             os.environ["AI_SESSION_NAME"] = ai_name
             os.environ["AI_CLI_SESSION_NAME"] = ai_name
@@ -582,9 +967,12 @@ def main(argv: list[str] | None = None) -> int:
             exec_argv = list(base_argv)
             if sandbox and "--sandbox" not in exec_argv and "--sandbox" not in extra_args:
                 exec_argv.append("--sandbox")
-            if target != "new" and not _has_explicit_conversation_flag([*exec_argv[1:], *extra_args]):
+            if target != "new":
                 exec_argv.extend(["--conversation", target])
             exec_argv.extend(extra_args)
+
+            if print_launch:
+                return _run_print_child(exec_argv, stdin_payload)
 
             from .main import _exec_handoff
 

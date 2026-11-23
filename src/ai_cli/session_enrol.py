@@ -263,7 +263,7 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict,
         # have leases, replaceable children or generations.
         command = {
             "c": "claude",
-            "g": shlex.split(meta.get("agy_cmd") or meta.get("gemini_cmd", "agy"))[0],
+            "g": shlex.split(meta.get("agy_cmd") or "agy")[0],
             "p": "pi",
             "cx": "codex",
         }[engine]

@@ -1247,7 +1247,7 @@ def _bare_engine_command(
             command += ["resume", "--last"]
         return [*command, *extra_args]
 
-    effective_agy_cmd = agy_cmd if agy_cmd is not None else ("agy" if gemini_cmd == "gemini" else gemini_cmd)
+    effective_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
     effective_sandbox = (sandbox_flag == "-s") if sandbox is None else sandbox
     slot = session_id or f"g-{ai_name}"
     record = _config.get_xdg_state_home() / "sessions" / f"{slot}.agy.json"
@@ -3498,6 +3498,54 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     sys.exit(0)
 
 
+def _g_session_client(session_name: str) -> str | None:
+    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
+    if not session_name.startswith("g-"):
+        return None
+    state = _config.get_xdg_state_home()
+    if (state / "sessions" / f"{session_name}.agy.json").is_file():
+        return "agy"
+    meta_path = state / f"session-meta-{session_name}.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None
+        if isinstance(meta, dict):
+            if meta.get("agy_cmd"):
+                return "agy"
+            if meta.get("engine") == "g":
+                return "gemini"
+    return None
+
+
+def _live_tmux_session_is_legacy_gemini(session_name: str) -> bool:
+    """Return True when a live ``g-`` tmux session is running legacy Gemini CLI rather than ``agy``."""
+    client = _g_session_client(session_name)
+    if client == "agy":
+        return False
+    if client == "gemini":
+        return True
+    try:
+        res = subprocess.run(
+            tmux_binary.argv(
+                "list-panes", "-t", f"={session_name}", "-F", "#{pane_current_command} #{pane_start_command}"
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if res.returncode != 0:
+        return False
+    lower = res.stdout.lower()
+    if "agy" in lower or "ai_cli.agy_session" in lower:
+        return False
+    return "gemini" in lower
+
+
 def _do_attach(session_name: str) -> NoReturn:
     check = subprocess.run(tmux_binary.argv("has-session", "-t", session_name), capture_output=True, check=False)
     if check.returncode != 0:
@@ -3569,8 +3617,19 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
+    def _client_tag(name: str) -> str:
+        client = _g_session_client(name)
+        if client == "agy":
+            return " [agy]"
+        if client == "gemini":
+            return " [legacy gemini]"
+        return ""
+
     if fzf:
-        lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
+        lines = [
+            f"{name}\t{_project_from_session(name)}{_client_tag(name)}\t{_human_age(activity)}"
+            for name, activity in sessions
+        ]
         result = subprocess.run(
             [
                 fzf,
@@ -3578,7 +3637,7 @@ def _do_ls(show_all: bool) -> None:
                 "--reverse",
                 "--prompt=session> ",
                 "--delimiter=\t",
-                "--with-nth=1,3",
+                "--with-nth=1,2,3",
                 "--preview-window=hidden",
             ],
             input="\n".join(lines),
@@ -3595,7 +3654,9 @@ def _do_ls(show_all: bool) -> None:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
             project = _project_from_session(name)
-            _out.emit(Tag.SESSIONS, "list", f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
+            _out.emit(
+                Tag.SESSIONS, "list", f"  {i}. {name}  ({project}){_client_tag(name)}  {_human_age(activity)} ago"
+            )
         _out.emit(Tag.SESSIONS, "list", "\nTo attach: ai attach <name>")
         _out.emit(Tag.SESSIONS, "list", "Install fzf for an interactive picker.", err=True)
         sys.exit(0)
@@ -4724,6 +4785,13 @@ def _resolve_resume_target(
             # Migration window: a session named before the host alias joined the name.
             session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
         if session:
+            if engine == "g" and _live_tmux_session_is_legacy_gemini(session):
+                _naming_exit(
+                    reporter,
+                    f"cannot resume {session} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
+                    f"Attach directly with `ai attach {session}` or retire it before launching agy.",
+                    1,
+                )
             return _ResumeTarget(session=session)
     wanted = _session_naming.compose_session_name(naming_prefix, clean) if clean else f"{prefix}*"
     positional = None
@@ -5433,7 +5501,7 @@ def _do_session_launch(
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
-    agy_cmd = config.get("agy", {}).get("command") or ("agy" if gemini_cmd == "gemini" else gemini_cmd)
+    agy_cmd = config.get("agy", {}).get("command") or "agy"
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
@@ -6566,6 +6634,7 @@ def _do_session_launch(
         gemini_cmd=gemini_cmd,
         agy_cmd=agy_cmd if engine == "g" else None,
         agy_args=list(extra_args) if engine == "g" and extra_args else None,
+        resume=resume,
         pi_provider=pi_provider,
         launch_log_path=launch_log_path,
     )
