@@ -3531,7 +3531,7 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
     """
     try:
         res = subprocess.run(
-            tmux_binary.argv("show-options", "-t", f"={session_name}", "-v", _TMUX_CLIENT_OPTION),
+            tmux_binary.argv("show-options", "-t", f"={session_name}:", "-v", _TMUX_CLIENT_OPTION),
             capture_output=True,
             text=False,
             check=False,

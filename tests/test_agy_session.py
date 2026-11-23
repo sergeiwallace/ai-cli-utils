@@ -1718,12 +1718,12 @@ def test_given_slots_1_and_10_live_when_ai_g_1_checks_marker_then_targets_exact_
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         if "show-options" in cmd and main._TMUX_CLIENT_OPTION in cmd:
             show_opt_cmds.append(list(cmd))
-            # Slot 10 is marked agy, but slot 1 is marked gemini; exact `=g-myproject-1` must not match slot 10.
-            if "=g-myproject-10" in cmd:
-                return type("R", (), {"returncode": 0, "stdout": "agy\n", "stderr": ""})()
-            if "=g-myproject-1" in cmd:
-                return type("R", (), {"returncode": 0, "stdout": "gemini\n", "stderr": ""})()
-            return type("R", (), {"returncode": 0, "stdout": "agy\n", "stderr": ""})()
+            # Slot 10 is marked agy, but slot 1 is marked gemini; exact `=g-myproject-1:` must not match slot 10.
+            if "=g-myproject-10:" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": b"agy\n", "stderr": b""})()
+            if "=g-myproject-1:" in cmd:
+                return type("R", (), {"returncode": 0, "stdout": b"gemini\n", "stderr": b""})()
+            return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b"no such session\n"})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
@@ -1732,7 +1732,7 @@ def test_given_slots_1_and_10_live_when_ai_g_1_checks_marker_then_targets_exact_
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 1
-    assert show_opt_cmds == [["tmux", "show-options", "-t", "=g-myproject-1", "-v", main._TMUX_CLIENT_OPTION]]
+    assert show_opt_cmds == [["tmux", "show-options", "-t", "=g-myproject-1:", "-v", main._TMUX_CLIENT_OPTION]]
     assert "'gemini'" in capsys.readouterr().err
     assert not attached
 

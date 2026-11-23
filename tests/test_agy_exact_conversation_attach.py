@@ -114,6 +114,7 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     assert data["api_key"] is None
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
     real_which = main.shutil.which
     monkeypatch.setattr(
@@ -243,3 +244,50 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
     # Give the supervisor a moment to observe exit 76 and stop without launching child 2's agy.
     time.sleep(0.5)
     assert events_log.read_text(encoding="utf-8").splitlines() == ["launch:UNSET", "probe:models"]
+
+
+def test_given_real_tmux_sessions_when_verifying_live_agy_marker_then_exact_slot_passes_and_prefix_or_unmarked_refuses(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+    import time
+
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    ran_flag = tmp_path / "once-ran"
+
+    # 1. Real tmux one-shot creation via _create_marked_agy_once_session: marks @ai_cli_client=agy and respawns pane.
+    identity = main._create_marked_agy_once_session(
+        "g-myproject-1",
+        [],
+        "/bin/sh",
+        f"touch {shlex.quote(str(ran_flag))} && sleep 60",
+    )
+    assert identity.session_id.startswith("$")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not ran_flag.is_file():
+        time.sleep(0.05)
+    assert ran_flag.is_file(), "expected respawned one-shot pane command to execute"
+
+    # 2. Create prefix-colliding slot 10 marked non-agy and unmarked slot 2 on the same real tmux server.
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-10", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "set-option", "-t", "=g-myproject-10:", main._TMUX_CLIENT_OPTION, "legacy"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-2", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+
+    # 3. _verify_live_agy_tmux_session uses =name: so real tmux 3.7c resolves exact slots cleanly.
+    assert main._verify_live_agy_tmux_session("g-myproject-1") is None
+    wrong = main._verify_live_agy_tmux_session("g-myproject-10")
+    assert wrong is not None and "'legacy'" in wrong
+    missing = main._verify_live_agy_tmux_session("g-myproject-2")
+    assert missing is not None and "missing the @ai_cli_client=agy marker" in missing
+    absent = main._verify_live_agy_tmux_session("g-myproject-999")
+    assert absent is not None and "Relaunch with `ai g`" in absent
