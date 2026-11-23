@@ -12,14 +12,13 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
 
 import click
 import portalocker
-import psutil
 
 # Module aliases used by the call sites throughout this file. Tests can
 # patch on the source module (``patch("ai_cli.config.load_config")``) and
@@ -3520,133 +3519,19 @@ def _g_session_client(session_name: str) -> str | None:
     return None
 
 
-def _pane_command_client(pane_line: str) -> str | None:
-    """Classify a tmux pane line ``<pane_current_command>\\t<pane_start_command>`` by executable token.
-
-    Matches only exact process/command executables (never arbitrary path or directory names
-    such as ``/tmp/agy-demo``).
-    """
-    current_raw, _, start_raw = pane_line.partition("\t")
-    proc = Path(current_raw.strip()).name.lower() if current_raw.strip() else ""
-    try:
-        start_tokens = shlex.split(start_raw)
-    except ValueError:
-        start_tokens = start_raw.split()
-
-    def _tok_name(tok: str) -> str:
-        return Path(tok).name.lower()
-
-    if proc == "agy":
-        return "agy"
-    if proc == "gemini":
-        return "gemini"
-
-    for idx, tok in enumerate(start_tokens):
-        if tok == "-m" and idx + 1 < len(start_tokens) and start_tokens[idx + 1] == "ai_cli.agy_session":
-            return "agy"
-    if start_tokens:
-        first = _tok_name(start_tokens[0])
-        if first == "agy":
-            return "agy"
-        if first == "gemini":
-            return "gemini"
-        # Check commands invoked via `sh -c '...'` or `run_agent <cmd>` by inspecting command position only.
-        # Scan every segment so a later `exec gemini` overrides an earlier `agy` token.
-        if first in {"sh", "bash", "zsh", "fish"} and "-c" in start_tokens:
-            c_idx = start_tokens.index("-c")
-            if c_idx + 1 < len(start_tokens):
-                shell_body = start_tokens[c_idx + 1]
-                saw_agy_segment = False
-                for segment in re.split(r"&&|\|\||;|\n", shell_body):
-                    try:
-                        seg_tokens = shlex.split(segment)
-                    except ValueError:
-                        seg_tokens = segment.split()
-                    while seg_tokens and (seg_tokens[0] in {"exec", "run_agent", "env"} or "=" in seg_tokens[0]):
-                        seg_tokens.pop(0)
-                    if not seg_tokens:
-                        continue
-                    for s_idx, s_tok in enumerate(seg_tokens):
-                        if (
-                            s_tok == "-m"
-                            and s_idx + 1 < len(seg_tokens)
-                            and seg_tokens[s_idx + 1] == "ai_cli.agy_session"
-                        ):
-                            saw_agy_segment = True
-                    cmd_name = _tok_name(seg_tokens[0])
-                    if cmd_name == "gemini":
-                        return "gemini"
-                    if cmd_name == "agy":
-                        saw_agy_segment = True
-                if saw_agy_segment:
-                    return "agy"
-    return None
-
-
-_WRAPPER_PANE_COMMANDS = frozenset({"sh", "bash", "zsh", "fish", "dash"})
-
-
-def _cmdline_client(argv: Sequence[str]) -> str | None:
-    """Classify a live process argv as Antigravity (``agy``) or legacy Gemini CLI (``gemini``)."""
-    if not argv:
-        return None
-    for idx, tok in enumerate(argv):
-        if tok == "-m" and idx + 1 < len(argv) and argv[idx + 1] == "ai_cli.agy_session":
-            return "agy"
-    first = Path(argv[0]).name.lower()
-    if first == "agy":
-        return "agy"
-    if first == "gemini":
-        return "gemini"
-    if first in {"node", "nodejs"}:
-        for tok in argv[1:]:
-            low = tok.lower()
-            if Path(tok).name.lower() == "gemini" or "gemini-cli" in low:
-                return "gemini"
-    return None
-
-
-def _pane_pid_client(pid_raw: str) -> str | None:
-    """Inspect a tmux pane's process tree via psutil to disambiguate ``node`` or wrapper shells."""
-    text = pid_raw.strip()
-    if not text.isdigit():
-        return None
-    try:
-        root = psutil.Process(int(text))
-        processes = [root, *root.children(recursive=True)]
-    except (psutil.Error, OSError, ValueError):
-        return None
-    saw_agy = False
-    for proc in processes:
-        try:
-            cmdline = proc.cmdline()
-        except (psutil.Error, OSError):
-            continue
-        detected = _cmdline_client(cmdline)
-        if detected == "gemini":
-            return "gemini"
-        if detected == "agy":
-            saw_agy = True
-    return "agy" if saw_agy else None
+_TMUX_CLIENT_OPTION = "@ai_cli_client"
 
 
 def _verify_live_agy_tmux_session(session_name: str) -> str | None:
-    """Verify a live ``g-`` tmux session runs Antigravity (``agy``), checking live pane state first.
+    """Verify a live ``g-`` tmux session carries the authoritative ``@ai_cli_client agy`` marker.
 
-    Returns ``None`` when live pane evidence proves Antigravity (or a wrapper shell backed by an
-    Antigravity slot record/metadata). Refuses when the pane probe fails, when live pane evidence
-    shows legacy Gemini CLI or an unverified ``node`` runtime (even if a stale ``.agy.json``
-    exists), or when client identity cannot be positively corroborated.
+    Trusts only the tmux session option written by ``ai g`` at creation time; refuses when
+    the query fails, when the marker is missing (including pre-marker sessions), or when it
+    names another client.
     """
     try:
         res = subprocess.run(
-            tmux_binary.argv(
-                "list-panes",
-                "-t",
-                f"={session_name}",
-                "-F",
-                "#{pane_current_command}\t#{pane_start_command}\t#{pane_pid}",
-            ),
+            tmux_binary.argv("show-options", "-t", f"={session_name}", "-v", _TMUX_CLIENT_OPTION),
             capture_output=True,
             text=True,
             check=False,
@@ -3654,83 +3539,20 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return (
-            f"cannot resume {session_name} with ai g: failed to probe live tmux pane client. "
-            f"Inspect or attach directly with `ai attach {session_name}`."
+            f"cannot attach to {session_name} with ai g: failed to read tmux {_TMUX_CLIENT_OPTION} marker. "
+            f"Relaunch with `ai g` or inspect with `ai attach {session_name}`."
         )
-    if res.returncode != 0 or not res.stdout.strip():
-        return (
-            f"cannot resume {session_name} with ai g: tmux pane probe returned no live pane info. "
-            f"Inspect or attach directly with `ai attach {session_name}`."
-        )
-    saw_agy = False
-    saw_node = False
-    saw_wrapper = False
-    for line in res.stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        current_raw = parts[0]
-        start_raw = parts[1] if len(parts) > 1 else ""
-        pid_raw = parts[2] if len(parts) > 2 else ""
-        proc = Path(current_raw.strip()).name.lower() if current_raw.strip() else ""
-
-        # Prefer live process evidence (pane_current_command + pane_pid process tree) over
-        # historical pane_start_command so a pane started with `sh -c 'agy; exec gemini'`
-        # can never pass verification while running legacy Gemini CLI / Node.
-        if proc == "gemini":
-            return (
-                f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
-                f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
-            )
-        pid_client = _pane_pid_client(pid_raw) if pid_raw else None
-        if pid_client == "gemini":
-            return (
-                f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
-                f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
-            )
-        if proc == "agy" or pid_client == "agy":
-            saw_agy = True
-            continue
-        if proc in {"node", "nodejs"}:
-            if _pane_command_client(f"{current_raw}\t{start_raw}") == "gemini":
-                return (
-                    f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, "
-                    f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
-                )
-            saw_node = True
-            continue
-
-        if proc in _WRAPPER_PANE_COMMANDS or proc.startswith("python"):
-            saw_wrapper = True
-            start_detected = _pane_command_client(f"{current_raw}\t{start_raw}")
-            if start_detected == "gemini":
-                return (
-                    f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, "
-                    f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
-                )
-            if start_detected == "agy":
-                saw_agy = True
-    # If any pane positively proves live Antigravity (and no pane proved legacy Gemini CLI above),
-    # allow attaching even when a sibling split pane runs an unrelated Node process (e.g. a dev server).
-    if saw_agy:
+    marker = res.stdout.strip().lower() if res.returncode == 0 else ""
+    if marker == "agy":
         return None
-    if saw_node:
+    if marker:
         return (
-            f"cannot resume {session_name} with ai g: live tmux pane runs a Node process (possible legacy Gemini CLI), "
-            f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
+            f"cannot attach to {session_name} with ai g: tmux session marker {_TMUX_CLIENT_OPTION} is {marker!r}, "
+            f"not 'agy'. Relaunch with `ai g` or inspect with `ai attach {session_name}`."
         )
-    if saw_wrapper:
-        client = _g_session_client(session_name)
-        if client == "agy":
-            return None
-        if client == "gemini":
-            return (
-                f"cannot resume {session_name} with ai g: session metadata records legacy Gemini CLI, "
-                f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
-            )
     return (
-        f"cannot resume {session_name} with ai g: live tmux pane client could not be verified as Antigravity (agy). "
-        f"Attach directly with `ai attach {session_name}`."
+        f"cannot attach to {session_name} with ai g: tmux session is missing the {_TMUX_CLIENT_OPTION}=agy marker. "
+        f"Relaunch with `ai g` or inspect with `ai attach {session_name}`."
     )
 
 
@@ -6782,6 +6604,11 @@ def _do_session_launch(
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
+        _once_marker_prefix = (
+            f"tmux set-option -t {shlex.quote(f'={session_id}')} {_TMUX_CLIENT_OPTION} agy 2>/dev/null || true; "
+            if engine == "g"
+            else ""
+        )
         once_argv = tmux_binary.argv(
             "new-session",
             "-s",
@@ -6790,7 +6617,8 @@ def _do_session_launch(
             "--",
             _session_shell,
             "-c",
-            cd_prefix
+            _once_marker_prefix
+            + cd_prefix
             + _session_launch_state.single_run_shell(
                 session_id, command if replay_bare else [*_direnv, *command], launch_log_path
             ),
@@ -6805,6 +6633,12 @@ def _do_session_launch(
             )
             if result.returncode != 0:
                 raise RuntimeError("could not create detached one-shot session")
+            if engine == "g":
+                subprocess.run(
+                    tmux_binary.argv("set-option", "-t", f"={session_id}", _TMUX_CLIENT_OPTION, "agy"),
+                    capture_output=True,
+                    check=False,
+                )
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
@@ -6819,6 +6653,12 @@ def _do_session_launch(
         if result.returncode != 0:
             reporter.error("tmux", "could not create one-shot session")
             sys.exit(1)
+        if engine == "g":
+            subprocess.run(
+                tmux_binary.argv("set-option", "-t", f"={session_id}", _TMUX_CLIENT_OPTION, "agy"),
+                capture_output=True,
+                check=False,
+            )
         _start_session_wake_watcher(config, f"={session_id}", ai_name, loop=loop)
         if not attach:
             _report_detached_launch(session_id, reporter)
@@ -7057,6 +6897,16 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
+        if engine == "g":
+            client_marked = subprocess.run(
+                tmux_binary.argv("set-option", "-t", created_session_id, _TMUX_CLIENT_OPTION, "agy"),
+                capture_output=True,
+                check=False,
+            )
+            if client_marked.returncode != 0:
+                Path(_script_path).unlink(missing_ok=True)
+                reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+                sys.exit(1)
         identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
         if identity is None:
             Path(_script_path).unlink(missing_ok=True)

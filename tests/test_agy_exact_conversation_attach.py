@@ -199,8 +199,37 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
             extra_fakes={"ai": fake_ai, "agy": fake_agy},
         )
 
+    # 1. Wait until child 1 has launched fake_agy (which sleeps 3.5s) and verify the tmux
+    #    session env cleared AI_CLI_AGY_SIGN_IN_VERIFIED while the pane is STILL LIVE.
     deadline = time.monotonic() + 25.0
     lines: list[str] = []
+    while time.monotonic() < deadline:
+        if events_log.is_file():
+            lines = events_log.read_text(encoding="utf-8").splitlines()
+            if "launch:UNSET" in lines:
+                break
+        time.sleep(0.05)
+    assert "launch:UNSET" in lines, f"child 1 never launched: {lines!r}; pane:\n{_pane_history(tmux_socket, SLOT)}"
+
+    live_check = subprocess.run(
+        ["tmux", "-S", tmux_socket, "has-session", "-t", f"={SLOT}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert live_check.returncode == 0, "expected tmux session to be live during child 1"
+    env_res = subprocess.run(
+        ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert env_res.returncode != 0 or env_res.stdout.strip().startswith("-"), (
+        f"expected {agy_session.SIGN_IN_VERIFIED_ENV} cleared while session live, got rc={env_res.returncode} "
+        f"stdout={env_res.stdout!r}"
+    )
+
+    # 2. Wait for replacement child 2 to re-probe `agy models` and refuse after sign-out.
     while time.monotonic() < deadline:
         if events_log.is_file():
             lines = events_log.read_text(encoding="utf-8").splitlines()
@@ -214,11 +243,3 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
     # Give the supervisor a moment to observe exit 76 and stop without launching child 2's agy.
     time.sleep(0.5)
     assert events_log.read_text(encoding="utf-8").splitlines() == ["launch:UNSET", "probe:models"]
-    # Tmux session environment must also have cleared AI_CLI_AGY_SIGN_IN_VERIFIED.
-    env_res = subprocess.run(
-        ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert env_res.returncode != 0 or env_res.stdout.strip().startswith("-")
