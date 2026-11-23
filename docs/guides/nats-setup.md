@@ -50,7 +50,6 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 - `ai c` (Claude Code) and `ai g` (Antigravity CLI, `agy`) session management
 - `ai sync push/pull` (direct rsync/SSH, no NATS required)
 - `ai tunnel start/stop/status`
-- `ai spend gemini` (historical local-log reporting)
 - `ai update`
 - `ai ls`, `ai attach`, `ai reconnect`
 

@@ -123,7 +123,6 @@ class Tag(StrEnum):
     SESSION = "session"  # the generated session script (session_script.py) prints this one
     SESSIONS = "sessions"
     SETUP = "setup"
-    SPEND = "spend"
     SYNC = "sync"
     SYNC_WATCH = "sync-watch"
     TELEMETRY = "telemetry"
@@ -269,11 +268,6 @@ def _write(stream: TextIO, lines: list[str], *, nl: bool = True) -> None:
     eol = _eol(stream)
     lead = _CLEAR_ROW if _foreign_depth and eol == "\r\n" else ""
     text = eol.join(lead + line for line in lines)
-    # Every terminal line passes here, so CodeQL's name heuristic traces spend.py's
-    # `deep_research_oauth` run counters ("password") and its configured
-    # `gcp_project_id` ("private") to this write and reports a clear-text leak. Neither
-    # is a credential: a count of runs, and a project identifier the user configured
-    # so `ai spend` can name it.
     stream.write(text + eol if nl else text)
     stream.flush()
 

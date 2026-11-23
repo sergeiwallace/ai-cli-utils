@@ -8562,19 +8562,7 @@ def cmd_telemetry_writer():
     sys.exit(telemetry_writer())
 
 
-# --- spend, cc-usage, copier-update, layout, color ---
-
-
-@_cli_group.group("spend", help="Usage-cost reports")
-def cmd_spend_group():
-    pass
-
-
-@cmd_spend_group.command("gemini", help="Report historical Gemini CLI spend from local logs")
-def cmd_spend_gemini_cli():
-    from .spend import cmd_spend_gemini
-
-    sys.exit(cmd_spend_gemini(_config.load_config()))
+# --- cc-usage, copier-update, layout, color ---
 
 
 @_cli_group.group("cc-usage", help="Claude Code CLI per-call token usage")

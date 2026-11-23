@@ -1220,16 +1220,6 @@ boot = false
 ## Port `ai cdp start` opens when -p/--port is not given.
 # port = 9222
 
-[gemini_billing]
-## GCP project that holds the BigQuery billing export dataset.
-## Required for `ai spend gemini` to show actual billed amounts.
-# gcp_project_id = "my-gcp-project"
-## Fully-qualified BigQuery table ID for the GCP detailed billing export.
-## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
-# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
-## Default port for the Chrome DevTools Protocol endpoint
-# port = 9222
-
 [workspace]
 ## VS Code .code-workspace file paths for 'ai ws pull'
 ## local_path is the default; --remote uses remote_path; --workspace PATH overrides both

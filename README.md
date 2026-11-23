@@ -282,8 +282,6 @@ after changing a command's help, never edit it by hand.
 | [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](docs/reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](docs/reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](docs/reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](docs/reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
