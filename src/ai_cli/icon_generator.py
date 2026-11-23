@@ -39,6 +39,7 @@ _DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 # here only if you deliberately want it to inherit from a custom base profile.
 _BASE_PROFILES: dict[str, str] = {
     "cc": "Default",
+    "agy": "Default",
     "gemini": "Default",
     "pi": "Default",
     "codex": "Default",
@@ -54,6 +55,7 @@ _CLAUDE_BRAND_ORANGE = "#da7756"
 # Source logo filenames under src/ai_cli/data/icons/
 _SOURCE_LOGOS: dict[str, str] = {
     "cc": "claude-logo.png",
+    "agy": "gemini-logo.png",
     "gemini": "gemini-logo.png",
     "pi": "shell-logo.png",
     "codex": "shell-logo.png",

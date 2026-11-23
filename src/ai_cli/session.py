@@ -414,9 +414,9 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
-            if "claude" not in name and "gemini" not in name and "node" not in name:
+            if not any(tok in name for tok in ("claude", "agy", "codex", "gemini", "pi", "node")):
                 cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                if "claude" not in cmdline and "gemini" not in cmdline:
+                if not any(tok in cmdline for tok in ("claude", "agy", "codex", "gemini")):
                     continue
             if proc.cwd() == target:
                 return True
@@ -587,13 +587,27 @@ def session_name_for(prefix: str, name: str) -> str:
 
 
 def resolve_session(prefix: str, name: str) -> str:
+    is_agy_prefix = prefix.casefold().startswith(("g-", "g-r-"))
     if not name:
-        res = subprocess.run(
-            tmux_binary.argv("display-message", "-p", "#{session_name}"), capture_output=True, text=True, check=False
-        )
-        current_session = res.stdout.strip() if res.returncode == 0 else ""
+        current_session = ""
+        if not is_agy_prefix or os.environ.get("TMUX"):
+            display_cmd = tmux_binary.argv("display-message", "-p", "#{session_name}")
+            if is_agy_prefix and os.environ.get("TMUX_PANE"):
+                display_cmd = tmux_binary.argv(
+                    "display-message", "-t", os.environ["TMUX_PANE"], "-p", "#{session_name}"
+                )
+            res = subprocess.run(display_cmd, capture_output=True, text=True, check=False)
+            current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.casefold().startswith(prefix.casefold()):
             return current_session
+        if is_agy_prefix:
+            matches = sorted(s for s in _tmux_session_names() if s.casefold().startswith(prefix.casefold()))
+            if len(matches) > 1:
+                raise SessionSlotAmbiguityError(
+                    f"ambiguous Antigravity resume: {len(matches)} live slots match ({', '.join(matches)}); "
+                    "specify a session name explicitly"
+                )
+            return matches[0] if len(matches) == 1 else ""
         return find_recent_session(prefix)
     target = session_name_for(prefix, name)
     if target == name:
@@ -618,6 +632,20 @@ def resolve_session(prefix: str, name: str) -> str:
         ]
         if len(candidates) == 1:
             return candidates[0]
+        if is_agy_prefix and len(candidates) > 1:
+            raise SessionSlotAmbiguityError(
+                f"ambiguous Antigravity resume for {name!r}: {len(candidates)} live slots match "
+                f"({', '.join(sorted(candidates))}); specify an exact session name"
+            )
+    if is_agy_prefix:
+        label_prefix = f"{prefix}{name}-".casefold()
+        label_matches = sorted(s for s in _tmux_session_names() if s.casefold().startswith(label_prefix))
+        if len(label_matches) > 1:
+            raise SessionSlotAmbiguityError(
+                f"ambiguous Antigravity resume for {name!r}: {len(label_matches)} live slots match "
+                f"({', '.join(label_matches)}); specify an exact session name"
+            )
+        return label_matches[0] if len(label_matches) == 1 else ""
     return find_recent_session(f"{prefix}{name}-")
 
 

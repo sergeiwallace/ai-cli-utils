@@ -60,7 +60,7 @@ started.
 | Command | What it does |
 |---|---|
 | `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
-| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai g NAME` | The same for Antigravity (`agy`); `ai p NAME` for Pi and `ai cx NAME` for Codex |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
@@ -99,7 +99,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](../reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](../reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](../reference/cli.md#ai-g) | Launch an Antigravity (agy) session. |
 | [`ai import-names`](../reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](../reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](../reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -196,7 +196,7 @@ section of the [CLI reference](../reference/cli.md).
 
 ## Overview
 
-`ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
+`ai` is the unified CLI for Claude Code, Antigravity (`agy`), Pi, and Codex sessions. Entry point: `src/ai_cli/main.py:cli()`.
 
 ```bash
 ai --version   # print installed version
@@ -217,7 +217,8 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | Module | Purpose |
 |--------|---------|
 | `ai_cli.config` | XDG paths, `load_config`, session map, project registry |
-| `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
+| `ai_cli.session` | session naming, worktree ops, transcript/checkpoint helpers |
+| `ai_cli.agy_session` | Antigravity (`agy`) subscription guard, slot confirmation, exact `--conversation` resume |
 | `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
@@ -508,11 +509,13 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```
 
-Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
+Launch (or resume) an Antigravity (`agy`) session in a tmux loop. Same flags as `ai c`.
 
-**Session resume:** on each launch or restart, `ai g` checks `~/.gemini/tmp/{name}/chats/` for the most recent session file. If a `checkpoint-{name}.json` exists and is newer than the latest chat file (or no chat files exist), it is automatically converted to a chat session file and resumed via `gemini -r {uuid}`. No manual `/resume load` required.
+**Subscription-only billing guard:** before handing off to `agy`, `ai g` verifies that the Antigravity OAuth token exists at `~/.gemini/antigravity-cli/antigravity-oauth-token`, refuses custom `modelProvider` API-key overrides in `~/.gemini/antigravity-cli/settings.json`, and strips `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `GOOGLE_GENAI_USE_VERTEXAI` from the child environment so sessions cannot silently fall back to pay-per-token API billing.
 
-**Checkpoint conversion:** the conversion is idempotent — the same checkpoint always produces the same UUID. Once converted, Gemini auto-saves all future messages to the chat file natively. The original checkpoint is never deleted and remains as a fallback.
+**Exact conversation binding and resume:** `ai g` installs an idempotent global `SessionStart` confirmation plugin (`~/.gemini/config/plugins/ai-cli-slot-confirm/`) and stores each slot's verified native conversation ID in its per-slot state file. On restart or resume, `ai g` passes `--conversation <id>` only for a client-confirmed binding owned by that slot and refuses unconfirmed or colliding slots rather than guessing by recency. Pass `--start-fresh` or `--adopt-conversation <id>` to recover explicitly.
+
+**Headless print mode:** when `-p`/`--print` is passed through to `agy`, an explicit `--mode` flag is required so unattended runs never inherit the interactive default.
 
 ### ai cos
 
@@ -790,7 +793,7 @@ In an isolated update, Git submodules are initialized recursively before depende
 
 ### Removed ai gemini command
 
-`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
+`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Antigravity (`agy`) CLI in a managed tmux session.
 
 The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
 

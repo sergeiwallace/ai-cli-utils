@@ -373,11 +373,17 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
 def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected_exception=SystemExit):
     """Run one bare launch from the current directory, up to the engine exec."""
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    home = tmp_path / "home"
+    if engine == "g":
+        token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"access_token": "tok"}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setenv("AI_HOST", "my-linux-box")
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/agy"),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),

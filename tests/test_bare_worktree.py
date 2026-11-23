@@ -679,17 +679,20 @@ def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypa
 
 def test_given_bare_gemini_with_uuid_when_built_then_resumes_that_uuid(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", "uuid-123", "gemini", "-s", [])
+    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", "uuid-123", "gemini", "-s", [], resume=True)
 
-    assert argv[:2] == ["gemini", "-y"]
-    assert "-r" in argv and argv[argv.index("-r") + 1] == "uuid-123"
+    assert argv[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+    assert "false" in argv
+    assert "--sandbox" in argv
 
 
 def test_given_bare_gemini_without_uuid_when_built_then_falls_back_to_resume_load(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", None, "gemini", "-s", [])
+    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", None, "gemini", "-s", [], resume=False)
 
-    assert "-i" in argv and argv[argv.index("-i") + 1] == "/resume load kg-1"
+    assert argv[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+    assert "true" in argv
+    assert "--command" in argv and argv[argv.index("--command") + 1] == "agy"
 
 
 # --- index discovery without tmux ---------------------------------------------
