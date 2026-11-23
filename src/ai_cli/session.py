@@ -594,6 +594,14 @@ def resolve_session(prefix: str, name: str) -> str:
         current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.casefold().startswith(prefix.casefold()):
             return current_session
+        if prefix.casefold().startswith(("g-", "g-r-")):
+            matches = sorted(s for s in _tmux_session_names() if s.casefold().startswith(prefix.casefold()))
+            if len(matches) > 1:
+                raise SessionSlotAmbiguityError(
+                    f"ambiguous Antigravity resume: {len(matches)} live slots match ({', '.join(matches)}); "
+                    "specify a session name explicitly"
+                )
+            return matches[0] if len(matches) == 1 else ""
         return find_recent_session(prefix)
     target = session_name_for(prefix, name)
     if target == name:

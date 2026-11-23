@@ -3519,13 +3519,14 @@ def _g_session_client(session_name: str) -> str | None:
     return None
 
 
-def _live_tmux_session_is_legacy_gemini(session_name: str) -> bool:
-    """Return True when a live ``g-`` tmux session is running legacy Gemini CLI rather than ``agy``."""
-    client = _g_session_client(session_name)
-    if client == "agy":
-        return False
-    if client == "gemini":
-        return True
+def _verify_live_agy_tmux_session(session_name: str) -> str | None:
+    """Verify a live ``g-`` tmux session runs Antigravity (``agy``), checking live pane state first.
+
+    Returns ``None`` when live pane evidence proves Antigravity (or a wrapper shell backed by an
+    Antigravity slot record/metadata). Refuses when the pane probe fails, when live pane evidence
+    shows legacy Gemini CLI (even if a stale ``.agy.json`` exists), or when client identity cannot
+    be positively corroborated.
+    """
     try:
         res = subprocess.run(
             tmux_binary.argv(
@@ -3537,13 +3538,35 @@ def _live_tmux_session_is_legacy_gemini(session_name: str) -> bool:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    if res.returncode != 0:
-        return False
+        return (
+            f"cannot resume {session_name} with ai g: failed to probe live tmux pane client. "
+            f"Inspect or attach directly with `ai attach {session_name}`."
+        )
+    if res.returncode != 0 or not res.stdout.strip():
+        return (
+            f"cannot resume {session_name} with ai g: tmux pane probe returned no live pane info. "
+            f"Inspect or attach directly with `ai attach {session_name}`."
+        )
     lower = res.stdout.lower()
     if "agy" in lower or "ai_cli.agy_session" in lower:
-        return False
-    return "gemini" in lower
+        return None
+    if "gemini" in lower:
+        return (
+            f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
+            f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
+        )
+    client = _g_session_client(session_name)
+    if client == "agy":
+        return None
+    if client == "gemini":
+        return (
+            f"cannot resume {session_name} with ai g: session metadata records legacy Gemini CLI, not Antigravity (agy). "
+            f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
+        )
+    return (
+        f"cannot resume {session_name} with ai g: live tmux pane client could not be verified as Antigravity (agy). "
+        f"Attach directly with `ai attach {session_name}`."
+    )
 
 
 def _do_attach(session_name: str) -> NoReturn:
@@ -4780,18 +4803,18 @@ def _resolve_resume_target(
     # title typed in full is reduced to its slot so the prefix is not applied twice.
     query = name if name and _session.session_name_for(prefix, name) == name else clean
     if not bare:
-        session = _session.resolve_session(prefix, query)
-        if not session and legacy_prefix.casefold() != naming_prefix.casefold():
-            # Migration window: a session named before the host alias joined the name.
-            session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+        try:
+            session = _session.resolve_session(prefix, query)
+            if not session and legacy_prefix.casefold() != naming_prefix.casefold():
+                # Migration window: a session named before the host alias joined the name.
+                session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+        except _session.SessionSlotAmbiguityError as exc:
+            _naming_exit(reporter, str(exc), 1)
         if session:
-            if engine == "g" and _live_tmux_session_is_legacy_gemini(session):
-                _naming_exit(
-                    reporter,
-                    f"cannot resume {session} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
-                    f"Attach directly with `ai attach {session}` or retire it before launching agy.",
-                    1,
-                )
+            if engine == "g":
+                refusal = _verify_live_agy_tmux_session(session)
+                if refusal:
+                    _naming_exit(reporter, refusal, 1)
             return _ResumeTarget(session=session)
     wanted = _session_naming.compose_session_name(naming_prefix, clean) if clean else f"{prefix}*"
     positional = None
@@ -6475,7 +6498,8 @@ def _do_session_launch(
             if engine == "c":
                 _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            agy_print_bare = engine == "g" and _agy_session.is_print_mode([*shlex.split(agy_cmd)[1:], *extra_args])
+            on_pty = compact_transport is not None and compact_transport.kind == "pty" and not agy_print_bare
             handoff = (
                 _pty_handoff(session_id, launch_log=launch_log_path or "", diagnostic_path=agent_diagnostic_path)
                 if on_pty

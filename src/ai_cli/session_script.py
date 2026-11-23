@@ -282,12 +282,19 @@ def get_engine_script(
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
     if engine == "g":
+        from . import agy_session as _agy_session
+
         resolved_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
         resolved_agy_args = list(agy_args or [])
+        agy_is_print = _agy_session.is_print_mode([*shlex.split(resolved_agy_cmd)[1:], *resolved_agy_args])
     else:
         resolved_agy_cmd = "agy"
         resolved_agy_args = []
+        agy_is_print = False
     agy_fresh_arg = "false" if resume else '"$first_run"'
+    agy_post_run = (
+        'exit "${agent_exit_code:-0}"' if agy_is_print else 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi'
+    )
     agy_sandbox_arg = " --sandbox" if sandbox else ""
     agy_extra_tokens = " ".join(shlex.quote(arg) for arg in resolved_agy_args)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
@@ -1884,7 +1891,7 @@ with open(path, 'w') as f:
         else
           run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg}
         fi
-        if [[ "${{agent_exit_code:-0}}" == 76 ]]; then exit 76; fi
+        {agy_post_run}
       }}
     # END AGY THREAD
 

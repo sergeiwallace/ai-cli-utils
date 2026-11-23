@@ -127,19 +127,30 @@ def _sanitized_env() -> dict[str, str]:
     return env
 
 
+def _option_args(args: Sequence[str]) -> list[str]:
+    """Return arguments before the ``--`` option terminator (real CLI flags only)."""
+    result: list[str] = []
+    for arg in args:
+        if arg == "--":
+            break
+        result.append(arg)
+    return result
+
+
 def is_print_mode(args: Sequence[str]) -> bool:
     """Return True when ``args`` request non-interactive headless print execution."""
-    return any(arg in _PRINT_FLAGS or arg.startswith(_PRINT_PREFIXES) for arg in args)
+    return any(arg in _PRINT_FLAGS or arg.startswith(_PRINT_PREFIXES) for arg in _option_args(args))
 
 
 def _option_value(args: Sequence[str], flag: str, default: str = "") -> str:
+    opts = _option_args(args)
     prefix = f"{flag}="
     value = default
     index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == flag and index + 1 < len(args):
-            value = args[index + 1]
+    while index < len(opts):
+        arg = opts[index]
+        if arg == flag and index + 1 < len(opts):
+            value = opts[index + 1]
             index += 2
             continue
         if arg.startswith(prefix):
@@ -150,24 +161,25 @@ def _option_value(args: Sequence[str], flag: str, default: str = "") -> str:
 
 def validate_launch_args(args: Sequence[str]) -> None:
     """Refuse native resume overrides and unguarded headless print invocations."""
-    for arg in args:
+    opts = _option_args(args)
+    for arg in opts:
         if arg in _RESUME_OVERRIDE_FLAGS or arg.startswith(_RESUME_OVERRIDE_PREFIXES):
             raise IdentityError(
                 f"native resume flag {arg!r} is refused on managed Antigravity slots; "
                 "let the slot record own conversation binding or use --adopt-conversation"
             )
 
-    if not is_print_mode(args):
+    if not is_print_mode(opts):
         return
 
     modes: list[str] = []
     index = 0
-    while index < len(args):
-        arg = args[index]
+    while index < len(opts):
+        arg = opts[index]
         if arg == "--mode":
-            if index + 1 >= len(args) or not args[index + 1].strip():
+            if index + 1 >= len(opts) or not opts[index + 1].strip():
                 raise IdentityError("headless agy print mode requires --mode plan")
-            modes.append(args[index + 1].strip().lower())
+            modes.append(opts[index + 1].strip().lower())
             index += 2
             continue
         if arg.startswith("--mode="):
@@ -192,7 +204,7 @@ def validate_launch_args(args: Sequence[str]) -> None:
             f"headless agy print mode only allows read-only --mode plan (refused --mode {invalid[0]!r})"
         )
 
-    input_fmt = _option_value(args, "--input-format", "text").strip().lower()
+    input_fmt = _option_value(opts, "--input-format", "text").strip().lower()
     if input_fmt not in {"text", "stream-json"}:
         raise IdentityError(f"unsupported headless agy --input-format {input_fmt!r}; use text or stream-json")
 
@@ -202,10 +214,13 @@ def _extract_argv_prompt(args: Sequence[str]) -> str:
     index = 0
     while index < len(args):
         arg = args[index]
+        if arg == "--":
+            rest = [tok for tok in args[index + 1 :] if tok.strip()]
+            return rest[0] if rest else ""
         if arg.startswith(_PRINT_PREFIXES):
             return arg.split("=", 1)[1]
         if arg in _PRINT_FLAGS:
-            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+            if index + 1 < len(args) and args[index + 1] != "--" and not args[index + 1].startswith("-"):
                 return args[index + 1]
             index += 1
             continue
@@ -227,9 +242,9 @@ def validate_print_prompt_and_stdin(
 ) -> str | None:
     """Validate prompt framing for headless print mode.
 
-    Returns the validated NDJSON stdin payload when ``--input-format stream-json`` is
-    used, or ``None`` (meaning the child receives ``DEVNULL``) when an argv prompt is
-    supplied. Plain-text stdin is always refused.
+    Returns the validated single-line NDJSON stdin payload when ``--input-format stream-json``
+    is used, or ``None`` (meaning the child receives ``DEVNULL``) when an argv prompt is
+    supplied. Plain-text stdin and multi-line NDJSON streams are refused.
     """
     input_fmt = _option_value(args, "--input-format", "text").strip().lower()
     is_tty = sys.stdin.isatty() if stdin_is_tty is None else stdin_is_tty
@@ -242,18 +257,17 @@ def validate_print_prompt_and_stdin(
         else:
             raw_stdin = stdin_text
         lines = [line.strip() for line in raw_stdin.splitlines() if line.strip()]
-        if not lines:
-            raise IdentityError("headless agy --input-format stream-json requires at least one NDJSON user line")
-        for line in lines:
-            try:
-                obj = json.loads(line)
-            except ValueError as exc:
-                raise IdentityError("headless agy stream-json stdin must contain valid NDJSON objects") from exc
-            if not isinstance(obj, dict) or (obj.get("type") != "user" and obj.get("role") != "user"):
-                raise IdentityError(
-                    'headless agy stream-json stdin lines must be user JSON objects ({"type":"user", ...})'
-                )
-        return "\n".join(lines) + "\n"
+        if len(lines) != 1:
+            raise IdentityError(
+                f"headless agy --input-format stream-json requires exactly one NDJSON user line (got {len(lines)})"
+            )
+        try:
+            obj = json.loads(lines[0])
+        except ValueError as exc:
+            raise IdentityError("headless agy stream-json stdin must contain valid NDJSON objects") from exc
+        if not isinstance(obj, dict) or (obj.get("type") != "user" and obj.get("role") != "user"):
+            raise IdentityError('headless agy stream-json stdin lines must be user JSON objects ({"type":"user", ...})')
+        return lines[0] + "\n"
 
     prompt = _extract_argv_prompt(args)
     if not prompt.strip():
@@ -267,7 +281,7 @@ def validate_print_prompt_and_stdin(
 
 
 def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
-    """Return ``(response_text, auto_denied)`` from a single parsed JSON print payload."""
+    """Return ``(assistant_response_text, auto_denied)`` from a single parsed JSON print payload."""
     if not isinstance(payload, dict):
         return "", False
     denied = bool(payload.get("is_error"))
@@ -277,6 +291,13 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
     subtype = payload.get("subtype")
     if isinstance(subtype, str) and subtype.lower() in {"error_during_execution", "permission_denied", "auto_denied"}:
         denied = True
+    # Echoed user turns in stream-json are never assistant responses.
+    event_type = payload.get("type")
+    if isinstance(event_type, str) and event_type.lower() == "user":
+        return "", denied
+    role = payload.get("role")
+    if isinstance(role, str) and role.lower() == "user":
+        return "", denied
     texts: list[str] = []
     for key in ("result", "response", "text", "content", "delta"):
         val = payload.get(key)
@@ -284,13 +305,15 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
             texts.append(val.strip())
     message = payload.get("message")
     if isinstance(message, dict):
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            texts.append(content.strip())
-        elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
-                    texts.append(item["text"].strip())
+        msg_role = message.get("role")
+        if not (isinstance(msg_role, str) and msg_role.lower() == "user"):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                        texts.append(item["text"].strip())
     return "\n".join(texts), denied
 
 
@@ -309,7 +332,7 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
         except ValueError:
             return EXIT_PRINT_AUTO_DENIED if has_denial_marker else EXIT_PRINT_EMPTY
         text, denied = _extract_json_text_and_denial(parsed)
-        if denied or (has_denial_marker and not text):
+        if denied or has_denial_marker:
             return EXIT_PRINT_AUTO_DENIED
         if not text:
             return EXIT_PRINT_EMPTY
@@ -331,17 +354,29 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
                 denied = True
             if part_text:
                 texts.append(part_text)
-        if denied or (has_denial_marker and not texts):
+        if denied or has_denial_marker:
             return EXIT_PRINT_AUTO_DENIED
         if not texts:
             return EXIT_PRINT_EMPTY
         return 0
 
-    stripped = stdout.strip()
-    if has_denial_marker and (not stripped or any(m in stripped.lower() for m in _PRINT_DENIAL_MARKERS)):
+    if has_denial_marker:
         return EXIT_PRINT_AUTO_DENIED
+    stripped = stdout.strip()
     if not stripped:
         return EXIT_PRINT_EMPTY
+    # A bare JSON status object (e.g. {"status": "SUCCESS"}) with no response text is empty.
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            text, denied = _extract_json_text_and_denial(parsed)
+            if denied:
+                return EXIT_PRINT_AUTO_DENIED
+            if not text:
+                return EXIT_PRINT_EMPTY
     return 0
 
 
@@ -406,7 +441,13 @@ def ensure_confirm_plugin(home: Path | None = None) -> Path:
         plugin_dir.mkdir(parents=True, exist_ok=True)
         for target, text in ((manifest_path, manifest_text), (hooks_path, hooks_text)):
             if target.is_file() and target.read_text(encoding="utf-8") != text:
-                shutil.copy2(target, target.with_name(f"{target.name}.bak"))
+                backup = target.with_name(f"{target.name}.bak")
+                if backup.exists():
+                    seq = 1
+                    while target.with_name(f"{target.name}.bak.{seq}").exists():
+                        seq += 1
+                    backup = target.with_name(f"{target.name}.bak.{seq}")
+                shutil.copy2(target, backup)
             staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
             staged.write_text(text, encoding="utf-8")
             staged.replace(target)
@@ -529,6 +570,7 @@ def _registry_lock_path(record_path: Path) -> Path:
 
 def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> None:
     """Refuse binding or adopting a conversation UUID already owned by another slot."""
+    wanted = conversation_id.lower()
     resolved = record_path.resolve()
     for sibling in sorted(resolved.parent.glob("*.agy.json")):
         if sibling.resolve() == resolved:
@@ -539,10 +581,14 @@ def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> Non
             continue
         if not isinstance(other, dict):
             continue
+        owned: set[str] = set()
         other_cid = other.get("conversation_id")
+        if isinstance(other_cid, str):
+            owned.add(other_cid.lower())
         saved = other.get("resumable")
-        saved_cid = saved.get("conversation_id") if isinstance(saved, dict) else None
-        if conversation_id in {other_cid, saved_cid}:
+        if isinstance(saved, dict) and isinstance(saved.get("conversation_id"), str):
+            owned.add(saved["conversation_id"].lower())
+        if wanted in owned:
             owner = other.get("slot") or sibling.stem
             raise IdentityError(
                 f"Antigravity conversation {conversation_id} is already owned by slot {owner}; "
@@ -638,6 +684,8 @@ def prepare(
                     if proof.state != PRESENT:
                         raise IdentityError(proof.reason)
                     target = saved["conversation_id"]
+                else:
+                    raise IdentityError(probe.reason)
                 _ensure_conversation_unowned(path, target)
                 decision = "resume-confirmed"
             else:
@@ -757,7 +805,7 @@ def confirm(path: Path, token: str, event: object) -> None:
         expected = doc["in_flight"].get("expected_conversation_id")
         if expected is None and doc["phase"] == "confirmed":
             expected = doc.get("conversation_id")
-        if expected is not None and conversation_id != expected:
+        if expected is not None and conversation_id.lower() != expected.lower():
             raise IdentityError(
                 f"Antigravity confirmation conversation {conversation_id} does not match pinned slot {expected}"
             )
