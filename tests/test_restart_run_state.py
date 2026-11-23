@@ -21,7 +21,7 @@ from ai_cli import config, main, session_restart
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_lifecycle_script import session_state_functions
-from ai_cli.session_script import get_engine_script
+from ai_cli.session_script import POSIX_AGENT_RUN, WINDOWS_AGENT_RUN, WINDOWS_CHILD_INT, get_engine_script
 
 
 @pytest.fixture
@@ -337,3 +337,27 @@ def test_given_program_whose_terminal_restore_was_otherwise_edited_when_compared
     edited = current.replace("\\033[>4;0m", "\\033[>4;2m")
     assert edited != current
     assert not session_restart._compatible(edited, current)
+
+
+@pytest.fixture
+def windows_program(programs, monkeypatch):
+    """The current program as a Git Bash launcher renders it, from the same metadata."""
+    legacy, _ = programs
+    metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: True)
+    return main._engine_script_from_meta(json.loads(shlex.split(metadata_line)[2]))
+
+
+def test_given_windows_program_launched_before_the_foreground_agent_when_compared_then_it_is_compatible(
+    windows_program,
+):
+    assert WINDOWS_AGENT_RUN in windows_program
+    assert WINDOWS_CHILD_INT in windows_program
+    previous = windows_program.replace(WINDOWS_AGENT_RUN, POSIX_AGENT_RUN).replace(WINDOWS_CHILD_INT, "")
+    assert session_restart._compatible(previous, windows_program)
+
+
+def test_given_windows_program_whose_agent_launch_was_edited_when_compared_then_it_is_rejected(windows_program):
+    edited = windows_program.replace(WINDOWS_AGENT_RUN, WINDOWS_AGENT_RUN.replace('"$@"\n', '"$@" &\n'))
+    assert edited != windows_program
+    assert not session_restart._compatible(edited, windows_program)

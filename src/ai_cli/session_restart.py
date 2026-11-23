@@ -1093,10 +1093,16 @@ def _compatible(source: str, expected: str) -> bool:
             return True
     # The terminal restore is printf data with no control flow, so a program that
     # sends the retired bytes is the same program. Rebuilt in our trusted template.
-    from .session_script import rendered_terminal_reset
+    from .session_script import POSIX_AGENT_RUN, WINDOWS_AGENT_RUN, WINDOWS_CHILD_INT, rendered_terminal_reset
 
     previous_reset = expected.replace(rendered_terminal_reset(), _PREVIOUS_TERMINAL_RESET)
     if previous_reset != expected and _compatible(source, previous_reset):
+        return True
+    # A Windows program launched before its agent ran in the foreground backgrounded it
+    # as on POSIX and took the double-press path for every Ctrl+C. Rebuilt in our trusted
+    # template, never ignored in the running source.
+    previous_windows_agent = expected.replace(WINDOWS_AGENT_RUN, POSIX_AGENT_RUN).replace(WINDOWS_CHILD_INT, "")
+    if previous_windows_agent != expected and _compatible(source, previous_windows_agent):
         return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.

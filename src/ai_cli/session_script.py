@@ -128,6 +128,54 @@ while True:
 # Where an MSYS2 or Cygwin shell (Git Bash) publishes the Windows pid of each of its processes.
 MSYS_PROC_ROOT = "/proc"
 
+# The agent launch in the child body. On POSIX the agent is a background job so the
+# INT trap can run while the agent holds the terminal, and the loop collects its exit.
+POSIX_AGENT_RUN = """      if [[ -t 0 && -r /dev/tty ]]; then
+        _agent_tty=$(tty 2>/dev/null)
+        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
+          "$@" <"$_agent_tty" &
+        else
+          "$@" </dev/tty &
+        fi
+      else
+        "$@" <&0 &
+      fi
+      active_agent_pid=$!
+    # BEGIN SHELL RETURN agent-wait
+      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
+      # its actual exit before resetting the terminal or replacing the body.
+      while true; do
+        wait "$active_agent_pid"
+        agent_exit_code=$?
+        kill -0 "$active_agent_pid" 2>/dev/null || break
+      done
+    # END SHELL RETURN
+"""
+# Native Windows: the agent runs as this shell's foreground command, as the
+# child body already does under the supervisor. Under Git Bash, `wait` on a backgrounded
+# native agent did not return once Ctrl+C presses arrived while the agent was exiting: the
+# agent was gone, the INT trap kept running, and the wait never ended, so the recorded stop
+# was never acted on and the pane could only be left by detaching. The console hands
+# Ctrl+C to the agent directly, so nothing needs a pid to forward it to, and a foreground
+# command defers the INT trap until the agent returns.
+WINDOWS_AGENT_RUN = """    # BEGIN SHELL RETURN agent-wait
+      "$@"
+      agent_exit_code=$?
+    # END SHELL RETURN
+"""
+# Native Windows: a Ctrl+C reaches this shell only when the agent is not reading the
+# console raw, which is while it exits after its own double Ctrl+C or once it is gone; a
+# lone Ctrl+C inside a running agent is a key the agent reads. So every press that gets
+# here is a request to stop. The double-press window below cannot work here anyway: the
+# trap waits behind each native helper (each a multi-second process start on a loaded
+# host), so the presses arrive coalesced and seconds apart, and every one counted as a
+# first press again. Builtins only, so a press costs no process start.
+WINDOWS_CHILD_INT = """    # BEGIN SHELL RETURN windows-interrupt
+      printf '%s\\n' "exit" > "$_child_int_exit_file"
+      return
+    # END SHELL RETURN
+"""
+
 
 def _native_windows_launcher() -> bool:
     """Whether the script is generated for native Windows Python under a POSIX-emulating shell.
@@ -496,6 +544,8 @@ def get_engine_script(
         _child_status=$?
         _supervisor_foreground=0"""
     _child_run = _windows_child_run if windows else _posix_child_run
+    _agent_run = WINDOWS_AGENT_RUN if windows else POSIX_AGENT_RUN
+    _child_int_windows = WINDOWS_CHILD_INT if windows else ""
     _windows_prelude = ""
     _signal_model_windows = ""
     _restore_terminal_windows = ""
@@ -1206,7 +1256,7 @@ def get_engine_script(
     # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
     # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
     _child_record_int() {{
-      _child_int_now=$(date +%s)
+{_child_int_windows}      _child_int_now=$(date +%s)
       _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
       if [[ "$_child_saved_int_deadline" == "pending" ]] || \
         ( [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && (( _child_int_now <= _child_saved_int_deadline )) ); then
@@ -1325,27 +1375,7 @@ def get_engine_script(
       # background PID used for signal forwarding. Prefer the resolved device:
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
       _reset_agent_terminal
-      if [[ -t 0 && -r /dev/tty ]]; then
-        _agent_tty=$(tty 2>/dev/null)
-        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
-          "$@" <"$_agent_tty" &
-        else
-          "$@" </dev/tty &
-        fi
-      else
-        "$@" <&0 &
-      fi
-      active_agent_pid=$!
-    # BEGIN SHELL RETURN agent-wait
-      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
-      # its actual exit before resetting the terminal or replacing the body.
-      while true; do
-        wait "$active_agent_pid"
-        agent_exit_code=$?
-        kill -0 "$active_agent_pid" 2>/dev/null || break
-      done
-    # END SHELL RETURN
-      active_agent_pid=""
+{_agent_run}      active_agent_pid=""
     # BEGIN LAUNCH DIAGNOSTICS
       # Take the pane tail before the reset or a restart destroys its contents.
       # Measure the runtime before starting diagnostics so they cannot move the restart guard.

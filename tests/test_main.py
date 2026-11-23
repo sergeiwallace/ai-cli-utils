@@ -311,11 +311,16 @@ class TestGetEngineScript:
         assert "agent_direnv_initialized=false" in script
         assert 'if _direnv_exports="$(direnv export bash)"; then' in script
         assert 'eval "$_direnv_exports"' in script
-        # A backgrounded TUI must explicitly retain its controlling terminal.
-        # The fallback preserves stdin for non-terminal subprocess launches.
-        assert '"$@" </dev/tty &' in script
-        assert '"$@" <&0 &' in script
-        assert 'wait "$active_agent_pid"' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows runs the agent as the shell's foreground command.
+            assert '      "$@"\n      agent_exit_code=$?' in script
+            assert '"$@" </dev/tty &' not in script
+        else:
+            # A backgrounded TUI must explicitly retain its controlling terminal.
+            # The fallback preserves stdin for non-terminal subprocess launches.
+            assert '"$@" </dev/tty &' in script
+            assert '"$@" <&0 &' in script
+            assert 'wait "$active_agent_pid"' in script
         assert '_ai_emit warning direnv "direnv could not load $direnv_root/.envrc' in script
         assert 'direnv exec "$direnv_root" "$@"' not in script
 
