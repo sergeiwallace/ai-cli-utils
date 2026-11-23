@@ -27,6 +27,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1000,7 +1001,20 @@ def confirm(path: Path, token: str, event: object) -> None:
             client_version=doc["in_flight"]["client_version"],
             route=doc["in_flight"]["route"],
         )
-        _write(resolved, doc)
+        from .agy_control import notify
+
+        # The bridge must read the confirmed record during its handshake. Stage
+        # the original bytes first so a refusal can roll back by atomic rename,
+        # without needing another serialization or file write after rejection.
+        with tempfile.TemporaryDirectory(prefix=".agy-confirm-", dir=resolved.parent) as root:
+            rollback = Path(root) / resolved.name
+            rollback.write_bytes(resolved.read_bytes())
+            try:
+                _write(resolved, doc)
+                notify(resolved, token)
+            except BaseException:
+                rollback.replace(resolved)
+                raise
 
 
 def confirm_from_environment(args: list[str]) -> int:
@@ -1214,6 +1228,10 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
             os.environ[SLOT_RECORD_ENV] = record
             os.environ[LAUNCH_TOKEN_ENV] = token
+            if not print_launch:
+                from .agy_control import start
+
+                start(Path(record))
 
             exec_argv = list(base_argv)
             if sandbox and "--sandbox" not in exec_argv and "--sandbox" not in extra_args:
