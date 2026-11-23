@@ -12,13 +12,14 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
 
 import click
 import portalocker
+import psutil
 
 # Module aliases used by the call sites throughout this file. Tests can
 # patch on the source module (``patch("ai_cli.config.load_config")``) and
@@ -3578,18 +3579,69 @@ def _pane_command_client(pane_line: str) -> str | None:
     return None
 
 
+_WRAPPER_PANE_COMMANDS = frozenset({"sh", "bash", "zsh", "fish", "dash"})
+
+
+def _cmdline_client(argv: Sequence[str]) -> str | None:
+    """Classify a live process argv as Antigravity (``agy``) or legacy Gemini CLI (``gemini``)."""
+    if not argv:
+        return None
+    for idx, tok in enumerate(argv):
+        if tok == "-m" and idx + 1 < len(argv) and argv[idx + 1] == "ai_cli.agy_session":
+            return "agy"
+    first = Path(argv[0]).name.lower()
+    if first == "agy":
+        return "agy"
+    if first == "gemini":
+        return "gemini"
+    if first in {"node", "nodejs"}:
+        for tok in argv[1:]:
+            low = tok.lower()
+            if Path(tok).name.lower() == "gemini" or "gemini-cli" in low:
+                return "gemini"
+    return None
+
+
+def _pane_pid_client(pid_raw: str) -> str | None:
+    """Inspect a tmux pane's process tree via psutil to disambiguate ``node`` or wrapper shells."""
+    text = pid_raw.strip()
+    if not text.isdigit():
+        return None
+    try:
+        root = psutil.Process(int(text))
+        processes = [root, *root.children(recursive=True)]
+    except (psutil.Error, OSError, ValueError):
+        return None
+    saw_agy = False
+    for proc in processes:
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.Error, OSError):
+            continue
+        detected = _cmdline_client(cmdline)
+        if detected == "gemini":
+            return "gemini"
+        if detected == "agy":
+            saw_agy = True
+    return "agy" if saw_agy else None
+
+
 def _verify_live_agy_tmux_session(session_name: str) -> str | None:
     """Verify a live ``g-`` tmux session runs Antigravity (``agy``), checking live pane state first.
 
     Returns ``None`` when live pane evidence proves Antigravity (or a wrapper shell backed by an
     Antigravity slot record/metadata). Refuses when the pane probe fails, when live pane evidence
-    shows legacy Gemini CLI (even if a stale ``.agy.json`` exists), or when client identity cannot
-    be positively corroborated.
+    shows legacy Gemini CLI or an unverified ``node`` runtime (even if a stale ``.agy.json``
+    exists), or when client identity cannot be positively corroborated.
     """
     try:
         res = subprocess.run(
             tmux_binary.argv(
-                "list-panes", "-t", f"={session_name}", "-F", "#{pane_current_command}\t#{pane_start_command}"
+                "list-panes",
+                "-t",
+                f"={session_name}",
+                "-F",
+                "#{pane_current_command}\t#{pane_start_command}\t#{pane_pid}",
             ),
             capture_output=True,
             text=True,
@@ -3607,10 +3659,19 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
             f"Inspect or attach directly with `ai attach {session_name}`."
         )
     saw_agy = False
+    saw_node = False
+    saw_wrapper = False
     for line in res.stdout.splitlines():
         if not line.strip():
             continue
-        detected = _pane_command_client(line)
+        parts = line.split("\t")
+        current_raw = parts[0]
+        start_raw = parts[1] if len(parts) > 1 else ""
+        pid_raw = parts[2] if len(parts) > 2 else ""
+        proc = Path(current_raw.strip()).name.lower() if current_raw.strip() else ""
+        detected = _pane_command_client(f"{current_raw}\t{start_raw}")
+        if detected is None and pid_raw:
+            detected = _pane_pid_client(pid_raw)
         if detected == "gemini":
             return (
                 f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
@@ -3618,16 +3679,26 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
             )
         if detected == "agy":
             saw_agy = True
+        elif proc in {"node", "nodejs"}:
+            saw_node = True
+        elif proc in _WRAPPER_PANE_COMMANDS or proc.startswith("python"):
+            saw_wrapper = True
     if saw_agy:
         return None
-    client = _g_session_client(session_name)
-    if client == "agy":
-        return None
-    if client == "gemini":
+    if saw_node:
         return (
-            f"cannot resume {session_name} with ai g: session metadata records legacy Gemini CLI, not Antigravity (agy). "
-            f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
+            f"cannot resume {session_name} with ai g: live tmux pane runs a Node process (possible legacy Gemini CLI), "
+            f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
         )
+    if saw_wrapper:
+        client = _g_session_client(session_name)
+        if client == "agy":
+            return None
+        if client == "gemini":
+            return (
+                f"cannot resume {session_name} with ai g: session metadata records legacy Gemini CLI, "
+                f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
+            )
     return (
         f"cannot resume {session_name} with ai g: live tmux pane client could not be verified as Antigravity (agy). "
         f"Attach directly with `ai attach {session_name}`."
@@ -5632,6 +5703,7 @@ def _do_session_launch(
         except _agy_session.IdentityError as exc:
             reporter.error("request", str(exc))
             sys.exit(1)
+    agy_sign_in_token: str | None = None
     if engine == "g" and not remote and not dry_run:
         if not agy_argv or not shutil.which(agy_argv[0]):
             reporter.error(
@@ -5644,6 +5716,7 @@ def _do_session_launch(
         if refusal:
             reporter.error("request", refusal)
             sys.exit(1)
+        agy_sign_in_token = _agy_session.sign_in_cache_token(agy_argv[0])
 
     if not name and extra_args:
         name = extra_args[0]
@@ -6590,6 +6663,8 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             _register_run_state(new_start=True)
+            if agy_sign_in_token:
+                os.environ[_agy_session.SIGN_IN_VERIFIED_ENV] = agy_sign_in_token
             if engine == "c":
                 _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
@@ -6614,6 +6689,8 @@ def _do_session_launch(
     _tmux_env_flags = build_tmux_env_flags(os.environ)
     if agent_diagnostic_path:
         _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
+    if agy_sign_in_token:
+        _tmux_env_flags += ["-e", f"{_agy_session.SIGN_IN_VERIFIED_ENV}={agy_sign_in_token}"]
 
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
@@ -6811,6 +6888,11 @@ def _do_session_launch(
             existing = subprocess.run(
                 tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False
             )
+    if engine == "g" and existing.returncode == 0:
+        live_refusal = _verify_live_agy_tmux_session(session_id)
+        if live_refusal:
+            reporter.error("session", live_refusal)
+            sys.exit(1)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump

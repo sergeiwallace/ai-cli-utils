@@ -97,6 +97,12 @@ _SSH_OPERATOR_EXIT_CODES = frozenset({0, 130})
 #: 78 is ``EX_CONFIG`` from BSD ``sysexits.h``; neither ssh nor tmux exits with it.
 REMOTE_LAUNCH_REFUSED_EXIT = 78
 
+#: Remote ``ai`` exit codes that represent terminal outcomes (never a dropped link) and must
+#: never trigger SSH/mosh reconnect retries or prompt resubmission:
+#: - 77: headless print exited with an empty response
+#: - 78: remote launch refused (``EX_CONFIG``) or headless print auto-denied
+REMOTE_TERMINAL_EXIT_CODES = frozenset({77, REMOTE_LAUNCH_REFUSED_EXIT})
+
 #: stderr text that marks a failed attempt as a CREDENTIAL fault rather than a lost link.
 #: ssh exits 255 for both, so its own stderr and its ``ProxyCommand``'s (which inherits it)
 #: are the only place the two differ. Matched case-insensitively.
@@ -370,17 +376,26 @@ def run_ssh_with_reconnect(
                     verdict = "clean_exit" if returncode == 0 else "interrupted"
                     cause = None
                     break
-                if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                if returncode in REMOTE_TERMINAL_EXIT_CODES:
                     verdict = "refused"
                     cause = "remote_launch"
                     restore_terminal()
-                    _out.emit(
-                        Tag.TRANSPORT,
-                        "connect",
-                        "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
-                        "since every retry would be refused the same way. Fix that, then re-run the same command.",
-                        err=True,
-                    )
+                    if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
+                            "since every retry would be refused the same way. Fix that, then re-run the same command.",
+                            err=True,
+                        )
+                    else:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            f"\nThe remote command ended with terminal status {returncode} (its reason is above); "
+                            "not reattaching to avoid re-running the request.",
+                            err=True,
+                        )
                     break
                 drops += 1
                 connected = _format_uptime(_monotonic() - started)
@@ -459,7 +474,7 @@ def run_ssh_with_reconnect(
                 )
                 time.sleep(delay)
                 delay = min(delay * 2, max_backoff_seconds)
-            if returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT) and diagnostic_ssh_args and remote_diagnostic_file:
+            if returncode in (0, *REMOTE_TERMINAL_EXIT_CODES) and diagnostic_ssh_args and remote_diagnostic_file:
                 _report_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
             if returncode == 0 and on_clean_exit is not None:
                 on_clean_exit()
@@ -923,6 +938,10 @@ async def _run_transport_loop(
                         exit_code = remote_status
                         break
 
+                if proc.returncode in REMOTE_TERMINAL_EXIT_CODES:
+                    exit_code = proc.returncode
+                    break
+
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
                 # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
                 # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
@@ -999,7 +1018,7 @@ async def _run_transport_loop(
                         raise_if_terminated()
                         if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
                             return 0
-                        if proc2.returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT):
+                        if proc2.returncode in (0, *REMOTE_TERMINAL_EXIT_CODES):
                             if ssh_diagnostic_args and remote_diagnostic_file:
                                 await asyncio.to_thread(
                                     _report_remote_diagnostic, ssh_diagnostic_args, remote_diagnostic_file

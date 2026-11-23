@@ -730,6 +730,8 @@ class TestCliSessionSetupBranches:
         def _run(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "has-session":
                 return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "list-panes":
+                return MagicMock(returncode=0, stdout="agy\tagy\t1234\n", stderr="")
             if cmd[0] == "tmux" and cmd[1] == "kill-session":
                 killed.append(True)
                 return MagicMock(returncode=0)

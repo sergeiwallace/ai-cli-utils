@@ -1138,6 +1138,12 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
             "tool call auto-denied by policy\n",
             agy_session.EXIT_PRINT_AUTO_DENIED,
         ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
     ],
 )
 def test_given_real_wrapper_print_cases_when_main_runs_then_classifies_by_event_not_prose(
@@ -1313,3 +1319,205 @@ def test_given_g_session_attach_when_do_attach_runs_then_uses_exact_tmux_target(
     assert has_calls and has_calls[0][-1] == "=g-myproject-1"
     assert attach_calls and attach_calls[0][-1] == "=g-myproject-1"
     assert "[agy]" in res.output
+
+
+def test_given_node_legacy_gemini_pane_with_stale_agy_record_when_verified_then_refuses(tmp_path, monkeypatch):
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    (tmp_path / "sessions").mkdir(parents=True)
+    (tmp_path / "sessions" / "g-myproject-1.agy.json").write_text("{}", encoding="utf-8")
+
+    # 1. Bare node pane (legacy Gemini CLI runtime) with stale .agy.json MUST refuse.
+    with patch.object(
+        main.subprocess,
+        "run",
+        return_value=type("R", (), {"returncode": 0, "stdout": "node\t\t999999\n", "stderr": ""})(),
+    ):
+        refusal = main._verify_live_agy_tmux_session("g-myproject-1")
+    assert refusal is not None and "Node" in refusal
+
+    # 2. Wrapper shell hosting a child `node @google/gemini-cli` process with stale .agy.json MUST refuse.
+    class FakeChild:
+        def cmdline(self):
+            return ["node", "/usr/local/lib/node_modules/@google/gemini-cli/dist/index.js"]
+
+    class FakeRoot:
+        def __init__(self, _pid):
+            pass
+
+        def cmdline(self):
+            return ["bash", "/tmp/session.sh"]
+
+        def children(self, recursive=True):
+            return [FakeChild()]
+
+    with (
+        patch.object(
+            main.subprocess,
+            "run",
+            return_value=type(
+                "R", (), {"returncode": 0, "stdout": "bash\tbash /tmp/session.sh\t4242\n", "stderr": ""}
+            )(),
+        ),
+        patch.object(main.psutil, "Process", FakeRoot),
+    ):
+        child_refusal = main._verify_live_agy_tmux_session("g-myproject-1")
+    assert child_refusal is not None and "legacy Gemini CLI" in child_refusal
+
+
+def test_given_existing_legacy_gemini_tmux_session_when_ai_g_1_runs_then_refuses_attach(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    home = tmp_path / "home"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    state_dir = tmp_path / "state"
+    (state_dir / "sessions").mkdir(parents=True)
+    (state_dir / "sessions" / "g-myproject-1.agy.json").write_text("{}", encoding="utf-8")
+    _seed_agy_home(home, oauth=True)
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "trigger_background_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: ("g-myproject-1", "myproject-1"))
+
+    attached: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: attached.append(list(argv)))
+
+    def fake_run(cmd, **kwargs):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "list-panes" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "node\t\t999999\n", "stderr": ""})()
+        if "list-sessions" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    result = CliRunner().invoke(main._cli_group, ["g", "1"])
+    assert result.exit_code == 1
+    assert "Antigravity" in result.output
+    assert not attached
+    assert not (state_dir / "sessions" / "g-myproject-1.sh").exists()
+
+
+@pytest.mark.parametrize("exit_code", [agy_session.EXIT_PRINT_EMPTY, agy_session.EXIT_PRINT_AUTO_DENIED])
+def test_given_remote_print_terminal_exit_77_or_78_when_ssh_reconnect_runs_then_stops_without_retry(
+    tmp_path, monkeypatch, exit_code
+):
+    from ai_cli import transport
+
+    ssh_calls: list[list[str]] = []
+
+    def fake_call(argv, **kwargs):
+        ssh_calls.append(list(argv))
+        return exit_code
+
+    monkeypatch.setattr(transport.subprocess, "call", fake_call)
+    monkeypatch.setattr(
+        transport.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    )
+    monkeypatch.setattr(transport.time, "sleep", lambda _s: (_ for _ in ()).throw(AssertionError("must not retry")))
+
+    rc = transport.run_ssh_with_reconnect(
+        ["ssh", "user@192.0.2.10", "ai g -- -p --mode plan hi"],
+        ["true"],
+        max_attempts=5,
+        backoff_seconds=1.0,
+        outcome_path=tmp_path / "outcome.json",
+    )
+    assert rc == exit_code
+    assert len(ssh_calls) == 1
+
+
+def test_given_darwin_signin_probe_timeout_when_ai_g_runs_then_warns_allows_and_probes_once(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    home = tmp_path / "home"
+    home.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(agy_session.sys, "platform", "darwin")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
+    monkeypatch.chdir(worktree)
+
+    probe_calls: list[list[str]] = []
+    execed_agy: list[tuple[str, list[str], str | None]] = []
+
+    def fake_probe_run(argv, **kwargs):
+        if list(argv) == ["agy", "models"]:
+            probe_calls.append(list(argv))
+            raise agy_session.subprocess.TimeoutExpired(argv, kwargs.get("timeout", 8))
+        return type("R", (), {"returncode": 0, "stdout": "1.5.14\n", "stderr": ""})()
+
+    def fake_agy_handoff(exe, argv):
+        execed_agy.append((exe, list(argv), os.environ.get(agy_session.SIGN_IN_VERIFIED_ENV)))
+        raise SystemExit(0)
+
+    def fake_exec_with_direnv(_root, command, *, handoff=None):
+        # Run the real agy_session.main() child step in-process to verify preflight cache reuse.
+        idx = command.index("ai_cli.agy_session")
+        with patch.object(main, "_exec_handoff", side_effect=fake_agy_handoff):
+            rc = agy_session.main(command[idx + 1 :])
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(agy_session.subprocess, "run", fake_probe_run)
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "session": {"use_pty": False, "use_tmux": False},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else None)
+    monkeypatch.setattr(main, "_exec_with_direnv", fake_exec_with_direnv)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: (SLOT, AI_NAME))
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _sid, h: h)
+    monkeypatch.setattr(
+        main._compact_transport,
+        "resolve",
+        lambda **_kw: type(
+            "CT",
+            (),
+            {
+                "must_refuse": False,
+                "platform_limited": False,
+                "detail": "ok",
+                "kind": "none",
+            },
+        )(),
+    )
+
+    result = CliRunner().invoke(main._cli_group, ["g", "1", "--no-worktree", "--bare"])
+    assert result.exit_code == 0, result.output
+    assert "Could not verify Antigravity sign-in state" in result.output
+    assert len(probe_calls) == 1
+    assert execed_agy and execed_agy[0][0] == "agy"
+    assert execed_agy[0][2] is None

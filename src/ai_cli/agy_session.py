@@ -51,6 +51,7 @@ SIGN_IN_STEP = "run `agy` once in a terminal and finish the Google sign-in, then
 HOOK_COMMAND = "ai internal agy-session-confirm"
 SLOT_RECORD_ENV = "AI_CLI_AGY_SLOT_RECORD"
 LAUNCH_TOKEN_ENV = "AI_CLI_AGY_LAUNCH_TOKEN"
+SIGN_IN_VERIFIED_ENV = "AI_CLI_AGY_SIGN_IN_VERIFIED"
 EXIT_PRINT_EMPTY = 77
 EXIT_PRINT_AUTO_DENIED = 78
 _UUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
@@ -81,6 +82,18 @@ _PRINT_DENIAL_MARKERS = (
     "permission denied",
     "requires confirmation",
     "tool confirmation",
+)
+# Narrower markers safe to match in plain-text stdout without flagging ordinary
+# assistant prose such as "The file returned permission denied when inspected."
+_STDOUT_AUTO_DENIAL_MARKERS = (
+    "tool call auto-denied",
+    "tool call auto denied",
+    "tool call denied",
+    "tool denied",
+    "auto-denied by",
+    "auto denied by",
+    "tool confirmation required",
+    "requires tool confirmation",
 )
 
 
@@ -139,11 +152,18 @@ def _probe_sign_in(executable: str, home: Path) -> str:
     return "unknown"
 
 
+def sign_in_cache_token(executable: str, home: Path | None = None) -> str:
+    """Return the process-scoped cache key binding a preflight sign-in probe to ``(home, executable)``."""
+    root = home if home is not None else Path.home()
+    return f"{root}:{executable}"
+
+
 def subscription_refusal(
     home: Path | None = None,
     *,
     executable: str | None = None,
     platform: str | None = None,
+    allow_cached: bool = False,
 ) -> str | None:
     """Return why ``agy`` must not launch on this account, or None when it may.
 
@@ -151,7 +171,8 @@ def subscription_refusal(
     ``modelProvider`` overrides). For sign-in presence, accepts the local OAuth token file
     when present (fast path on Linux) and otherwise probes ``agy models`` non-interactively
     so OS credential stores (macOS Keychain, Windows Credential Manager) work without
-    requiring a plaintext token file.
+    requiring a plaintext token file. When ``allow_cached`` is True and preflight already
+    verified sign-in for the same ``(home, executable)``, skips repeating the subprocess probe.
     """
     root = home if home is not None else Path.home()
     try:
@@ -165,6 +186,8 @@ def subscription_refusal(
             "remove that key to use the Google sign-in, then retry"
         )
     if (root / SIGN_IN_FILE).is_file():
+        return None
+    if allow_cached and executable and os.environ.get(SIGN_IN_VERIFIED_ENV) == sign_in_cache_token(executable, root):
         return None
     target_platform = sys.platform if platform is None else platform
     if executable:
@@ -471,6 +494,9 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
                 return EXIT_PRINT_AUTO_DENIED
             if not text:
                 return EXIT_PRINT_EMPTY
+            return 0
+    if any(marker in stripped.lower() for marker in _STDOUT_AUTO_DENIAL_MARKERS):
+        return EXIT_PRINT_AUTO_DENIED
     return 0
 
 
@@ -1105,7 +1131,8 @@ def main(argv: list[str] | None = None) -> int:
         stdin_payload: str | None = None
         print_launch = False
         if action == "launch":
-            refusal = subscription_refusal(executable=base_argv[0])
+            refusal = subscription_refusal(executable=base_argv[0], allow_cached=True)
+            os.environ.pop(SIGN_IN_VERIFIED_ENV, None)
             if refusal:
                 raise IdentityError(refusal)
             validate_launch_args(combined_args)
