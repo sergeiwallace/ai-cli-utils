@@ -321,8 +321,15 @@ def test_given_existing_spares_later_reserved_in_config_when_reconcile_names_run
 
 
 def _cli_launch_patches(repo_root):
+    from unittest.mock import MagicMock
+
     return [
         ("ai_cli.main._auto_update_if_stale", {"return_value": False}),
+        ("ai_cli.main.shutil.which", {"return_value": "/usr/bin/fake-cli"}),
+        (
+            "ai_cli.compact_transport.resolve",
+            {"return_value": MagicMock(must_refuse=False, platform_limited=False, detail="pty")},
+        ),
         ("ai_cli.session.cleanup_stale_sessions", {}),
         ("ai_cli.trust.ensure_workspace_trusted", {}),
         ("ai_cli.session.detect_repo_root", {"return_value": repo_root}),
