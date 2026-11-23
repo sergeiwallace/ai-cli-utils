@@ -129,4 +129,5 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     monkeypatch.setattr(main, "_exec_tmux", lambda argv: attached.append(argv))
     result = CliRunner().invoke(main._cli_group, ["attach", SLOT])
     assert result.exit_code == 0, result.output
-    assert attached == [["tmux", "-S", tmux_socket, "attach-session", "-t", SLOT]]
+    assert "[agy]" in result.output
+    assert attached == [["tmux", "-S", tmux_socket, "attach-session", "-t", f"={SLOT}"]]

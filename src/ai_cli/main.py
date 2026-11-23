@@ -3519,6 +3519,65 @@ def _g_session_client(session_name: str) -> str | None:
     return None
 
 
+def _pane_command_client(pane_line: str) -> str | None:
+    """Classify a tmux pane line ``<pane_current_command>\\t<pane_start_command>`` by executable token.
+
+    Matches only exact process/command executables (never arbitrary path or directory names
+    such as ``/tmp/agy-demo``).
+    """
+    current_raw, _, start_raw = pane_line.partition("\t")
+    proc = Path(current_raw.strip()).name.lower() if current_raw.strip() else ""
+    try:
+        start_tokens = shlex.split(start_raw)
+    except ValueError:
+        start_tokens = start_raw.split()
+
+    def _tok_name(tok: str) -> str:
+        return Path(tok).name.lower()
+
+    if proc == "agy":
+        return "agy"
+    if proc == "gemini":
+        return "gemini"
+
+    for idx, tok in enumerate(start_tokens):
+        if tok == "-m" and idx + 1 < len(start_tokens) and start_tokens[idx + 1] == "ai_cli.agy_session":
+            return "agy"
+    if start_tokens:
+        first = _tok_name(start_tokens[0])
+        if first == "agy":
+            return "agy"
+        if first == "gemini":
+            return "gemini"
+        # Check commands invoked via `sh -c '...'` or `run_agent <cmd>` by inspecting command position only.
+        if first in {"sh", "bash", "zsh", "fish"} and "-c" in start_tokens:
+            c_idx = start_tokens.index("-c")
+            if c_idx + 1 < len(start_tokens):
+                shell_body = start_tokens[c_idx + 1]
+                for segment in re.split(r"&&|\|\||;|\n", shell_body):
+                    try:
+                        seg_tokens = shlex.split(segment)
+                    except ValueError:
+                        seg_tokens = segment.split()
+                    while seg_tokens and (seg_tokens[0] in {"exec", "run_agent", "env"} or "=" in seg_tokens[0]):
+                        seg_tokens.pop(0)
+                    if not seg_tokens:
+                        continue
+                    for s_idx, s_tok in enumerate(seg_tokens):
+                        if (
+                            s_tok == "-m"
+                            and s_idx + 1 < len(seg_tokens)
+                            and seg_tokens[s_idx + 1] == "ai_cli.agy_session"
+                        ):
+                            return "agy"
+                    cmd_name = _tok_name(seg_tokens[0])
+                    if cmd_name == "agy":
+                        return "agy"
+                    if cmd_name == "gemini":
+                        return "gemini"
+    return None
+
+
 def _verify_live_agy_tmux_session(session_name: str) -> str | None:
     """Verify a live ``g-`` tmux session runs Antigravity (``agy``), checking live pane state first.
 
@@ -3530,7 +3589,7 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
     try:
         res = subprocess.run(
             tmux_binary.argv(
-                "list-panes", "-t", f"={session_name}", "-F", "#{pane_current_command} #{pane_start_command}"
+                "list-panes", "-t", f"={session_name}", "-F", "#{pane_current_command}\t#{pane_start_command}"
             ),
             capture_output=True,
             text=True,
@@ -3547,14 +3606,20 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
             f"cannot resume {session_name} with ai g: tmux pane probe returned no live pane info. "
             f"Inspect or attach directly with `ai attach {session_name}`."
         )
-    lower = res.stdout.lower()
-    if "agy" in lower or "ai_cli.agy_session" in lower:
+    saw_agy = False
+    for line in res.stdout.splitlines():
+        if not line.strip():
+            continue
+        detected = _pane_command_client(line)
+        if detected == "gemini":
+            return (
+                f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
+                f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
+            )
+        if detected == "agy":
+            saw_agy = True
+    if saw_agy:
         return None
-    if "gemini" in lower:
-        return (
-            f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, not Antigravity (agy). "
-            f"Attach directly with `ai attach {session_name}` or retire it before launching agy."
-        )
     client = _g_session_client(session_name)
     if client == "agy":
         return None
@@ -3570,12 +3635,18 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
 
 
 def _do_attach(session_name: str) -> NoReturn:
-    check = subprocess.run(tmux_binary.argv("has-session", "-t", session_name), capture_output=True, check=False)
+    tmux_target = f"={session_name}" if session_name.startswith("g-") else session_name
+    check = subprocess.run(tmux_binary.argv("has-session", "-t", tmux_target), capture_output=True, check=False)
     if check.returncode != 0:
         _out.emit(Tag.ATTACH, "attach", f"No tmux session named '{session_name}'", err=True)
         sys.exit(1)
+    client = _g_session_client(session_name)
+    if client == "agy":
+        _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [agy]")
+    elif client == "gemini":
+        _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [legacy gemini]")
     _resume_suspended_panes(session_name)
-    _exec_tmux(tmux_binary.argv("attach-session", "-t", session_name))
+    _exec_tmux(tmux_binary.argv("attach-session", "-t", tmux_target))
 
 
 def _do_ls(show_all: bool) -> None:
@@ -4758,6 +4829,22 @@ def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str 
         return matches[0].name
     if engine == "c" and _find_cc_session_candidates_by_title(Path(repo_root), title):
         return title
+    if engine == "g":
+        sessions_dir = _config.get_xdg_state_home() / "sessions"
+        resolved_root = Path(repo_root).resolve()
+        for prefix in ("g-", "g-r-"):
+            record_path = sessions_dir / f"{prefix}{title}.agy.json"
+            if not record_path.is_file():
+                continue
+            try:
+                doc = json.loads(record_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or not isinstance(doc.get("cwd"), str):
+                continue
+            record_cwd = Path(doc["cwd"]).resolve()
+            if record_cwd == resolved_root or resolved_root in record_cwd.parents:
+                return title
     return None
 
 
@@ -5503,8 +5590,20 @@ def _do_session_launch(
     # A remote dispatch is excluded, like the tmux probes above it: the terminal that
     # will own the session is on the REMOTE host, so a local probe would be a verdict
     # about the wrong machine.
+    use_sandbox = sandbox
+    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
+    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
+    agy_cmd = config.get("agy", {}).get("command") or "agy"
+    pi_provider = config.get("pi", {}).get("provider", "openai-codex")
+    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
+    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
+    if agy_print_mode:
+        # Headless print runs are synchronous and non-interactive; never detach them inside
+        # tmux (which would exit 0 before the model runs) and never require interactive PTY.
+        bare = True
+
     compact_transport = None
-    if not remote:
+    if not remote and not agy_print_mode:
         compact_transport = _compact_transport.resolve(
             tmux_usable=not bare,
             tmux_detail=tmux_reason,
@@ -5521,20 +5620,19 @@ def _do_session_launch(
         else:
             reporter.detail("compact", compact_transport.detail)
 
-    use_sandbox = sandbox
-    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
-    agy_cmd = config.get("agy", {}).get("command") or "agy"
-    pi_provider = config.get("pi", {}).get("provider", "openai-codex")
-
     if engine == "p" and not shutil.which("pi"):
         reporter.error("request", "pi executable not found on PATH. Install pi, then retry.")
         sys.exit(1)
     if engine == "cx" and not shutil.which("codex"):
         reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
+    if engine == "g":
+        try:
+            _agy_session.validate_launch_args([*agy_argv[1:], *extra_args])
+        except _agy_session.IdentityError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
     if engine == "g" and not remote and not dry_run:
-        agy_argv = shlex.split(agy_cmd)
         if not agy_argv or not shutil.which(agy_argv[0]):
             reporter.error(
                 "request",
@@ -5542,14 +5640,9 @@ def _do_session_launch(
                 "Install agy or set [agy] command in config.toml, then retry.",
             )
             sys.exit(1)
-        refusal = _agy_session.subscription_refusal()
+        refusal = _agy_session.subscription_refusal(executable=agy_argv[0])
         if refusal:
             reporter.error("request", refusal)
-            sys.exit(1)
-        try:
-            _agy_session.validate_launch_args([*agy_argv[1:], *extra_args])
-        except _agy_session.IdentityError as exc:
-            reporter.error("request", str(exc))
             sys.exit(1)
 
     if not name and extra_args:
@@ -5738,6 +5831,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
+        if engine == "g" and extra_args:
+            remote_cmd += " -- " + " ".join(shlex.quote(arg) for arg in extra_args)
         remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
         mosh_remote_cmd = _mosh_remote_command(remote_cmd, remote_diagnostic_file)
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.

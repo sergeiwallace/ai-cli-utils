@@ -25,7 +25,6 @@ import os
 import re
 import secrets
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -97,11 +96,64 @@ def _is_abs_path(value: object) -> bool:
     return isinstance(value, str) and bool(value) and Path(value).is_absolute()
 
 
-def subscription_refusal(home: Path | None = None) -> str | None:
-    """Return why ``agy`` must not launch on this account, or None when it may."""
+_AUTH_ERROR_MARKERS = (
+    "please sign in",
+    "not signed in",
+    "sign in",
+    "unauthenticated",
+    "unauthorized",
+    "login required",
+    "authentication required",
+)
+
+
+def _probe_sign_in(executable: str, home: Path) -> str:
+    """Ask ``agy models`` whether this account is signed in without reading any token bytes.
+
+    Returns ``"signed-in"``, ``"signed-out"``, or ``"unknown"`` (for example offline or
+    missing binary). Always strips API-key environment variables so an ambient key cannot
+    satisfy the probe.
+    """
+    env = _sanitized_env()
+    env["HOME"] = str(home)
+    if sys.platform == "win32":
+        # Platform-specific Windows home directory override for isolated sign-in probes.
+        env["USERPROFILE"] = str(home)
+    try:
+        result = subprocess.run(
+            [executable, "models"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if result.returncode == 0:
+        return "signed-in"
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    if any(marker in combined for marker in _AUTH_ERROR_MARKERS):
+        return "signed-out"
+    return "unknown"
+
+
+def subscription_refusal(
+    home: Path | None = None,
+    *,
+    executable: str | None = None,
+    platform: str | None = None,
+) -> str | None:
+    """Return why ``agy`` must not launch on this account, or None when it may.
+
+    Enforces the subscription-only billing guard on every OS (refusing API-billed
+    ``modelProvider`` overrides). For sign-in presence, accepts the local OAuth token file
+    when present (fast path on Linux) and otherwise probes ``agy models`` non-interactively
+    so OS credential stores (macOS Keychain, Windows Credential Manager) work without
+    requiring a plaintext token file.
+    """
     root = home if home is not None else Path.home()
-    if not (root / SIGN_IN_FILE).is_file():
-        return f"no Google sign-in found for agy ({SIGN_IN_FILE.as_posix()} is missing): {SIGN_IN_STEP}"
     try:
         settings = json.loads((root / SETTINGS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -112,7 +164,26 @@ def subscription_refusal(home: Path | None = None) -> str | None:
             f'agy is set to bill an API ("modelProvider": "{provider}" in {SETTINGS_FILE.as_posix()}); '
             "remove that key to use the Google sign-in, then retry"
         )
-    return None
+    if (root / SIGN_IN_FILE).is_file():
+        return None
+    target_platform = sys.platform if platform is None else platform
+    if executable:
+        probe = _probe_sign_in(executable, root)
+        if probe == "signed-in":
+            return None
+        if probe == "signed-out":
+            return f"no Google sign-in found for agy: {SIGN_IN_STEP}"
+        if not target_platform.startswith("linux"):
+            # Platform-specific macOS/Windows credential stores live outside ~/.gemini;
+            # when offline or unprovable, warn and let agy handle sign-in while keeping
+            # the modelProvider refusal and stripped API-key variables active.
+            output.warning(
+                output.Tag.SESSION,
+                "session",
+                "Could not verify Antigravity sign-in state (offline or probe unavailable); continuing.",
+            )
+            return None
+    return f"no Google sign-in found for agy ({SIGN_IN_FILE.as_posix()} is missing): {SIGN_IN_STEP}"
 
 
 def strip_api_keys(environ: dict[str, str] | os._Environ[str]) -> None:
@@ -280,8 +351,19 @@ def validate_print_prompt_and_stdin(
     return None
 
 
+_NON_ASSISTANT_TYPES = frozenset({"user", "tool_result", "tool_use", "system", "init", "meta", "status"})
+_NON_ASSISTANT_ROLES = frozenset({"user", "tool", "system"})
+_DENIAL_EVENT_TYPES = frozenset({"error", "permission_denied", "tool_denied", "auto_denied"})
+_DENIAL_STATUSES = frozenset({"denied", "auto_denied", "permission_denied", "error"})
+
+
 def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
-    """Return ``(assistant_response_text, auto_denied)`` from a single parsed JSON print payload."""
+    """Return ``(assistant_response_text, auto_denied)`` from a single parsed JSON print payload.
+
+    Classifies strictly by structured event type/role and error/denial fields rather than
+    free-text prose matching, so assistant answers discussing permissions never false-positive
+    and tool-result-only or echoed-user streams never count as assistant output.
+    """
     if not isinstance(payload, dict):
         return "", False
     denied = bool(payload.get("is_error"))
@@ -291,13 +373,20 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
     subtype = payload.get("subtype")
     if isinstance(subtype, str) and subtype.lower() in {"error_during_execution", "permission_denied", "auto_denied"}:
         denied = True
-    # Echoed user turns in stream-json are never assistant responses.
     event_type = payload.get("type")
-    if isinstance(event_type, str) and event_type.lower() == "user":
+    event_type_lower = event_type.lower() if isinstance(event_type, str) else ""
+    if event_type_lower in _DENIAL_EVENT_TYPES:
+        denied = True
+    status_val = payload.get("status")
+    if isinstance(status_val, str) and status_val.lower() in _DENIAL_STATUSES:
+        denied = True
+
+    if event_type_lower in _NON_ASSISTANT_TYPES:
         return "", denied
     role = payload.get("role")
-    if isinstance(role, str) and role.lower() == "user":
+    if isinstance(role, str) and role.lower() in _NON_ASSISTANT_ROLES:
         return "", denied
+
     texts: list[str] = []
     for key in ("result", "response", "text", "content", "delta"):
         val = payload.get(key)
@@ -306,13 +395,18 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
     message = payload.get("message")
     if isinstance(message, dict):
         msg_role = message.get("role")
-        if not (isinstance(msg_role, str) and msg_role.lower() == "user"):
+        if not (isinstance(msg_role, str) and msg_role.lower() in _NON_ASSISTANT_ROLES):
             content = message.get("content")
             if isinstance(content, str) and content.strip():
                 texts.append(content.strip())
             elif isinstance(content, list):
                 for item in content:
-                    if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") not in {"tool_use", "tool_result"}
+                        and isinstance(item.get("text"), str)
+                        and item["text"].strip()
+                    ):
                         texts.append(item["text"].strip())
     return "\n".join(texts), denied
 
@@ -323,16 +417,16 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
         return returncode
 
     fmt = output_format.strip().lower() or "text"
-    combined_lower = f"{stdout}\n{stderr}".lower()
-    has_denial_marker = any(marker in combined_lower for marker in _PRINT_DENIAL_MARKERS)
+    stderr_lower = stderr.lower()
+    has_stderr_denial = any(marker in stderr_lower for marker in _PRINT_DENIAL_MARKERS)
 
     if fmt == "json":
         try:
             parsed = json.loads(stdout)
         except ValueError:
-            return EXIT_PRINT_AUTO_DENIED if has_denial_marker else EXIT_PRINT_EMPTY
+            return EXIT_PRINT_AUTO_DENIED if has_stderr_denial else EXIT_PRINT_EMPTY
         text, denied = _extract_json_text_and_denial(parsed)
-        if denied or has_denial_marker:
+        if denied or has_stderr_denial:
             return EXIT_PRINT_AUTO_DENIED
         if not text:
             return EXIT_PRINT_EMPTY
@@ -341,7 +435,7 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
     if fmt == "stream-json":
         lines = [line.strip() for line in stdout.splitlines() if line.strip()]
         if not lines:
-            return EXIT_PRINT_AUTO_DENIED if has_denial_marker else EXIT_PRINT_EMPTY
+            return EXIT_PRINT_AUTO_DENIED if has_stderr_denial else EXIT_PRINT_EMPTY
         texts: list[str] = []
         denied = False
         for line in lines:
@@ -354,16 +448,16 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
                 denied = True
             if part_text:
                 texts.append(part_text)
-        if denied or has_denial_marker:
+        if denied or has_stderr_denial:
             return EXIT_PRINT_AUTO_DENIED
         if not texts:
             return EXIT_PRINT_EMPTY
         return 0
 
-    if has_denial_marker:
+    if has_stderr_denial:
         return EXIT_PRINT_AUTO_DENIED
     stripped = stdout.strip()
-    if not stripped:
+    if not stripped or stripped == "SUCCESS":
         return EXIT_PRINT_EMPTY
     # A bare JSON status object (e.g. {"status": "SUCCESS"}) with no response text is empty.
     if stripped.startswith("{") and stripped.endswith("}"):
@@ -401,6 +495,22 @@ def _plugin_is_owned(manifest_path: Path) -> bool:
     return owner is None or owner == PLUGIN_OWNER
 
 
+def _create_exclusive_backup(target: Path, content: bytes) -> Path:
+    """Write ``content`` to an exclusively created ``.bak`` (or ``.bak.N``) file."""
+    seq = 0
+    while True:
+        name = f"{target.name}.bak" if seq == 0 else f"{target.name}.bak.{seq}"
+        candidate = target.with_name(name)
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            seq += 1
+            continue
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+        return candidate
+
+
 def ensure_confirm_plugin(home: Path | None = None) -> Path:
     """Install or update the owned lightweight global ``SessionStart`` confirmation plugin."""
     root = home if home is not None else Path.home()
@@ -428,32 +538,36 @@ def ensure_confirm_plugin(home: Path | None = None) -> Path:
             and hooks_path.read_text(encoding="utf-8") == hooks_text
         ):
             return plugin_dir
-        if manifest_path.exists() and not _plugin_is_owned(manifest_path):
-            raise IdentityError(
-                f"refusing to overwrite unmanaged Antigravity plugin at {plugin_dir}; "
-                "inspect or remove it before retrying"
-            )
-        if not manifest_path.exists() and hooks_path.exists():
-            raise IdentityError(
-                f"refusing to overwrite unmanaged Antigravity hooks at {hooks_path}; "
-                "inspect or remove it before retrying"
-            )
         plugin_dir.mkdir(parents=True, exist_ok=True)
-        for target, text in ((manifest_path, manifest_text), (hooks_path, hooks_text)):
-            if target.is_file() and target.read_text(encoding="utf-8") != text:
-                backup = target.with_name(f"{target.name}.bak")
-                if backup.exists():
-                    seq = 1
-                    while target.with_name(f"{target.name}.bak.{seq}").exists():
-                        seq += 1
-                    backup = target.with_name(f"{target.name}.bak.{seq}")
-                shutil.copy2(target, backup)
-            staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-            staged.write_text(text, encoding="utf-8")
-            staged.replace(target)
+        with portalocker.Lock(str(plugin_dir / ".plugin.lock"), timeout=5):
+            if (
+                manifest_path.is_file()
+                and hooks_path.is_file()
+                and manifest_path.read_text(encoding="utf-8") == manifest_text
+                and hooks_path.read_text(encoding="utf-8") == hooks_text
+            ):
+                return plugin_dir
+            if manifest_path.exists() and not _plugin_is_owned(manifest_path):
+                raise IdentityError(
+                    f"refusing to overwrite unmanaged Antigravity plugin at {plugin_dir}; "
+                    "inspect or remove it before retrying"
+                )
+            if not manifest_path.exists() and hooks_path.exists():
+                raise IdentityError(
+                    f"refusing to overwrite unmanaged Antigravity hooks at {hooks_path}; "
+                    "inspect or remove it before retrying"
+                )
+            for target, text in ((manifest_path, manifest_text), (hooks_path, hooks_text)):
+                if target.is_file():
+                    existing_bytes = target.read_bytes()
+                    if existing_bytes != text.encode("utf-8"):
+                        _create_exclusive_backup(target, existing_bytes)
+                staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+                staged.write_text(text, encoding="utf-8")
+                staged.replace(target)
     except IdentityError:
         raise
-    except OSError as exc:
+    except (OSError, portalocker.LockException) as exc:
         raise IdentityError(f"could not write Antigravity confirmation hook under {plugin_dir}: {exc}") from None
     return plugin_dir
 
@@ -568,10 +682,10 @@ def _registry_lock_path(record_path: Path) -> Path:
     return record_path.parent / ".agy-slots.lock"
 
 
-def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> None:
-    """Refuse binding or adopting a conversation UUID already owned by another slot."""
-    wanted = conversation_id.lower()
+def _owned_conversations(record_path: Path) -> dict[str, str]:
+    """Return ``{lowercase_uuid: owner_slot}`` for all sibling ``*.agy.json`` records."""
     resolved = record_path.resolve()
+    owned: dict[str, str] = {}
     for sibling in sorted(resolved.parent.glob("*.agy.json")):
         if sibling.resolve() == resolved:
             continue
@@ -581,19 +695,24 @@ def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> Non
             continue
         if not isinstance(other, dict):
             continue
-        owned: set[str] = set()
+        owner = str(other.get("slot") or sibling.stem)
         other_cid = other.get("conversation_id")
         if isinstance(other_cid, str):
-            owned.add(other_cid.lower())
+            owned[other_cid.lower()] = owner
         saved = other.get("resumable")
         if isinstance(saved, dict) and isinstance(saved.get("conversation_id"), str):
-            owned.add(saved["conversation_id"].lower())
-        if wanted in owned:
-            owner = other.get("slot") or sibling.stem
-            raise IdentityError(
-                f"Antigravity conversation {conversation_id} is already owned by slot {owner}; "
-                "concurrent multi-slot reuse refused"
-            )
+            owned[saved["conversation_id"].lower()] = owner
+    return owned
+
+
+def _ensure_conversation_unowned(record_path: Path, conversation_id: str) -> None:
+    """Refuse binding or adopting a conversation UUID already owned by another slot."""
+    owner = _owned_conversations(record_path).get(conversation_id.lower())
+    if owner is not None:
+        raise IdentityError(
+            f"Antigravity conversation {conversation_id} is already owned by slot {owner}; "
+            "concurrent multi-slot reuse refused"
+        )
 
 
 def _legacy_gemini_records(cwd: Path, home: Path | None = None) -> list:
@@ -737,7 +856,10 @@ def prepare(
                 target = adopt_id
             else:
                 legacy_gemini = _legacy_gemini_records(resolved_cwd, home)
-                existing_agy = _existing_agy_records(resolved_cwd, home)
+                owned_cids = _owned_conversations(path)
+                existing_agy = [
+                    rec for rec in _existing_agy_records(resolved_cwd, home) if rec.session_id.lower() not in owned_cids
+                ]
                 if start_fresh is None and legacy_gemini:
                     raise IdentityError(
                         "Legacy Gemini CLI records exist in this worktree; refusing wrong-client reuse. "
@@ -983,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         stdin_payload: str | None = None
         print_launch = False
         if action == "launch":
-            refusal = subscription_refusal()
+            refusal = subscription_refusal(executable=base_argv[0])
             if refusal:
                 raise IdentityError(refusal)
             validate_launch_args(combined_args)

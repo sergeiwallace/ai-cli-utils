@@ -520,7 +520,7 @@ class TestCliSessionSetupBranches:
     @pytest.fixture(autouse=True)
     def _agy_ready(self, monkeypatch):
         real_which = shutil.which
-        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda home=None: None)
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda *_a, **_kw: None)
         monkeypatch.setattr(
             "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
         )
@@ -3210,7 +3210,7 @@ class TestLocalProjectChdir:
     @pytest.fixture(autouse=True)
     def _agy_ready(self, monkeypatch):
         real_which = shutil.which
-        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda home=None: None)
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda *_a, **_kw: None)
         monkeypatch.setattr(
             "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
         )

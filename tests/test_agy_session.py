@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -768,13 +769,18 @@ def test_given_legacy_gemini_live_pane_when_ai_g_resumes_or_ls_runs_then_identif
     assert main._g_session_client("g-myproject-old") == "gemini"
     assert main._g_session_client("g-myproject-new") == "agy"
 
-    # 1. Stale .agy.json cannot mask a live legacy gemini pane.
-    with patch.object(
-        main.subprocess,
-        "run",
-        return_value=type("R", (), {"returncode": 0, "stdout": "gemini gemini -y\n"})(),
+    # 1. Stale .agy.json cannot mask a live legacy gemini pane (even started in an `agy-demo` directory!).
+    for pane_line in (
+        "gemini\tgemini -y\n",
+        "gemini\tsh -c 'cd /tmp/agy-demo && gemini -y'\n",
+        "zsh\tsh -c 'cd /tmp/agy-demo && gemini -y'\n",
     ):
-        assert main._verify_live_agy_tmux_session("g-myproject-stale") is not None
+        with patch.object(
+            main.subprocess,
+            "run",
+            return_value=type("R", (), {"returncode": 0, "stdout": pane_line})(),
+        ):
+            assert main._verify_live_agy_tmux_session("g-myproject-stale") is not None
 
     # 2. Failed tmux pane probe MUST refuse rather than permit attachment.
     with patch.object(
@@ -788,13 +794,13 @@ def test_given_legacy_gemini_live_pane_when_ai_g_resumes_or_ls_runs_then_identif
     with patch.object(
         main.subprocess,
         "run",
-        return_value=type("R", (), {"returncode": 0, "stdout": "agy agy --conversation ...\n"})(),
+        return_value=type("R", (), {"returncode": 0, "stdout": "agy\tagy --conversation ...\n"})(),
     ):
         assert main._verify_live_agy_tmux_session("g-myproject-new") is None
     with patch.object(
         main.subprocess,
         "run",
-        return_value=type("R", (), {"returncode": 0, "stdout": "zsh -l\n"})(),
+        return_value=type("R", (), {"returncode": 0, "stdout": "zsh\tzsh -l\n"})(),
     ):
         assert main._verify_live_agy_tmux_session("g-myproject-new") is None
 
@@ -804,7 +810,7 @@ def test_given_legacy_gemini_live_pane_when_ai_g_resumes_or_ls_runs_then_identif
         patch.object(
             main.subprocess,
             "run",
-            return_value=type("R", (), {"returncode": 0, "stdout": "gemini gemini -y\n"})(),
+            return_value=type("R", (), {"returncode": 0, "stdout": "zsh\tsh -c 'cd /tmp/agy-demo && gemini -y'\n"})(),
         ),
         pytest.raises(SystemExit) as exc,
     ):
@@ -1039,3 +1045,271 @@ def test_given_bare_headless_print_launch_with_pty_transport_when_dispatched_the
     assert not pty_called
     assert exec_handoff_args
     assert exec_handoff_args[0][1] is main._exec_handoff
+
+
+def test_given_absent_token_file_and_signed_in_agy_on_darwin_when_subscription_refusal_checked_then_allows(
+    tmp_path, monkeypatch
+):
+    for key in agy_session.API_KEY_VARIABLES:
+        monkeypatch.setenv(key, "must-be-stripped")
+    seen_env: dict = {}
+
+    def fake_run(argv, **kwargs):
+        assert argv == ["agy", "models"]
+        assert kwargs.get("stdin") == agy_session.subprocess.DEVNULL
+        seen_env.update(kwargs.get("env") or {})
+        return type("Res", (), {"returncode": 0, "stdout": "gemini-4-neon-high\n", "stderr": ""})()
+
+    with patch.object(agy_session.subprocess, "run", side_effect=fake_run):
+        assert agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="darwin") is None
+    for key in agy_session.API_KEY_VARIABLES:
+        assert key not in seen_env
+
+    # Custom API modelProvider is STILL refused even when agy models exits 0.
+    _seed_agy_home(tmp_path, oauth=False, settings={"modelProvider": "gemini"})
+    with patch.object(agy_session.subprocess, "run", side_effect=fake_run):
+        refusal = agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="darwin")
+    assert refusal is not None and "modelProvider" in refusal
+
+
+def test_given_absent_token_file_and_signed_out_or_offline_agy_when_checked_then_refuses_signed_out_and_handles_os(
+    tmp_path,
+):
+    signed_out = type("Res", (), {"returncode": 1, "stdout": "", "stderr": "Error: Please sign in to view models."})()
+    with patch.object(agy_session.subprocess, "run", return_value=signed_out):
+        refusal_mac = agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="darwin")
+        refusal_lnx = agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="linux")
+    assert refusal_mac is not None and "Google sign-in" in refusal_mac
+    assert refusal_lnx is not None and "Google sign-in" in refusal_lnx
+
+    # Offline / non-auth probe error: Linux still refuses missing token file; macOS warns and allows.
+    offline = type("Res", (), {"returncode": 1, "stdout": "", "stderr": "connection refused"})()
+    with patch.object(agy_session.subprocess, "run", return_value=offline):
+        assert agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="darwin") is None
+        refusal_lnx_offline = agy_session.subscription_refusal(home=tmp_path, executable="agy", platform="linux")
+    assert refusal_lnx_offline is not None and "antigravity-oauth-token" in refusal_lnx_offline
+
+
+def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_then_refuses_ambiguous(monkeypatch):
+    from ai_cli import session as _session
+
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    with (
+        # Simulate tmux display-message succeeding with an implicit target outside $TMUX.
+        patch.object(
+            _session.subprocess,
+            "run",
+            return_value=type("R", (), {"returncode": 0, "stdout": "g-myproject-1\n"})(),
+        ),
+        patch.object(_session, "_tmux_session_names", return_value=["g-myproject-1", "g-myproject-2"]),
+    ):
+        with pytest.raises(_session.SessionSlotAmbiguityError, match="ambiguous Antigravity resume"):
+            _session.resolve_session("g-myproject-", "")
+
+    # Shared label matching two slots must also refuse rather than fall back to recency.
+    with (
+        patch.object(_session.subprocess, "run", return_value=type("R", (), {"returncode": 1, "stdout": ""})()),
+        patch.object(_session, "_tmux_session_names", return_value=["g-myproject-foo-1", "g-myproject-foo-2"]),
+    ):
+        with pytest.raises(_session.SessionSlotAmbiguityError, match="ambiguous Antigravity resume"):
+            _session.resolve_session("g-myproject-", "foo")
+
+
+@pytest.mark.parametrize(
+    ("extra_flags", "stdout_text", "stderr_text", "expected_rc"),
+    [
+        (["-p", "hi", "--mode", "plan"], "SUCCESS\n", "", agy_session.EXIT_PRINT_EMPTY),
+        (
+            ["-p", "hi", "--mode", "plan", "--output-format", "stream-json"],
+            '{"type":"tool_result","content":"ok"}\n{"type":"result","status":"SUCCESS"}\n',
+            "",
+            agy_session.EXIT_PRINT_EMPTY,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "The file returned permission denied when inspected.\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Partial answer\n",
+            "tool call auto-denied by policy\n",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+    ],
+)
+def test_given_real_wrapper_print_cases_when_main_runs_then_classifies_by_event_not_prose(
+    tmp_path, monkeypatch, extra_flags, stdout_text, stderr_text, expected_rc
+):
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    home = tmp_path / "home"
+    _seed_agy_home(home, oauth=True)
+    record = tmp_path / "state" / f"{SLOT}.agy.json"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    def fake_run(argv, **kwargs):
+        return type("Res", (), {"returncode": 0, "stdout": stdout_text, "stderr": stderr_text})()
+
+    with (
+        patch.object(agy_session, "_detect_version", return_value="1.5.14"),
+        patch.object(agy_session.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = agy_session.main(["launch", str(record), str(worktree), SLOT, AI_NAME, "true", "bare", "--", *extra_flags])
+    assert rc == expected_rc
+
+
+def test_given_remote_agy_launch_when_dispatched_then_validates_locally_and_forwards_extra_args(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "remote": {"host": "192.0.2.10", "user": "user", "port": 22, "transport": "mosh"},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+
+    # 1. Invalid headless print flag on remote dispatch is refused locally BEFORE any SSH call.
+    bad = CliRunner().invoke(main._cli_group, ["g", "1", "-R", "--", "--print", "inspect"])
+    assert bad.exit_code == 1
+    assert "--mode plan" in bad.output
+
+    # 2. Valid headless print flags are forwarded after `--` in the remote command.
+    captured_ssh: list[list[str]] = []
+
+    async def fake_transport_loop(ssh_args, *_a, **_kw):
+        captured_ssh.append(list(ssh_args))
+        return 0
+
+    monkeypatch.setattr(main, "_resolve_remote_shell", lambda *_a, **_kw: "/bin/bash")
+    monkeypatch.setattr(main, "_update_remote_ai_cli", lambda *_a, **_kw: (True, "up to date"))
+    monkeypatch.setattr(
+        main, "_request_remote_session_allocation", lambda *_a, **_kw: ("g-r-myproject-1", "myproject-1")
+    )
+    monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_track_launch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._transport, "_ensure_vpn_watcher", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._transport, "_maybe_stop_vpn_watcher", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._transport, "_run_transport_loop", fake_transport_loop)
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+
+    good = CliRunner().invoke(main._cli_group, ["g", "1", "-R", "--", "--print", "--mode", "plan", "inspect"])
+    assert good.exit_code == 0, good.output
+    assert captured_ssh
+    remote_payload = captured_ssh[0][-1]
+    assert "-- --print --mode plan inspect" in remote_payload
+
+
+def test_given_headless_print_without_bare_and_use_pty_false_when_dispatched_then_runs_sync_without_pty_or_tmux(
+    tmp_path, monkeypatch
+):
+    from click.testing import CliRunner
+
+    home = tmp_path / "home"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    _seed_agy_home(home, oauth=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.chdir(worktree)
+
+    handed_off: list[tuple[list[str], object]] = []
+
+    def fake_exec_with_direnv(_root, command, *, handoff=None):
+        handed_off.append((command, handoff))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "session": {"use_pty": False, "use_tmux": True},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else None)
+    monkeypatch.setattr(main, "_exec_with_direnv", fake_exec_with_direnv)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: (SLOT, AI_NAME))
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _sid, h: h)
+
+    # Without -b and with use_pty=false, headless print still routes synchronously (never detached tmux / PTY refusal).
+    result = CliRunner().invoke(
+        main._cli_group,
+        ["g", "1", "--no-worktree", "--", "-p", "--mode", "plan", "--input-format", "stream-json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert handed_off
+    assert handed_off[0][1] is main._exec_handoff
+
+
+def test_given_no_worktree_shared_dir_when_slot2_starts_and_stopped_slot1_resumes_then_both_succeed(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    home = tmp_path / "home"
+    state_dir = tmp_path / "state"
+    sessions_dir = state_dir / "sessions"
+    _seed_agy_home(home, oauth=True)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    rec1 = sessions_dir / "g-myproject-1.agy.json"
+    _, _, tok1 = agy_session.prepare(
+        rec1, repo_root, "g-myproject-1", fresh=True, route="local-tmux", client_version="1.5.14", home=home
+    )
+    agy_session.confirm(rec1, tok1, {"hookEventName": "SessionStart", "conversationId": CONV_1, "cwd": str(repo_root)})
+    _seed_agy_home(home, oauth=True, db_rows=[(CONV_1, [str(repo_root)], "slot-1")])
+
+    # Slot 2 in the SAME -W directory is NOT blocked by slot 1's already-owned conversation.
+    rec2 = sessions_dir / "g-myproject-2.agy.json"
+    target2, _, _ = agy_session.prepare(
+        rec2, repo_root, "g-myproject-2", fresh=True, route="local-tmux", client_version="1.5.14", home=home
+    )
+    assert target2 == "new"
+
+    # Stopped -W slot 1 has no worktree directory, yet valid .agy.json binding proves resumable evidence.
+    assert main._session_evidence("g", repo_root, "myproject-1") == "myproject-1"
+
+
+def test_given_g_session_attach_when_do_attach_runs_then_uses_exact_tmux_target(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    (tmp_path / "sessions").mkdir(parents=True)
+    (tmp_path / "sessions" / "g-myproject-1.agy.json").write_text("{}", encoding="utf-8")
+
+    has_calls: list[list[str]] = []
+    attach_calls: list[list[str]] = []
+
+    def fake_has(argv, **kwargs):
+        has_calls.append(list(argv))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_has)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-1"])
+    assert res.exit_code == 0, res.output
+    assert has_calls and has_calls[0][-1] == "=g-myproject-1"
+    assert attach_calls and attach_calls[0][-1] == "=g-myproject-1"
+    assert "[agy]" in res.output
