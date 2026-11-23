@@ -21,11 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- On Windows, `ai c NAME` no longer fails to create the session worktree with "Filename too long"
-  when a tracked file's path fits the main checkout but not `.worktrees/NAME/`. Every git call the
-  tool makes runs with `core.longpaths=true` (git outside Windows ignores the key), and on Windows a
-  launch sets `core.longpaths=true` in the repository's own config when no config file sets it, so
-  the session's own `git status` can read those paths too. An explicit `false` is left alone.
 - `ai c NAME` reattaches to a session this machine holds even when its name-registry row was
   written under a former host id and host alias. List the former ids under a new
   `[former_host_ids]` table in `machine-host-aliases.toml` (`my-host = ["my-host-old"]`); every
