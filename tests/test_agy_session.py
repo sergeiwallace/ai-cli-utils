@@ -1444,9 +1444,94 @@ def test_given_remote_print_terminal_exit_77_or_78_when_ssh_reconnect_runs_then_
         max_attempts=5,
         backoff_seconds=1.0,
         outcome_path=tmp_path / "outcome.json",
+        terminal_exit_codes=(agy_session.EXIT_PRINT_EMPTY, transport.REMOTE_LAUNCH_REFUSED_EXIT),
     )
     assert rc == exit_code
     assert len(ssh_calls) == 1
+
+
+def _configure_remote_ssh_dispatch(tmp_path, monkeypatch, engine: str, session_id: str, ai_name: str):
+    worktree = tmp_path / f"wt-{engine}"
+    worktree.mkdir(exist_ok=True)
+    monkeypatch.setattr(main.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "remote": {
+                "host": "192.0.2.10",
+                "user": "user",
+                "port": 22,
+                "transport": "ssh",
+                "reconnect_attempts": 3,
+                "reconnect_backoff": 0.01,
+            },
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main, "_resolve_remote_shell", lambda *_a, **_kw: "/bin/bash")
+    monkeypatch.setattr(main, "_update_remote_ai_cli", lambda *_a, **_kw: (True, "up to date"))
+    monkeypatch.setattr(main, "_request_remote_session_allocation", lambda *_a, **_kw: (session_id, ai_name))
+    monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_track_launch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+
+
+def test_given_engine_g_remote_ssh_exit_77_when_dispatched_then_stops_without_reconnect(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from ai_cli import transport
+
+    _configure_remote_ssh_dispatch(tmp_path, monkeypatch, "g", "g-r-myproject-1", "myproject-1")
+    ssh_calls: list[list[str]] = []
+
+    def fake_call(argv, **kwargs):
+        ssh_calls.append(list(argv))
+        return agy_session.EXIT_PRINT_EMPTY
+
+    monkeypatch.setattr(transport.subprocess, "call", fake_call)
+    monkeypatch.setattr(
+        transport.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    )
+    monkeypatch.setattr(transport.time, "sleep", lambda _s: (_ for _ in ()).throw(AssertionError("must not retry")))
+
+    res = CliRunner().invoke(main._cli_group, ["g", "1", "-R", "--", "-p", "--mode", "plan", "hi"])
+    assert res.exit_code == agy_session.EXIT_PRINT_EMPTY
+    assert len(ssh_calls) == 1
+
+
+def test_given_non_g_remote_ssh_exit_77_when_dispatched_then_reconnects_as_on_main(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from ai_cli import transport
+
+    _configure_remote_ssh_dispatch(tmp_path, monkeypatch, "c", "c-r-myproject-1", "myproject-1")
+    returns = iter([agy_session.EXIT_PRINT_EMPTY, 0])
+    ssh_calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def fake_call(argv, **kwargs):
+        ssh_calls.append(list(argv))
+        return next(returns)
+
+    monkeypatch.setattr(transport.subprocess, "call", fake_call)
+    monkeypatch.setattr(
+        transport.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    )
+    monkeypatch.setattr(transport.time, "sleep", lambda s: sleeps.append(s))
+
+    res = CliRunner().invoke(main._cli_group, ["c", "1", "-R"])
+    assert res.exit_code == 0, res.output
+    assert len(ssh_calls) == 2
+    assert len(sleeps) == 1
 
 
 def test_given_darwin_signin_probe_timeout_when_ai_g_runs_then_warns_allows_and_probes_once(tmp_path, monkeypatch):

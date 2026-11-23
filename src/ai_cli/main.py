@@ -5953,6 +5953,12 @@ def _do_session_launch(
         mosh_args.append(f"{user}@{host}")
         mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
+        _remote_terminal_exits = (
+            frozenset({_agy_session.EXIT_PRINT_EMPTY, _transport.REMOTE_LAUNCH_REFUSED_EXIT})
+            if engine == "g"
+            else _transport.DEFAULT_REMOTE_TERMINAL_EXIT_CODES
+        )
+
         if transport == "mosh":
             reporter.phase("transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
@@ -5975,6 +5981,7 @@ def _do_session_launch(
                         remote_diagnostic_file=remote_diagnostic_file,
                         on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                         ssh_diagnostic_args=ssh_diagnostic_args,
+                        terminal_exit_codes=_remote_terminal_exits,
                     )
                 )
             finally:
@@ -6017,6 +6024,7 @@ def _do_session_launch(
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     diagnostic_ssh_args=ssh_diagnostic_args,
                     remote_diagnostic_file=remote_diagnostic_file,
+                    terminal_exit_codes=_remote_terminal_exits,
                 )
             )
 
