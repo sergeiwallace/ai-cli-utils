@@ -198,7 +198,9 @@ _TMUX_BINARY = shutil.which("tmux")
 # where it happens to exist.
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+_PROTECTED_TEST_BINARIES = (
+    frozenset({"tmux", "claude", "agy", "agy.exe", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+)
 
 # Programs that RUN a command string handed to them, which is what makes a guard on the
 # program name alone insufficient (AI-CLI-013v). Measured: a test drove

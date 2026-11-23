@@ -111,7 +111,6 @@ def test_given_windows_and_a_pathext_only_agent_when_a_bare_launch_hands_off_the
         patch("ai_cli.session.get_project_prefix", return_value="session"),
         patch("ai_cli.session.is_current_project_resolved", return_value=True),
         patch("ai_cli.session.create_worktree", return_value=(project, False)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.direnv_setup.is_bypassed", return_value=True),
         patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),

@@ -228,7 +228,6 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.config._get_main_project_name", return_value="mainproject"),
@@ -292,7 +291,6 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main._pty_handoff", return_value=mock_exec),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -341,7 +339,6 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -384,7 +381,6 @@ def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
         patch("ai_cli.main.shutil.which", return_value="/usr/bin/agy"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),

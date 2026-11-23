@@ -5,7 +5,7 @@ Icon tint is computed automatically from the tab background color via HSL
 color theory (complementary hue + contrast boost). A Dynamic Profile JSON
 is written per session so iTerm2 hot-reloads the profile without a restart.
 
-Every profile type (Claude, Gemini, Pi, Codex, shell, caffeinate, Chrome, SSH) uses
+Every profile type (Claude, Antigravity, Pi, Codex, shell, caffeinate, Chrome, SSH) uses
 the same pipeline. There are no pre-baked icon variants.
 """
 
@@ -40,7 +40,6 @@ _DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 _BASE_PROFILES: dict[str, str] = {
     "cc": "Default",
     "agy": "Default",
-    "gemini": "Default",
     "pi": "Default",
     "codex": "Default",
     "shell": "Default",
@@ -56,7 +55,6 @@ _CLAUDE_BRAND_ORANGE = "#da7756"
 _SOURCE_LOGOS: dict[str, str] = {
     "cc": "claude-logo.png",
     "agy": "gemini-logo.png",
-    "gemini": "gemini-logo.png",
     "pi": "shell-logo.png",
     "codex": "shell-logo.png",
     "shell": "shell-logo.png",
@@ -172,7 +170,7 @@ def generate_session_icon(
     Args:
         session_name: e.g. "c-session-5"
         tab_hex: tab background color, e.g. "#5e35b1"
-        session_type: "cc", "gemini", "pi", "codex", "shell", "chrome", "caffeinate", "ssh"
+        session_type: "cc", "agy", "pi", "codex", "shell", "chrome", "caffeinate", "ssh"
         icon_color: explicit tint override; auto-derived from tab_hex if None
 
     Returns path to the written PNG, or None if Pillow is unavailable.

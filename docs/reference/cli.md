@@ -131,7 +131,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 ai [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-Unified AI CLI for Claude, Gemini, Pi, and Codex.
+Unified AI CLI for Claude Code, Antigravity (agy), Pi, and Codex.
 
 Every command and subcommand is listed below with its one-line use; `ai COMMAND -h` prints a command's full help.
 

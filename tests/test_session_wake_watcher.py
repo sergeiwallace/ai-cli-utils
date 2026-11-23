@@ -110,7 +110,6 @@ def launch(tmp_path, monkeypatch):
             patch("ai_cli.main._wake_sidecar_script", return_value=state.script),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.trust.ensure_workspace_trusted"),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),

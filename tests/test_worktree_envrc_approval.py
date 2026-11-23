@@ -457,7 +457,6 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=fake),
         patch("ai_cli.main._direnv_installed", return_value=True),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),

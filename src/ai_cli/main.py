@@ -77,8 +77,6 @@ from .config import (  # noqa: F401
     _migrate_xdg_dir,
     get_current_project_name,
     get_project_aliases,
-    get_session_map,
-    get_session_map_path,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
@@ -86,7 +84,6 @@ from .config import (  # noqa: F401
     load_project_registry,
     register_project,
     resolve_project_prefix_by_name,
-    save_session_map,
     validate_registry_completeness,
 )
 from .extensions import run_launch_extensions
@@ -125,10 +122,6 @@ from .process_manager import (  # noqa: F401
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
-    _checkpoint_to_chat_uuid,
-    _convert_checkpoint_to_chat,
-    _find_latest_gemini_uuid,
-    _get_chat_last_message_timestamp,
     _resolve_is_remote,
     _sweep_stale_iterm2_profiles,
     build_session_name,
@@ -137,7 +130,6 @@ from .session import (  # noqa: F401
     detect_repo_root,
     find_next_index,
     find_recent_session,
-    get_latest_gemini_session_id,
     get_project_prefix,
     resolve_session,
 )
@@ -1182,7 +1174,6 @@ def _bare_engine_command(
     ai_name: str,
     target_root: Path,
     uuid: str | None,
-    gemini_cmd: str,
     sandbox_flag: str,
     extra_args: list[str],
     resume: bool = False,
@@ -1797,7 +1788,6 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
         project_name=meta.get("project_name", ""),
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
-        gemini_cmd=meta.get("gemini_cmd", "gemini"),
         agy_cmd=agy_cmd,
         agy_args=meta.get("agy_args"),
         pi_provider=meta.get("pi_provider", "openai-codex"),
@@ -2355,13 +2345,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
-    if action == "get-latest-gemini-id":
-        _ai_name_arg = argv[1] if len(argv) > 1 else None
-        res = _session.get_latest_gemini_session_id(_ai_name_arg)
-        if res:
-            _out.raw(Untagged.INTERNAL_REPLY, str(res))
-        sys.exit(0)
-    elif action == "finish-migrations":
+    if action == "finish-migrations":
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
@@ -2521,17 +2505,6 @@ def _handle_internal(argv: list[str]) -> None:
         except _transcript_restore.TranscriptRestoreError as exc:
             _out.error(Tag.INTERNAL, "resume", str(exc))
             sys.exit(_RESTORE_FAILED_STATUS)
-        sys.exit(0)
-    elif action == "update-session-map":
-        if len(argv) < 4:
-            _out.emit(
-                Tag.INTERNAL, "usage", "Usage: ai internal update-session-map <engine> <ai_name> <uuid>", err=True
-            )
-            sys.exit(1)
-        engine, ai_name, uuid = argv[1], argv[2], argv[3]
-        d = _config.get_session_map(engine)
-        d[ai_name] = uuid
-        _config.save_session_map(d, engine)
         sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
@@ -5621,7 +5594,6 @@ def _do_session_launch(
     # about the wrong machine.
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
     agy_cmd = config.get("agy", {}).get("command") or "agy"
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
     agy_argv = shlex.split(agy_cmd) if engine == "g" else []
@@ -6077,7 +6049,7 @@ def _do_session_launch(
                 os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
-        # git worktrees and Gemini chats directories resolve relative to the correct root.
+        # worktrees and session data resolve relative to the correct root.
         # Mirrors the is_remote path above, refusal included -- an absent directory
         # strands the session in the wrong root identically either way, and only the
         # remote half of that is reachable without passing -p.
@@ -6592,7 +6564,6 @@ def _do_session_launch(
                 ai_name,
                 target_root,
                 uuid,
-                gemini_cmd,
                 sandbox_flag,
                 extra_args,
                 resume=resume,
@@ -6693,7 +6664,6 @@ def _do_session_launch(
                 ai_name,
                 target_root,
                 uuid,
-                gemini_cmd,
                 sandbox_flag,
                 extra_args,
                 pi_provider=pi_provider,
@@ -6827,7 +6797,6 @@ def _do_session_launch(
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
-        gemini_cmd=gemini_cmd,
         agy_cmd=agy_cmd if engine == "g" else None,
         agy_args=list(extra_args) if engine == "g" and extra_args else None,
         resume=resume,
@@ -7401,7 +7370,7 @@ class _ChiefAliasGroup(RootHelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+    """Unified AI CLI for Claude Code, Antigravity (agy), Pi, and Codex.
 
     Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
     prints a command's full help."""
