@@ -8,6 +8,8 @@ source: session-2026-04-08
 
 # Implementation Plan — Gemini Checkpoint-to-Chat Conversion
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## Table of Contents
 
 - [Problem](#problem)

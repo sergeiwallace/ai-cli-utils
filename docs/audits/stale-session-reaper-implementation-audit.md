@@ -11,6 +11,8 @@ template_version: "audit-1.0.0"
 
 # Stale-Session Reaper Phase 1 Implementation Audit
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** findings-pending-fix
 
 **Created:** 2026-08-28
