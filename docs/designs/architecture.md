@@ -73,7 +73,6 @@ The tool installs as a single `ai` command. There is no server component — all
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
 | `sync.py` | Bidirectional CC session data sync (conversation JSONL + memory files) via bare git staging repo over SSH; defines `SyncConfig` |
 | `telemetry.py` | Event recording pipeline: caller → NATS JetStream → background writer → SQLite (`~/.ai-cli/telemetry.db`). Launch log records skip the bus: `store_log_records` writes the batch `output.py` buffered straight to the store, taking the write lock first with a 30 ms timeout, its only wait ([launcher-output-standard.md](launcher-output-standard.md) T-7) |
-| `spend.py` | Historical Gemini CLI cost reporting from local run logs, with optional GCP BigQuery billing export |
 | `memory.py` | inotify/FSEvents-based memory file watcher; debounces MEMORY.md writes; publishes `memory.dream.*` NATS events |
 | `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord or Slack webhook, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
 | `vpn_watch.py` | Circus-managed daemon; polls VPN state; publishes `vpn.state.changed` to NATS |
@@ -108,11 +107,6 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai adopt-session [NAME]` — adopt a session that was started outside `ai c`
 - `ai audit-sessions` — survey titled sessions and identify sessions that cannot be resumed
 - `ai list-capabilities` — print the optional behaviours enabled here, one token per line (`transcript-restore`)
-
-### Historical Gemini Spend
-- `ai spend gemini` — report historical Gemini CLI run logs and optional BigQuery billing data; it does not invoke Gemini
-
-> **Removed in v0.7.0:** `ai gemini` and the `gemini.py` and `research.py` modules were removed. The historical `ai spend gemini` command remains only to report logs created before that removal.
 
 ### Quota Tracking
 - `ai quota publish` — publish the statusline's current native seven-day reading; exits 0 and publishes nothing when the reading is missing or stale
@@ -237,21 +231,19 @@ machine's `host_id`. A `host_id` must match the publication ID, including any
 - **Circus** — process supervisor for the VPN-watch and stale-session reaper daemons
 - **SSH/mosh** — remote session launch; SSH tunnels for NATS access on Mac
 - **Antigravity CLI** (`agy` binary) — launches Antigravity tmux sessions through `ai g`
-- **GCP BigQuery** (optional) — historical billing data for `ai spend gemini`
 - **watchdog** — inotify/FSEvents for memory file watching and sync watch
 - **fzf** — interactive session picker in `ai ls`
 - **copier** — project template propagation in `ai copier-update`
 
 ### Files on Disk
 - `~/.claude/projects/` — CC session JSONL files (scanned by `cc_usage.py`, synced by `sync.py`)
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical Gemini run logs, if retained from a version before v0.7.0
 - `~/.local/state/ai-cli-utils/cc-usage-cursor.json` — per-session JSONL scan cursors
 
 ---
 
 ## Key Design Decisions
 
-**Removed Gemini API wrapper** — v0.7.0 removed `ai gemini`, `gemini.py`, and `research.py`. `ai g` launches the installed Antigravity CLI (`agy`) in a tmux session. `ai spend gemini` only reports pre-removal local logs.
+**Removed Gemini API wrapper** — v0.7.0 removed `ai gemini`, `gemini.py`, and `research.py`. `ai g` launches the installed Antigravity CLI (`agy`) in a tmux session.
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without every machine reading its own quota.
 
@@ -291,7 +283,6 @@ A probe launch (`ai c -t`) is the one exception to `.worktrees/`: its worktree i
 | `watchdog>=4.0.0` | inotify/FSEvents for file watching |
 | `pyyaml>=6.0` | Layout YAML parsing |
 | `pillow>=10.0` | iTerm2 icon tinting |
-| `google-cloud-bigquery` | (optional) historical GCP billing data for `ai spend gemini` |
 | `pydantic` | (optional) Layout file schema validation |
 
 <!-- /doc:region name="overview" -->

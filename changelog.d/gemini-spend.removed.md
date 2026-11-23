@@ -1,0 +1,1 @@
+- Remove `ai spend gemini`, its historical Gemini CLI log reader and optional BigQuery billing report, and the `[gemini_billing]` configuration table without a compatibility shim. The empty `ai spend` command group is also removed; `ai g` continues to launch Antigravity (`agy`).

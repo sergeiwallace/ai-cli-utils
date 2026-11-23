@@ -33,7 +33,6 @@ there, not here.
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
   - [Removed ai gemini command](#removed-ai-gemini-command)
-  - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
@@ -169,8 +168,6 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai set-name-verdict`](../reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](../reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](../reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](../reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](../reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](../reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](../reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](../reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -798,32 +795,6 @@ In an isolated update, Git submodules are initialized recursively before depende
 `ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Antigravity (`agy`) CLI in a managed tmux session.
 
 The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
-
-### ai spend gemini
-
-```bash
-ai spend gemini
-```
-
-Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
-
-**BigQuery setup** (one-time, optional historical billing data):
-
-1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
-2. Add to `~/.config/ai-cli/config.toml`:
-
-```toml
-[gemini_billing]
-gcp_project_id = "your-gcp-project"
-billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
-```
-
-3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
-
-When BigQuery is not configured, `ai spend gemini` reports the local historical logs that are available.
-
-**State files:**
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical per-run log, if retained from a version before v0.7.0
 
 ### ai cc-usage
 

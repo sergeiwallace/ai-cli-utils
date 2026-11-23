@@ -4,7 +4,6 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 - ``refresh-template`` internal handler (316-356) + unknown action (449-450)
 - ``_cli_group`` no-subcommand (1397-1398)
 - ``cmd_quota_statusline_part`` / ``cmd_quota_sync`` (1554-1563)
-- ``cmd_spend_gemini_cli`` (1616-1618)
 - ``cmd_cc_usage_push`` + ``cmd_cc_usage_status`` (1629-1653)
 - ``cmd_watch_vpn`` / ``cmd_ps`` (1793-1796, 1806-1808)
 - ``sync repair-worktree`` / ``cleanup`` / unknown (1846-1887)
@@ -240,15 +239,19 @@ class TestCmdQuotaMiscDispatch:
         mock_fn.assert_called_once()
 
 
-# --- `ai spend gemini` ---
+class TestRetiredSpend:
+    @pytest.mark.parametrize("args", [["spend"], ["spend", "gemini"]])
+    def test_given_retired_spend_command_when_invoked_then_reports_unknown_command(self, args):
+        exit_code, _, stderr = run_cli(["ai", *args])
 
+        assert exit_code != 0
+        assert "No such command 'spend'" in stderr
 
-class TestCmdSpendGemini:
-    def test_given_spend_gemini_when_invoked_then_dispatches(self):
-        with patch("ai_cli.spend.cmd_spend_gemini", return_value=0) as mock_fn:
-            exit_code, _, _ = run_cli(["ai", "spend", "gemini"])
+    def test_given_cli_help_when_requested_then_omits_retired_spend_group(self):
+        exit_code, stdout, _ = run_cli(["ai", "--help"])
+
         assert exit_code == 0
-        mock_fn.assert_called_once()
+        assert "spend" not in stdout
 
 
 # --- `ai cc-usage push` / `status` ---

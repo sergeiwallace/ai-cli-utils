@@ -103,8 +103,6 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai set-name-verdict`](#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -1689,30 +1687,6 @@ ai show-name-config [OPTIONS]
 ```
 
 Session names: print each naming setting, its value and the layer that set it
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend
-
-```text
-ai spend [OPTIONS] COMMAND [ARGS]...
-```
-
-Usage-cost reports
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend gemini
-
-```text
-ai spend gemini [OPTIONS]
-```
-
-Report historical Gemini CLI spend from local logs
 
 | Short | Long | Value | Description |
 |---|---|---|---|
