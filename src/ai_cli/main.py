@@ -3883,11 +3883,12 @@ def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote:
 def _tmux_session_has_live_pane(session_name: str) -> bool:
     """True when tmux has a session named exactly ``session_name`` with a live pane.
 
-    The ``=`` target is load-bearing: a bare name is a PREFIX match in tmux, so
-    ``c-x-1`` would answer for a live ``c-x-10``.
+    The ``=name:`` target is load-bearing: a bare name is a PREFIX match in tmux, so
+    ``c-x-1`` would answer for a live ``c-x-10``, and on tmux 3.7 a bare ``=name`` still
+    resolves a window called ``name`` in another session.
     """
     result = subprocess.run(
-        tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}", "-F", "#{pane_dead}"),
+        tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", "#{pane_dead}"),
         capture_output=True,
         text=True,
         check=False,

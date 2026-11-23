@@ -489,7 +489,7 @@ class StopReport:
 def _pane_pids(tmux_session: str) -> list[int]:
     try:
         listed = subprocess.run(
-            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"),
+            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}:", "-F", "#{pane_pid}"),
             capture_output=True,
             text=True,
             check=False,

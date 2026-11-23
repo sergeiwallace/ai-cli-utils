@@ -24,7 +24,7 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
     try:
         result = subprocess.run(
             tmux_binary.argv(
-                "list-panes", "-t", f"={name}", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"
+                "list-panes", "-t", f"={name}:", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"
             ),
             capture_output=True,
             text=True,

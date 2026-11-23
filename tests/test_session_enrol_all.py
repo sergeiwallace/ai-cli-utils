@@ -74,7 +74,7 @@ def live_sessions(tmp_path, monkeypatch, register_repo):
         if argv[:2] == ["tmux", "list-sessions"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         if argv[:2] == ["tmux", "list-panes"]:
-            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=")], "")
+            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=").removesuffix(":")], "")
         pytest.fail(f"unexpected subprocess: {argv[:2]}")
 
     monkeypatch.setattr(session_enrol.subprocess, "run", run)
