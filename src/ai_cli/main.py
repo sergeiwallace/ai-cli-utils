@@ -9505,6 +9505,7 @@ def _migrate_one_to_name(
             )
             _print_migration(result)
             return 1 if result.references_left else 0
+        reserved_names = _session_title.resolve_reserved_names()
         words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
@@ -9515,7 +9516,13 @@ def _migrate_one_to_name(
             planned = name
         else:
             request, _warnings = _names.pick_request(
-                registry, snapshot, slot, max_length=max_length, words=words, session=old
+                registry,
+                snapshot,
+                slot,
+                max_length=max_length,
+                words=words,
+                session=old,
+                reserved_names=reserved_names,
             )
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
@@ -9545,6 +9552,7 @@ def _migrate_one_to_name(
             adapters=adapters,
             migrate=_migrate_session_for_names,
             complete=_complete_migration_for_names,
+            reserved_names=reserved_names,
         )
     except PartialMigrationError as exc:
         _out.error(Tag.MIGRATE, "migrate", str(exc))
@@ -9627,6 +9635,11 @@ def _migrate_all_to_names(
     if not write:
         _out.emit(Tag.MIGRATE, "migrate", "nothing was written; run again with -y to migrate the stopped ones")
         return 0
+    try:
+        reserved_names = _session_title.resolve_reserved_names()
+    except _session_title.TitleError as exc:
+        _out.error(Tag.MIGRATE, "migrate", str(exc))
+        return 2
     refused = 0
     for entry in found.items:
         if entry.running:
@@ -9657,9 +9670,12 @@ def _migrate_all_to_names(
                     adapters=adapters,
                     migrate=_migrate_session_for_names,
                     complete=_complete_migration_for_names,
+                    reserved_names=reserved_names,
                 )
             else:
-                done = migrate_names.migrate_transcript_only(registry, entry, slot, max_length=high, words=frozenset())
+                done = migrate_names.migrate_transcript_only(
+                    registry, entry, slot, max_length=high, words=frozenset(), reserved_names=reserved_names
+                )
         except (
             AdoptionError,
             RuntimeError,

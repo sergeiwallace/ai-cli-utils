@@ -282,3 +282,103 @@ def test_given_malformed_reserved_config_when_list_name_candidates_runs_then_it_
     assert result.exit_code != 0
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "reserved" in result.output
+
+
+def test_given_existing_spares_later_reserved_in_config_when_reconcile_names_runs_then_replenishes_usable_spares(
+    fleet, monkeypatch
+):
+    import json
+
+    slot = reg.Slot(
+        repo=REPO,
+        repo_alias=REPO,
+        host_alias=HOST_ALIAS,
+        label=None,
+        machine=HOST,
+        client="agy",
+        worktree=True,
+    )
+    first = reg.reserve_picked(fleet.registry, slot, rng=random.Random(0))
+    assert first.spares_added
+    reserved_spare = first.spares_added[0]
+
+    # Edit config to reserve the existing spare; reconcile-names must top up a usable replacement.
+    _write_reserved([reserved_spare.upper()])
+    monkeypatch.setattr("ai_cli.name_commands._adapters", dict)
+    monkeypatch.setattr("ai_cli.name_commands._projects_root", lambda: fleet.projects)
+    monkeypatch.setattr("ai_cli.name_commands._host_alias", lambda: HOST_ALIAS)
+    result = CliRunner().invoke(_cli_group, ["reconcile-names", "--json"])
+
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.output.strip().splitlines()[-1])
+    assert summary["spares_added"]
+    assert reserved_spare not in summary["spares_added"]
+
+    # Offline fallback now succeeds using the newly replenished usable spare.
+    offline = reg.take_spare(fleet.registry, slot, cause="offline")
+    assert offline.name in summary["spares_added"]
+    assert offline.name != reserved_spare
+
+
+def _cli_launch_patches(repo_root):
+    return [
+        ("ai_cli.main._auto_update_if_stale", {"return_value": False}),
+        ("ai_cli.session.cleanup_stale_sessions", {}),
+        ("ai_cli.trust.ensure_workspace_trusted", {}),
+        ("ai_cli.session.detect_repo_root", {"return_value": repo_root}),
+        ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+        ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
+        ("ai_cli.session.get_project_prefix", {"return_value": REPO}),
+        ("ai_cli.session.is_current_project_resolved", {"return_value": True}),
+        ("ai_cli.config.get_current_project_name", {"return_value": REPO}),
+        ("ai_cli.session_naming.resolve_or_prompt_host_alias", {"return_value": HOST_ALIAS}),
+        ("ai_cli.session._tmux_session_names", {"return_value": []}),
+    ]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_given_reserved_names_when_cli_launch_command_runs_dry_run_then_it_skips_reserved_names(fleet, engine):
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    _write_reserved(["ADA", "Bob"])
+    with ExitStack() as stack:
+        for target, kwargs in _cli_launch_patches(fleet.projects / REPO):
+            stack.enter_context(patch(target, **kwargs))
+        result = CliRunner().invoke(_cli_group, [engine, "-b", "-d"])
+
+    assert result.exit_code == 0, result.output
+    assert f"planned {STEM}-cyd" in result.output
+
+
+@pytest.mark.parametrize(
+    ("engine", "flag"),
+    [("g", "-N"), ("c", "--name")],
+    ids=["short-flag", "long-flag"],
+)
+def test_given_reserved_name_when_cli_launch_passes_explicit_name_flag_then_it_allows_it(fleet, engine, flag):
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    _write_reserved(["ada"])
+    with ExitStack() as stack:
+        for target, kwargs in _cli_launch_patches(fleet.projects / REPO):
+            stack.enter_context(patch(target, **kwargs))
+        result = CliRunner().invoke(_cli_group, [engine, "-b", "-d", flag, "ada"])
+
+    assert result.exit_code == 0, result.output
+    assert f"planned {STEM}-ada" in result.output
+
+
+def test_given_explicit_empty_reserved_list_when_show_name_config_runs_then_layer_is_session_names_not_built_in(fleet):
+    unset = CliRunner().invoke(_cli_group, ["show-name-config"])
+    assert unset.exit_code == 0, unset.output
+    assert any("reserved" in line and "(built-in)" in line for line in unset.output.splitlines())
+
+    _write_reserved([])
+    explicit_empty = CliRunner().invoke(_cli_group, ["show-name-config"])
+    assert explicit_empty.exit_code == 0, explicit_empty.output
+    assert any(
+        "reserved" in line and "(none)" in line and "[session_names]" in line
+        for line in explicit_empty.output.splitlines()
+    )

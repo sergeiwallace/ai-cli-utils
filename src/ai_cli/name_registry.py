@@ -1111,7 +1111,8 @@ def _spare_writes(
         held for (held, kind, value), row in (snapshot.verdicts or {}).items()
         if kind == "host" and here.matches(value) and row.get("verdict") == "rejected"
     )  # fmt: skip
-    shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
+    usable_spares = [row for row in snapshot.rows_of(slot.machine, "spare") if row["token"] not in resolved_reserved]
+    shortfall = int(policy.get("offline_spares", 3)) - len(usable_spares)
     writes: dict[str, bytes | None] = {}
     added: list[str] = []
     low, high = name_list.limits(policy)
@@ -2319,9 +2320,12 @@ def reserve_for_migration(
     max_length: int | None,
     words: frozenset[str],
     rng=None,
+    reserved_names: frozenset[str] | None = None,
 ) -> Reservation:
     """Reserve the migration's new name and declare the rename as ``intent``, in one commit."""
-    from . import session_naming
+    from . import session_naming, session_title
+
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
 
     def build_for(locked: bool) -> Callable[[Snapshot], Change]:
         return lambda snapshot: build(snapshot, locked)
@@ -2329,7 +2333,13 @@ def reserve_for_migration(
     def build(snapshot: Snapshot, locked: bool) -> Change:
         if name is None:
             request, warnings = pick_request(
-                registry, snapshot, slot, max_length=max_length, words=words, session=old_title
+                registry,
+                snapshot,
+                slot,
+                max_length=max_length,
+                words=words,
+                session=old_title,
+                reserved_names=resolved_reserved,
             )
             pick = session_naming.pick_name(request, rng)
             chosen, tier = pick.name, pick.tier
@@ -2339,7 +2349,9 @@ def reserve_for_migration(
             if verdict == "spare":
                 if not locked:
                     raise _SpoolLockNeeded
-                row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+                row, writes, added = _take_own_spare(
+                    snapshot, name, slot, spool, words, reserved_names=resolved_reserved
+                )
                 writes[migration_path(old_title)] = encode_json(
                     migration_record(old_title, row["title"], slot.machine, slot.client)
                 )

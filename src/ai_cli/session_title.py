@@ -108,6 +108,23 @@ def resolve_settings(
     return resolved
 
 
+def resolve_reserved_setting() -> Setting:
+    """User-configured ``[session_names] reserved`` names together with the layer that set them.
+
+    Read fresh from user config on every call and normalized for case-insensitive
+    matching. An explicit ``reserved = []`` reports the user config layer rather than
+    ``built-in``.
+    """
+    local = _config.load_config().get("session_names", {})
+    if not isinstance(local, dict) or "reserved" not in local:
+        return Setting(frozenset(), "built-in")
+    layer = f"{_config.config_file_text()} [session_names]"
+    value = local["reserved"]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TitleError(f"reserved in {layer} must be a list of strings, got {value!r}")
+    return Setting(frozenset(cleaned for item in value if (cleaned := item.strip().lower())), layer)
+
+
 def resolve_reserved_names() -> frozenset[str]:
     """Session names reserved from automatic picking in ``[session_names] reserved``.
 
@@ -115,15 +132,9 @@ def resolve_reserved_names() -> frozenset[str]:
     matching. Automatic pickers skip these names even when no live session holds them;
     explicit ``-N/--name`` still allows launching one directly.
     """
-    local = _config.load_config().get("session_names", {})
-    if not isinstance(local, dict) or "reserved" not in local:
-        return frozenset()
-    value = local["reserved"]
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise TitleError(
-            f"reserved in {_config.config_file_text()} [session_names] must be a list of strings, got {value!r}"
-        )
-    return frozenset(cleaned for item in value if (cleaned := item.strip().lower()))
+    value = resolve_reserved_setting().value
+    assert isinstance(value, frozenset)
+    return value
 
 
 @dataclass(frozen=True)

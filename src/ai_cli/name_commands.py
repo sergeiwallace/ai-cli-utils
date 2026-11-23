@@ -135,7 +135,6 @@ def remove_name_command(name: str) -> None:
 
 @click.command("show-name-config", help="Session names: print each naming setting, its value and the layer that set it")
 def show_name_config_command() -> None:
-    from . import config as _config
     from . import session_title
 
     try:
@@ -151,7 +150,7 @@ def show_name_config_command() -> None:
         settings = session_title.resolve_settings(
             enabled_flag=None, with_label_flag=None, policy_config=policy_config, host=_host(), policy_source=source
         )
-        reserved = session_title.resolve_reserved_names()
+        reserved_setting = session_title.resolve_reserved_setting()
     except session_title.TitleError as exc:
         _out.error(Tag.NAMES, "config", str(exc))
         sys.exit(EXIT_REFUSED)
@@ -162,9 +161,10 @@ def show_name_config_command() -> None:
     ]
     for key in ("enabled", "name_with_label"):
         lines.append(f"{key:<18} {settings[key].value!s:<8} ({settings[key].layer})")
+    reserved = reserved_setting.value
+    assert isinstance(reserved, frozenset)
     reserved_value = ", ".join(sorted(reserved)) if reserved else "(none)"
-    reserved_layer = f"{_config.config_file_text()} [session_names]" if reserved else "built-in"
-    lines.append(f"reserved           {reserved_value:<8} ({reserved_layer})")
+    lines.append(f"reserved           {reserved_value:<8} ({reserved_setting.layer})")
     if registry is None:
         _out.emit(Tag.NAMES, "config", "\n".join(lines))
         return
