@@ -1375,7 +1375,9 @@ def _git_is_clean(path: Path) -> bool:
 
 def _git_pull_rebase(path: Path) -> tuple[bool, str]:
     """Run git pull --rebase at path. Retained for direct library callers only."""
-    result = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
@@ -1386,14 +1388,19 @@ def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
         ["git", "-C", str(path), "stash", "push", "-m", "ai-sync auto-stash"],
         capture_output=True,
         text=True,
+        env=_git_env(),
         check=False,
     )
     output.append(stash.stdout.strip())
     if stash.returncode != 0:
         return False, "\n".join(output)
-    pull = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
+    pull = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     output.append(pull.stdout.strip())
-    pop = subprocess.run(["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True, check=False)
+    pop = subprocess.run(
+        ["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     output.append(pop.stdout.strip())
     return pull.returncode == 0 and pop.returncode == 0, "\n".join(part for part in output if part)
 

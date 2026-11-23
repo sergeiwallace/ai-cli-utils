@@ -1377,6 +1377,34 @@ def _provision_private_venv(repo_root: Path, worktree_path: Path) -> bool:
     return True
 
 
+def _enable_repo_long_paths_on_windows(repo_root: Path) -> None:
+    """On Windows, set ``core.longpaths=true`` in the repository's config when no config file sets it.
+
+    The launcher's own git calls carry the key in their environment (``_git_env``), but the
+    session's git commands do not, and a plain ``git status`` in the worktree cannot stat the
+    over-limit paths the add just wrote. A value any config file already sets, ``false``
+    included, is the operator's choice and stays; only the ``command`` scope, which is this
+    process's own environment, is ignored.
+    """
+    if sys.platform != "win32":
+        return
+    probe = subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--show-scope", "--get-all", "core.longpaths"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    if any(line.split("\t", 1)[0] != "command" for line in (probe.stdout or "").splitlines() if line.strip()):
+        return
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--local", "core.longpaths", "true"],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1386,6 +1414,7 @@ def _initialize_worktree(
     reused: bool,
 ) -> None:
     """Finish the idempotent setup required before returning a worktree."""
+    _enable_repo_long_paths_on_windows(repo_root)
     if branch is not None:
         if reused:
             configured_upstream = _branch_upstream(worktree_path, branch)
