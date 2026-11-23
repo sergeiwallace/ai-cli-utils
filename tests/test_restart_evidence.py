@@ -43,11 +43,13 @@ def test_given_mcp_tree_when_classified_then_only_configured_servers_allowed(tmp
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(restart.Path, "home", lambda: home)
+    # The interpreter running the tests, by absolute path: a bare `python3` resolves through
+    # the host PATH, and on Windows that can be the Store alias, which no path resolves.
     (tmp_path / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {"example": {"command": "python3", "args": ["server.py"]}}}), encoding="utf-8"
+        json.dumps({"mcpServers": {"example": {"command": sys.executable, "args": ["server.py"]}}}), encoding="utf-8"
     )
     children = [
-        SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: ["python3", "server.py"], create_time=lambda: 1001),
+        SimpleNamespace(pid=2, ppid=lambda: 1, cmdline=lambda: [sys.executable, "server.py"], create_time=lambda: 1001),
         SimpleNamespace(pid=3, ppid=lambda: 2, cmdline=lambda: ["worker"]),
     ]
     monkeypatch.setattr(
