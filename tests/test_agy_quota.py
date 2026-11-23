@@ -42,7 +42,7 @@ def _sample_agy_payload(
     if extra_buckets:
         buckets.update(extra_buckets)
     return {
-        "cwd": "/home/user/myproject/.worktrees/myproject-box-ada",
+        "cwd": "/home/user/myproject/.worktrees/myproject-wt-1",
         "session_id": "12345678-abcd-4ef0-8123-456789abcdef",
         "conversation_id": "12345678-abcd-4ef0-8123-456789abcdef",
         "model": {
@@ -51,8 +51,8 @@ def _sample_agy_payload(
             "effort": "medium",
         },
         "workspace": {
-            "current_dir": "/home/user/myproject/.worktrees/myproject-box-ada",
-            "project_dir": "/home/user/myproject/.worktrees/myproject-box-ada",
+            "current_dir": "/home/user/myproject/.worktrees/myproject-wt-1",
+            "project_dir": "/home/user/myproject/.worktrees/myproject-wt-1",
         },
         "version": "1.5.14",
         "context_window": {
@@ -220,7 +220,7 @@ def test_given_agy_statusline_cli_when_invoked_with_stdin_then_persists_and_outp
     clean = _strip_ansi(lines[0])
     assert "Gemini 4 Argon" in clean
     assert "myproject" in clean
-    assert "myproject-box-ada" in clean
+    assert "myproject-wt-1" in clean
     assert "14%" in clean
     assert "agyWk 6%" in clean
     assert "ccWk 42%" in clean
