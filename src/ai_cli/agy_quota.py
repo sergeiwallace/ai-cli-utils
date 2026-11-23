@@ -45,6 +45,7 @@ _GOOGLE_BLUE = _quota._STATUSLINE_GOOGLE_BLUE
 _AGY_QUOTA_STATE_FILENAME = "agy-quota.json"
 _AGY_QUOTA_MAX_AGE_SECONDS_DEFAULT = 1800
 _AGY_PUBLISH_THROTTLE_SECONDS = 60
+_CODEX_CACHE_MAX_AGE_SECONDS = 900
 _FIVE_HOUR_SECONDS = 5 * 60 * 60
 _WEEKLY_SECONDS = 7 * 24 * 60 * 60
 
@@ -660,18 +661,24 @@ def _read_claude_segment_for_agy() -> str:
 
 
 def _read_codex_segment_for_agy(now_ts: float) -> str:
-    """Read cached Codex weekly quota written by statusline helpers with zero subprocesses."""
+    """Read cached Codex weekly quota written by statusline helpers with zero subprocesses.
+
+    Matches the POSIX ``statusline-command.sh`` writer path (``${TMPDIR:-/tmp}/.ai-sl-codexweeklypct-${UID:-0}``);
+    on Windows, Git Bash's ``$UID`` is not exposed via ``os.getuid``, so cached ``cxWk`` display is POSIX-only
+    for now unless ``TMPDIR`` and uid 0 are explicitly seeded.
+    """
     from .quota import CodexQuotaAdapter, QuotaStatuslineSegment
 
     uid = os.getuid() if hasattr(os, "getuid") else 0
-    tmp_dir = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    # Platform-specific: mirror POSIX `${TMPDIR:-/tmp}` literally so TMP/TEMP cannot diverge from the shell writer.
+    tmp_dir = Path(os.environ.get("TMPDIR") or ("/tmp" if os.name == "posix" else tempfile.gettempdir()))
     cache_path = tmp_dir / f".ai-sl-codexweeklypct-{uid}"
     try:
         lines = cache_path.read_text(encoding="utf-8").splitlines()
         if len(lines) < 2:
             return ""
         cached_ts = float(lines[0].strip())
-        if now_ts - cached_ts > 900 or cached_ts > now_ts + 60:
+        if now_ts - cached_ts > _CODEX_CACHE_MAX_AGE_SECONDS or cached_ts > now_ts + 60:
             return ""
         raw_json = lines[1].strip()
         if not raw_json or raw_json == "NONE":
