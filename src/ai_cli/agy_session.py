@@ -434,15 +434,32 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
     return "\n".join(texts), denied
 
 
+_FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$")
+
+
 def _has_plain_text_auto_denial(text: str) -> bool:
-    """Return True when ``text`` has an unquoted, non-fenced auto-denial diagnostic line."""
-    in_fence = False
+    """Return True when ``text`` has an unquoted, non-fenced auto-denial diagnostic line.
+
+    Follows CommonMark fenced code block rules (0-3 leading spaces, matching delimiter
+    character and minimum length) so a 4-space-indented backtick line cannot open a
+    fence to hide a genuine denial and a shorter inner fence cannot close an outer fence.
+    """
+    fence_char = ""
+    fence_len = 0
     for line in text.splitlines():
-        stripped_line = line.lstrip()
-        if stripped_line.startswith(("```", "~~~")):
-            in_fence = not in_fence
+        if fence_char:
+            if re.match(rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$", line):
+                fence_char = ""
+                fence_len = 0
             continue
-        if in_fence or stripped_line.startswith(">"):
+        match = _FENCE_OPEN_RE.match(line)
+        if match:
+            marker, info = match.group(1), match.group(2)
+            if marker[0] == "~" or "`" not in info:
+                fence_char = marker[0]
+                fence_len = len(marker)
+                continue
+        if re.match(r"^[ ]{0,3}>", line):
             continue
         if _STDOUT_AUTO_DENIAL_LINE_RE.match(line):
             return True
@@ -510,7 +527,7 @@ def classify_print_output(returncode: int, stdout: str, stderr: str, *, output_f
             if not text:
                 return EXIT_PRINT_EMPTY
             return 0
-    if _has_plain_text_auto_denial(stripped):
+    if _has_plain_text_auto_denial(stdout):
         return EXIT_PRINT_AUTO_DENIED
     return 0
 

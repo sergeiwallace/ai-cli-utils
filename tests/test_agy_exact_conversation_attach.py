@@ -131,3 +131,94 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     assert result.exit_code == 0, result.output
     assert "[agy]" in result.output
     assert attached == [["tmux", "-S", tmux_socket, "attach-session", "-t", f"={SLOT}"]]
+
+
+def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_token_reaches_first_child_only_and_second_reprobes(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+    import time
+
+    home = tmp_path / "home"
+    home.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    # No antigravity-oauth-token file on disk: any launch without AI_CLI_AGY_SIGN_IN_VERIFIED
+    # must run `agy models` to verify Google sign-in.
+    token = agy_session.sign_in_cache_token("agy", home)
+    events_log = tmp_path / "events.log"
+    script_path = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SLOT}.sh"
+
+    fake_ai = (
+        "#!/bin/sh\n"
+        f'if [ "$1" = internal ] && [ "$2" = agy-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        'if [ "$1" = internal ] && [ "$2" = get-version ]; then echo unknown; fi\n'
+        "exit 0\n"
+    )
+    fake_agy = (
+        f"#!{sys.executable}\n"
+        "import json, os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"log = Path({str(events_log)!r})\n"
+        f"script = Path({str(script_path)!r})\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        "    print('1.5.14')\n"
+        "    sys.exit(0)\n"
+        "if sys.argv[1:] == ['models']:\n"
+        "    with log.open('a', encoding='utf-8') as f:\n"
+        "        f.write('probe:models\\n')\n"
+        "    print('Error: Please sign in to view models.', file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "with log.open('a', encoding='utf-8') as f:\n"
+        "    f.write(f\"launch:{os.environ.get('AI_CLI_AGY_SIGN_IN_VERIFIED', 'UNSET')}\\n\")\n"
+        "# Confirm slot 1 via SessionStart hook, outlive the 3s quick-failure guard, and bump\n"
+        "# script mtime so child 1 exits 78 and the persistent supervisor spawns replacement child 2.\n"
+        "payload = json.dumps({'hookEventName': 'SessionStart', 'conversationId': '11111111-2222-4333-8444-555555555555', 'cwd': os.getcwd()})\n"
+        "subprocess.run(['ai', 'internal', 'agy-session-confirm'], input=payload, text=True, check=False)\n"
+        "st = script.stat()\n"
+        "os.utime(script, (st.st_atime + 20, st.st_mtime + 20))\n"
+        "time.sleep(3.5)\n"
+        "sys.exit(1)\n"
+    )
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(agy_session.SIGN_IN_VERIFIED_ENV, token)
+    monkeypatch.setattr(
+        "test_session_reload_loop.get_engine_script",
+        lambda *_args, **_kw: get_engine_script(
+            "g", "myproject-1", SLOT, "g-myproject-", "myproject", worktree_dir=str(worktree), agy_cmd="agy"
+        ),
+    )
+    with legacy_state_functions():
+        _start_session(
+            tmux_socket,
+            tmp_path,
+            SLOT,
+            rewrite_once_during_startup=False,
+            extra_fakes={"ai": fake_ai, "agy": fake_agy},
+        )
+
+    deadline = time.monotonic() + 25.0
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        if events_log.is_file():
+            lines = events_log.read_text(encoding="utf-8").splitlines()
+            if "probe:models" in lines:
+                break
+        time.sleep(0.1)
+
+    assert lines == ["launch:UNSET", "probe:models"], (
+        f"unexpected events={lines!r}; pane history:\n{_pane_history(tmux_socket, SLOT)}"
+    )
+    # Give the supervisor a moment to observe exit 76 and stop without launching child 2's agy.
+    time.sleep(0.5)
+    assert events_log.read_text(encoding="utf-8").splitlines() == ["launch:UNSET", "probe:models"]
+    # Tmux session environment must also have cleared AI_CLI_AGY_SIGN_IN_VERIFIED.
+    env_res = subprocess.run(
+        ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert env_res.returncode != 0 or env_res.stdout.strip().startswith("-")

@@ -1152,9 +1152,27 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         ),
         (
             ["-p", "hi", "--mode", "plan"],
+            "````markdown\n```\nTool call denied by policy\n```\n````\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
             "> Tool call auto-denied by policy\n",
             "",
             0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "    ```\ntool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "```\nhello\n```\ntool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
         ),
         (
             ["-p", "hi", "--mode", "plan"],
@@ -1407,7 +1425,7 @@ def test_given_node_legacy_gemini_pane_with_stale_agy_record_when_verified_then_
         )(),
     ):
         conflict_refusal = main._verify_live_agy_tmux_session("g-myproject-1")
-    assert conflict_refusal is not None and "Node" in conflict_refusal
+    assert conflict_refusal is not None and "legacy Gemini CLI" in conflict_refusal
 
 
 def test_given_existing_legacy_gemini_tmux_session_when_ai_g_1_runs_then_refuses_attach(tmp_path, monkeypatch):
@@ -1727,8 +1745,6 @@ def test_given_conflicting_pane_start_command_when_attach_paths_run_then_all_ref
 
 
 def test_given_split_window_with_live_agy_and_node_dev_server_when_ai_g_1_runs_then_attaches(tmp_path, monkeypatch):
-    from click.testing import CliRunner
-
     home = tmp_path / "home"
     worktree = tmp_path / "wt"
     worktree.mkdir()
@@ -1791,92 +1807,89 @@ def test_given_split_window_with_live_agy_and_node_dev_server_when_ai_g_1_runs_t
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main.sys, "stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
 
-    res = CliRunner().invoke(main._cli_group, ["g", "1", "--no-worktree"])
-    assert res.exit_code == 0, res.output
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 0
     assert saw_client_probe
-    assert "handing off to Antigravity" in res.output
-    assert (state_dir / "sessions" / "g-myproject-1.sh").exists()
+    assert attached == [["tmux", "attach-session", "-d", "-t", "g-myproject-1"]]
 
 
-def test_given_tmux_supervisor_child_replacement_after_signout_when_two_children_spawn_then_second_reprobes(
-    tmp_path, monkeypatch
-):
-    import shlex
-    import shutil
+def test_given_split_window_with_agy_and_gemini_node_pane_when_ai_g_1_runs_then_refuses(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    state_dir = tmp_path / "state"
+    (state_dir / "sessions").mkdir(parents=True)
+    (state_dir / "sessions" / "g-myproject-1.agy.json").write_text("{}", encoding="utf-8")
+    _seed_agy_home(home, oauth=True)
 
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("AI_CLI_SKIP_DIRENV", "1")
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *_a, **_kw: {
+            "agy": {"command": "agy"},
+            "projects": {"myproject": {"path": str(worktree), "prefix": "myproject"}},
+        },
+    )
+    monkeypatch.setattr(main.shutil, "which", lambda name, *a, **kw: "/usr/bin/" + name)
+    monkeypatch.setattr(main._session, "is_current_project_resolved", lambda: True)
+    monkeypatch.setattr(main._session, "get_project_prefix", lambda *_a, **_kw: "myproject")
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "trigger_background_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_emit_iterm2_profile_setup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main, "_resolve_session_identity", lambda *a, **kw: ("g-myproject-1", "myproject-1"))
+
+    attached: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: attached.append(list(argv)))
+
+    def fake_run(cmd, **kwargs):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if "list-panes" in cmd:
+            # Split window: pane 0 is agy, pane 1 is a node pane whose start command execs legacy gemini
+            # with unreadable PID 999999 — must refuse!
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "agy\tagy\t1001\nnode\tsh -c 'agy; exec gemini'\t999999\n", "stderr": ""},
+            )()
+        if "list-sessions" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main.sys, "stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "legacy Gemini CLI" in captured.err
+    assert not attached
+
+
+def test_given_non_g_engine_when_session_script_generated_then_omits_agy_signin_supervisor_logic(tmp_path):
     from ai_cli import session_script
 
-    bash = shutil.which("bash")
-    if not bash:
-        pytest.skip("bash not available")
-
-    script = session_script.get_engine_script(
-        "g",
-        AI_NAME,
-        SLOT,
-        "g-myproject-",
-        "myproject",
-        None,
-        False,
-        str(tmp_path),
-        agy_cmd="agy",
+    g_script = session_script.get_engine_script(
+        "g", AI_NAME, SLOT, "g-myproject-", "myproject", None, False, str(tmp_path), agy_cmd="agy"
     )
-    # Verify the persistent supervisor itself consumes AI_CLI_AGY_SIGN_IN_VERIFIED before spawning
-    # replacement children (and non-g scripts do not include this agy-only supervisor code).
-    assert "_supervisor_agy_signin_token" in script
-    c_script = session_script.get_engine_script(
-        "c", AI_NAME, "c-myproject-1", "c-myproject-", "myproject", None, False, str(tmp_path)
-    )
-    assert "_supervisor_agy_signin_token" not in c_script
-
-    # Extract the real supervisor init + before-child + after-child lines from the generated script
-    # and run a real persistent-supervisor -> two-replaceable-child-shells replacement loop in bash.
-    init_start = script.index('      _supervisor_agy_signin_token="${AI_CLI_AGY_SIGN_IN_VERIFIED:-}"')
-    init_end = script.index("      while true; do", init_start)
-    init_block = script[init_start:init_end]
-
-    before_start = script.index('        if [[ -n "$_supervisor_agy_signin_token" ]]; then', init_end)
-    before_end = script.index("        fi\n", before_start) + len("        fi\n")
-    before_block = script[before_start:before_end]
-
-    after_marker = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
-    assert after_marker in script[before_end:]
-
-    log_file = tmp_path / "children.log"
-    child_script = tmp_path / "child.sh"
-    child_script.write_text(
-        f'printf "child=%s|token=%s\\n" "$1" "${{AI_CLI_AGY_SIGN_IN_VERIFIED:-UNSET}}" >> {shlex.quote(str(log_file))}\n'
-        "unset AI_CLI_AGY_SIGN_IN_VERIFIED\n",
-        encoding="utf-8",
-    )
-    token = agy_session.sign_in_cache_token("agy", tmp_path)
-    harness = f"""
-set -u
-tmux_session={shlex.quote(SLOT)}
-tmux() {{ :; }}
-export AI_CLI_AGY_SIGN_IN_VERIFIED={shlex.quote(token)}
-{init_block}
-for iter in 1 2; do
-{before_block}
-  {shlex.quote(bash)} {shlex.quote(str(child_script))} "$iter"
-{after_marker}
-done
-"""
-    harness_path = tmp_path / "supervisor_two_children.sh"
-    harness_path.write_text(harness, encoding="utf-8")
-    res = agy_session.subprocess.run([bash, str(harness_path)], capture_output=True, text=True, check=False)
-    assert res.returncode == 0, res.stderr
-    lines = log_file.read_text(encoding="utf-8").splitlines()
-    assert lines == [f"child=1|token={token}", "child=2|token=UNSET"]
-
-    # Confirm replacement child #2 (with AI_CLI_AGY_SIGN_IN_VERIFIED unset) re-probes agy models
-    # and refuses after sign-out.
-    monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
-    signed_out = type("Res", (), {"returncode": 1, "stdout": "", "stderr": "Error: Please sign in."})()
-    with patch.object(agy_session.subprocess, "run", return_value=signed_out) as probe:
-        refusal = agy_session.subscription_refusal(
-            home=tmp_path, executable="agy", platform="darwin", allow_cached=True
+    assert "_supervisor_agy_signin_token" in g_script
+    for engine, slot in (("c", "c-myproject-1"), ("cx", "cx-myproject-1"), ("p", "p-myproject-1")):
+        other = session_script.get_engine_script(
+            engine, AI_NAME, slot, f"{engine}-myproject-", "myproject", None, False, str(tmp_path)
         )
-    assert probe.call_count == 1
-    assert refusal is not None and "Google sign-in" in refusal
+        assert "_supervisor_agy_signin_token" not in other

@@ -3692,6 +3692,11 @@ def _verify_live_agy_tmux_session(session_name: str) -> str | None:
             saw_agy = True
             continue
         if proc in {"node", "nodejs"}:
+            if _pane_command_client(f"{current_raw}\t{start_raw}") == "gemini":
+                return (
+                    f"cannot resume {session_name} with ai g: live tmux pane runs legacy Gemini CLI, "
+                    f"not Antigravity (agy). Attach directly with `ai attach {session_name}` or retire it before launching agy."
+                )
             saw_node = True
             continue
 
