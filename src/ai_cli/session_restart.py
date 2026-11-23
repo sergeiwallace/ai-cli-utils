@@ -974,7 +974,26 @@ _PREVIOUS_TERMINAL_RESET = (
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
+    def strip_retired_metadata(match: re.Match[str]) -> str:
+        # Match only data emitted by the template, preserving comparison of any
+        # shell syntax outside the canonical quoted JSON argument.
+        quoted = match[2]
+        try:
+            (raw,) = shlex.split(quoted)
+            metadata = json.loads(raw)
+        except ValueError:
+            return match[0]
+        if isinstance(metadata, dict) and "gemini_cmd" in metadata and shlex.quote(json.dumps(metadata)) == quoted:
+            del metadata["gemini_cmd"]
+            return match[1] + shlex.quote(json.dumps(metadata)) + match[3]
+        return match[0]
+
     def normalize(text: str) -> str:
+        text = re.sub(
+            r"""(?m)^(    printf '%s' )(.+)( > "\$_ai_state_dir/session-meta-\$tmux_session\.json")$""",
+            strip_retired_metadata,
+            text,
+        )
         # Teardown moved into EXIT cleanup so abnormal returns fence tmux too.
         # Compare its body at the original location, rather than ignoring it:
         # changing the ownership fence must still make a program uncertifiable.

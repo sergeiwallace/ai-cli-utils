@@ -1,4 +1,4 @@
-"""Session naming, index management, worktree operations, and Gemini UUID lookup.
+"""Session naming, index management, and worktree operations.
 
 Depends on: config.py
 """
@@ -14,14 +14,12 @@ import subprocess
 import sys
 import time
 from collections.abc import Collection
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
 
 from . import launch_reporter, tmux_binary
 from .config import (
     WORKTREE_DIR,
-    _get_main_project_name,
     _get_projects_dir,
     get_current_project_name,
     get_worktree_upstream_branches,
@@ -36,197 +34,6 @@ from .git_repair import _creator_env, _git_env, repair_bare_worktree_config
 from .process_probe import ProcessProbe, ProcfsProbe, normalize_proc_start, probe_for
 from .session_naming import compose_session_name
 from .worktree_move import purge_moved_bytecode
-
-
-def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
-    """Derive a stable UUID from checkpoint content (SHA-256 of first 64KB).
-
-    Using a content-derived UUID ensures the same checkpoint always produces
-    the same chat file — re-running conversion is idempotent.
-    """
-    h = hashlib.sha256(checkpoint_bytes[:65536]).hexdigest()
-    return f"{h[0:8]}-{h[8:12]}-4{h[13:16]}-{h[16:20]}-{h[20:32]}"
-
-
-def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
-    """Convert a Gemini checkpoint JSON to a chat session file.
-
-    Reads ``checkpoint-{ai_name}.json``, converts from the checkpoint
-    ``history`` format (role/parts) to the chat file format (type/content),
-    and writes a ``chats/session-*.json`` file with a stable content-derived
-    UUID.  Idempotent: if a file with the same UUID already exists and is at
-    least as recent as the checkpoint, it is left unchanged.
-
-    Returns the sessionId UUID on success, or None on any error.
-    """
-    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
-    if not checkpoint_path.exists():
-        return None
-
-    try:
-        raw = checkpoint_path.read_bytes()
-        checkpoint = json.loads(raw)
-        history = checkpoint.get("history", [])
-        if not history:
-            return None
-
-        session_uuid = _checkpoint_to_chat_uuid(raw)
-        chats_dir = gemini_tmp / "chats"
-        chats_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build filename from checkpoint mtime so file sorts correctly vs. native sessions
-        chk_mtime = checkpoint_path.stat().st_mtime
-        chk_dt = datetime.fromtimestamp(chk_mtime, tz=UTC)
-        ts_str = chk_dt.strftime("%Y-%m-%dT%H-%M")
-        chat_path = chats_dir / f"session-{ts_str}-{session_uuid[:8]}.json"
-
-        # Skip if already converted and up to date
-        if chat_path.exists() and chat_path.stat().st_mtime >= chk_mtime:
-            return session_uuid
-
-        # Compute projectHash = sha256(projectRoot)
-        project_root_file = gemini_tmp / ".project_root"
-        project_root = project_root_file.read_text().strip() if project_root_file.exists() else str(Path.cwd())
-        project_hash = hashlib.sha256(project_root.encode()).hexdigest()
-
-        # Convert history entries to chat messages
-        base_time = chk_dt - timedelta(seconds=len(history))
-        messages = []
-        for i, entry in enumerate(history):
-            role = entry.get("role", "user")
-            parts = entry.get("parts", [])
-            text = next((p.get("text", "") for p in parts if "text" in p), "")
-            msg_time = base_time + timedelta(seconds=i)
-            msg_uuid_raw = hashlib.sha256(f"{session_uuid}:{i}".encode()).hexdigest()
-            msg_uuid = f"{msg_uuid_raw[0:8]}-{msg_uuid_raw[8:12]}-4{msg_uuid_raw[13:16]}-{msg_uuid_raw[16:20]}-{msg_uuid_raw[20:32]}"
-            messages.append(
-                {
-                    "id": msg_uuid,
-                    "timestamp": msg_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "type": "gemini" if role == "model" else role,
-                    "content": [{"text": text}],
-                }
-            )
-
-        chat_data = {
-            "sessionId": session_uuid,
-            "projectHash": project_hash,
-            "startTime": messages[0]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "lastUpdated": messages[-1]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "messages": messages,
-            "kind": "main",
-        }
-        chat_path.write_text(json.dumps(chat_data, ensure_ascii=False))
-        # Set mtime to match checkpoint so ordering vs. native chat files is correct
-        os.utime(chat_path, (chk_mtime, chk_mtime))
-        return session_uuid
-
-    except Exception:
-        return None
-
-
-def _get_chat_last_message_timestamp(chat_path: Path) -> float:
-    """Return the timestamp of the last message in a chat file as a Unix timestamp.
-
-    Falls back to 0.0 on any error so callers can compare safely.
-    """
-    try:
-        data = json.loads(chat_path.read_bytes())
-        messages = data.get("messages", [])
-        if not messages:
-            return 0.0
-        last_ts = messages[-1].get("timestamp", "")
-        return datetime.fromisoformat(last_ts.replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return 0.0
-
-
-def _find_latest_gemini_uuid(ai_name: str) -> str | None:
-    """Return the sessionId from the most recently modified chat file for ai_name.
-
-    Gemini stores sessions in ~/.gemini/tmp/{ai_name}/chats/*.json.  Each file
-    contains a top-level ``sessionId`` field with the full UUID needed for
-    ``--resume``.
-
-    If a checkpoint exists and its mtime is newer than the last message timestamp
-    in the latest chat file (or no chat files exist), the checkpoint is
-    automatically converted to a chat file so the session can be resumed via
-    ``gemini -r`` without any ``/resume load`` injection.
-
-    Comparing checkpoint mtime against the chat file's last message timestamp
-    (rather than the chat file's mtime) correctly handles the case where
-    ``/resume save`` is run mid-session: the chat file may have a stale mtime
-    even though auto-save has written more recent messages to it.
-    """
-    gemini_tmp = Path.home() / ".gemini" / "tmp" / ai_name
-    chats_dir = gemini_tmp / "chats"
-    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
-
-    # Find newest existing chat file (by mtime — for initial ordering only)
-    latest_chat: Path | None = None
-    if chats_dir.exists():
-        candidates = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        latest_chat = candidates[0] if candidates else None
-
-    # Convert checkpoint if it exists and its save time is newer than the last
-    # message in the chat file.  This correctly selects the chat file when
-    # auto-save has written messages after a mid-session /resume save.
-    if checkpoint_path.exists():
-        chk_mtime = checkpoint_path.stat().st_mtime
-        chat_last_ts = _get_chat_last_message_timestamp(latest_chat) if latest_chat else 0.0
-        if chk_mtime > chat_last_ts:
-            converted_uuid = _convert_checkpoint_to_chat(ai_name, gemini_tmp)
-            if converted_uuid:
-                return converted_uuid
-
-    # Use latest native chat file
-    if latest_chat:
-        try:
-            session_id = json.loads(latest_chat.read_text()).get("sessionId")
-            if session_id:
-                return session_id
-        except Exception:
-            pass
-
-    return None
-
-
-def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
-    """Return the most recent Gemini session ID.
-
-    If ai_name is provided, scans ~/.gemini/tmp/{ai_name}/chats/ directly —
-    the authoritative source regardless of current working directory.  Only
-    sessions with a chat file on disk can be resumed with ``-r``; sessions
-    started via ``/resume load`` (checkpoint restore) do not write a chat file,
-    so their UUID in logs.json cannot be used for ``-r``.  Returning None in
-    that case causes the caller to fall back to ``/resume load``, which is the
-    correct recovery path.  Never fall back to logs.json when ai_name is known.
-    """
-    if ai_name:
-        return _find_latest_gemini_uuid(ai_name)
-
-    cwd = Path.cwd()
-    project_name = cwd.name
-    paths = [
-        Path.home() / ".gemini" / "tmp" / project_name / "logs.json",
-    ]
-    main_name = _get_main_project_name()
-    if main_name is not None:
-        paths.append(Path.home() / ".gemini" / "tmp" / main_name / "logs.json")
-    for p in paths:
-        if p.exists():
-            try:
-                with p.open("rb") as f:
-                    size = p.stat().st_size
-                    if size > 4096:
-                        f.seek(-4096, 2)
-                    data = f.read().decode("utf-8", errors="ignore")
-                    matches = re.findall(r'"sessionId":\s*"([^"]+)"', data)
-                    if matches:
-                        return matches[-1]
-            except Exception:
-                pass
-    return None
 
 
 def _prefix_from_session_name(session_name: str) -> str:

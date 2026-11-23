@@ -52,6 +52,18 @@ def test_given_pre_feature_program_when_ac_i_1_compared_then_lifecycle_insertion
     assert "(( _promotion_status == 2 )) && break" in current
 
 
+def test_given_supervisor_with_retired_command_metadata_when_compared_then_only_the_field_is_ignored(programs):
+    _, current = programs
+    metadata_line = next(line for line in current.splitlines() if "printf '%s'" in line and "session-meta-" in line)
+    raw = shlex.split(metadata_line)[2]
+    old_payload = shlex.quote(json.dumps({**json.loads(raw), "gemini_cmd": "/opt/example's tools/gemini"}))
+    old_line = metadata_line.replace(shlex.quote(raw), old_payload)
+
+    assert session_restart._compatible(current.replace(metadata_line, old_line), current)
+    edited_line = old_line.replace(old_payload, f"{old_payload} extra")
+    assert not session_restart._compatible(current.replace(metadata_line, edited_line), current)
+
+
 def test_given_program_launched_before_host_refresh_when_compared_then_it_is_compatible(programs):
     _, current = programs
     bracket = r"(?ms)^    # BEGIN HOST REFRESH[^\n]*\n.*?^    # END HOST REFRESH\n"

@@ -836,7 +836,7 @@ def locate_session_command(query: str, as_json: bool) -> None:
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
 
 
-CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "agy": "agy", "gemini": "gemini"}
+CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "agy": "agy"}
 
 
 def _most_recent_record(client):

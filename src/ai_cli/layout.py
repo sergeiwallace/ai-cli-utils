@@ -87,7 +87,7 @@ class Tab(BaseModel):
     @field_validator("session_type")
     @classmethod
     def session_type_valid(cls, v: str) -> str:
-        allowed = {"cc", "agy", "gemini", "shell", "chrome", "caffeinate", "ssh"}
+        allowed = {"cc", "agy", "shell", "chrome", "caffeinate", "ssh"}
         if v not in allowed:
             raise ValueError(f"session_type must be one of {sorted(allowed)}")
         return v

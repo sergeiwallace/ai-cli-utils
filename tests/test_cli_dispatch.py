@@ -97,6 +97,20 @@ class TestCmdCopierUpdate:
 # --- `ai internal refresh-template` ---
 
 
+@pytest.mark.parametrize(
+    ("action", "args"),
+    [
+        ("get-latest-gemini-id", ["session-1"]),
+        ("update-session-map", ["g", "session-1", "example-uuid"]),
+    ],
+)
+def test_given_retired_gemini_action_when_invoked_then_reports_unknown_action(action, args):
+    exit_code, _, stderr = run_cli(["ai", "internal", action, *args])
+
+    assert exit_code == 1
+    assert f"unknown action: {action}" in stderr
+
+
 class TestInternalRefreshTemplate:
     @staticmethod
     def _meta(session: str = "c-myproject-tst-1") -> dict:
@@ -114,7 +128,6 @@ class TestInternalRefreshTemplate:
             "project_name": "myproject",
             "iterm2_slot": "",
             "iterm2_cfg": {},
-            "gemini_cmd": "gemini",
         }
 
     def test_given_no_session_arg_when_refresh_template_then_exits_1(self):

@@ -263,7 +263,6 @@ def detached_launch(boot_record, monkeypatch):
     monkeypatch.setattr(main, "_finish_recorded_migrations", Mock())
     monkeypatch.setattr(main._iterm2, "_load_iterm2_config", dict)
     monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *a, **kw: None)
-    monkeypatch.setattr(main._config, "get_session_map", lambda *a: {})
     monkeypatch.setattr(
         main._session_naming, "resolve_or_prompt_host_alias", Mock(side_effect=AssertionError("prompt"))
     )

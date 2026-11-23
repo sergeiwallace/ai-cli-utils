@@ -204,7 +204,6 @@ def _launch_patches(stack: ExitStack, config: dict, argv: list[str], stream) -> 
         ("ai_cli.session.get_project_prefix", {"return_value": "myproject"}),
         ("ai_cli.session.is_current_project_resolved", {"return_value": True}),
         ("ai_cli.config.get_current_project_name", {"return_value": "myproject"}),
-        ("ai_cli.config.get_session_map", {"return_value": {}}),
         ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
         ("ai_cli.session._resolve_is_remote", {"return_value": False}),
         ("ai_cli.session.cleanup_stale_sessions", {}),

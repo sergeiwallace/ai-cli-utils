@@ -848,13 +848,6 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Quote paths containing spaces.
 # command = "agy"
 
-[gemini]
-## Legacy configuration table retained for compatibility with existing configs.
-## `ai g` launches Antigravity (`[agy] command`), not the retired Gemini CLI.
-# sandbox_whitelist = ["session"]
-# paid_fallback_enabled = false
-# command = "gemini"
-
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
 ## default (google) is silently unready unless you have separately configured
@@ -1879,33 +1872,6 @@ def resolve_project_prefix_by_name(project_name: str) -> str:
             f"the name of a repository that is checked out under {candidate.parent}."
         )
     return resolve_project_prefix(candidate)
-
-
-# --- State Management ---
-
-
-def get_session_map_path(engine="c"):
-    state_dir = get_xdg_state_home()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    if engine == "c":
-        return Path.home() / ".claude" / "cc-sessions.json"
-    return state_dir / "gemini_sessions.json"
-
-
-def get_session_map(engine="c"):
-    path = get_session_map_path(engine)
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
-
-
-def save_session_map(d, engine="c"):
-    path = get_session_map_path(engine)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(d, indent=2))
 
 
 # --- Project & Session Logic ---

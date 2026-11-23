@@ -489,7 +489,7 @@ def test_given_g_engine_when_get_engine_script_called_then_invokes_agy_session_w
 
 def test_given_g_engine_bare_launch_when_bare_engine_command_built_then_delegates_to_agy_session(tmp_path):
     cmd = main._bare_engine_command(
-        "g", AI_NAME, tmp_path, None, "gemini", "--no-sandbox", ["--model", "gemini-4-neon-low"], resume=False
+        "g", AI_NAME, tmp_path, None, "--no-sandbox", ["--model", "gemini-4-neon-low"], resume=False
     )
     assert cmd[1:4] == ["-m", "ai_cli.agy_session", "launch"]
     assert "--command" in cmd
@@ -734,17 +734,7 @@ def test_given_unmanaged_plugin_or_slot_refusal_when_ensuring_plugin_then_preser
     assert not (refusal_home / agy_session.PLUGIN_REL_DIR).exists()
 
 
-def test_given_legacy_gemini_command_override_when_building_agy_launch_then_ignores_gemini_cmd(tmp_path):
-    cmd = main._bare_engine_command(
-        "g", AI_NAME, tmp_path, None, "/legacy/custom-gemini", "--no-sandbox", [], resume=False
-    )
-    assert "--command" in cmd
-    assert cmd[cmd.index("--command") + 1] == "agy"
-    script = get_engine_script(
-        "g", AI_NAME, SLOT, "g-myproject-", "myproject", worktree_dir=str(tmp_path), gemini_cmd="/legacy/gemini"
-    )
-    assert "--command agy" in script
-    assert "--command /legacy/gemini" not in script
+def test_given_agy_resume_when_script_is_generated_then_passes_false_for_fresh(tmp_path):
     resume_script = get_engine_script(
         "g", AI_NAME, SLOT, "g-myproject-", "myproject", worktree_dir=str(tmp_path), resume=True
     )

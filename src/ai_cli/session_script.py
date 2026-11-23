@@ -270,7 +270,6 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    gemini_cmd: str = "gemini",
     agy_cmd: str | None = None,
     agy_args: list[str] | None = None,
     resume: bool = False,
@@ -402,7 +401,6 @@ def get_engine_script(
         "project_name": project_name,
         "iterm2_slot": iterm2_slot or "",
         "iterm2_cfg": iterm2_cfg or {},
-        "gemini_cmd": gemini_cmd,
         "pi_provider": pi_provider,
         "launch_log_path": launch_log_path or "",
     }

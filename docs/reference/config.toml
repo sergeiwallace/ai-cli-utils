@@ -114,13 +114,6 @@
 ## Quote paths containing spaces.
 # command = "agy"
 
-[gemini]
-## Legacy configuration table retained for compatibility with existing configs.
-## `ai g` launches Antigravity (`[agy] command`), not the retired Gemini CLI.
-# sandbox_whitelist = ["session"]
-# paid_fallback_enabled = false
-# command = "gemini"
-
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
 ## default (google) is silently unready unless you have separately configured

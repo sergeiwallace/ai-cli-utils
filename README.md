@@ -1767,7 +1767,7 @@ iTerm2 visual identity settings live in `~/.config/ai-cli-utils/iterm2.toml` (cr
 [iterm2.base_profiles]
 # Base Dynamic Profile each session type inherits from
 cc         = "ClaudeCode"
-gemini     = "GeminiCLI"
+agy        = "Antigravity"
 shell      = "ShellUtility"
 
 [iterm2.project_colors]
