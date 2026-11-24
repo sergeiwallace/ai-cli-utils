@@ -401,3 +401,29 @@ def test_given_tmux_server_restart_recycling_session_id_when_fenced_marker_or_re
             check=True,
         ).stdout.strip()
         assert current_pane_pid == orig_pane_pid
+
+    # Verify matching generation passes special characters (quotes, $, #, ;, backslash, newline) verbatim.
+    live_identity = tmux_ownership.capture_tmux_session_identity(
+        replacement_id, expected_generation="gen-different-2", tmux_command=tmux_cmd
+    )
+    assert live_identity is not None
+    out_file = tmp_path / "quoted-payload.txt"
+    payload = 'it\'s "$HOME" #{session_id}; a\\b\nline2'
+    assert (
+        tmux_ownership.respawn_owned_tmux_pane(
+            live_identity,
+            (
+                sys.executable,
+                "-c",
+                "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8'); time.sleep(60)",
+                str(out_file),
+                payload,
+            ),
+            tmux_command=tmux_cmd,
+        )
+        is True
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not (out_file.is_file() and out_file.stat().st_size > 0):
+        time.sleep(0.05)
+    assert out_file.read_text(encoding="utf-8") == payload

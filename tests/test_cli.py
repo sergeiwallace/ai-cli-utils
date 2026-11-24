@@ -1116,6 +1116,8 @@ class TestCliOncePath:
                                                 assert "--dangerously-skip-permissions" not in bash_cmd
 
     def test_given_agy_one_shot_when_launched_then_passes_slot_record(self, tmp_path):
+        from ai_cli.tmux_ownership import TmuxSessionIdentity
+
         real_which = shutil.which
         run_calls: list[list[str]] = []
 
@@ -1141,21 +1143,27 @@ class TestCliOncePath:
             patch("ai_cli.session.detect_repo_root", return_value=None),
             patch(
                 "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                side_effect=lambda sid, expected_generation=None: MagicMock(session_id=sid),
+                side_effect=lambda sid, expected_generation=None: TmuxSessionIdentity(
+                    sid, "g-session-research", expected_generation or "gen-test"
+                ),
             ),
             patch("subprocess.run", side_effect=fake_run),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
                 cli()
-        respawn_cmd = next(c for c in run_calls if "respawn-pane" in c)
-        bash_cmd = respawn_cmd[-1]
+        respawn_cmd = next(
+            c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$7'")
+        )
+        bash_cmd = respawn_cmd[6]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "g-session-research.agy.json" in bash_cmd
         assert mock_exec.call_args[0][1][-1] == "$7"
 
     def test_given_agy_one_shot_when_launched_then_uses_default_command(self, tmp_path):
+        from ai_cli.tmux_ownership import TmuxSessionIdentity
+
         real_which = shutil.which
         run_calls: list[list[str]] = []
 
@@ -1181,15 +1189,19 @@ class TestCliOncePath:
             patch("ai_cli.session.detect_repo_root", return_value=None),
             patch(
                 "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                side_effect=lambda sid, expected_generation=None: MagicMock(session_id=sid),
+                side_effect=lambda sid, expected_generation=None: TmuxSessionIdentity(
+                    sid, "g-session-research", expected_generation or "gen-test"
+                ),
             ),
             patch("subprocess.run", side_effect=fake_run),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
                 cli()
-        respawn_cmd = next(c for c in run_calls if "respawn-pane" in c)
-        bash_cmd = respawn_cmd[-1]
+        respawn_cmd = next(
+            c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$8'")
+        )
+        bash_cmd = respawn_cmd[6]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "--command agy" in bash_cmd

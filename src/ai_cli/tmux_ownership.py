@@ -19,6 +19,7 @@ _FENCE_MISMATCH = "__ai_cli_ownership_mismatch__"
 _PANE_PID_FORMAT = "#{pane_pid}"
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_OPTION_NAME_RE = re.compile(r"^@?[A-Za-z0-9_-]+$")
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 1.0
 
 
@@ -142,7 +143,7 @@ def set_owned_tmux_option(
     tmux_command: Sequence[str] | None = None,
 ) -> bool:
     """Atomically verify ``identity`` and set session option ``option`` to ``value``."""
-    if not option:
+    if not _OPTION_NAME_RE.fullmatch(option):
         return False
     command_text = f"set-option -t {_tmux_quote(identity.session_id)} {_tmux_quote(option)} {_tmux_quote(value)}"
     succeeded, _matched = _run_owned_tmux_command(identity, command_text, tmux_command=tmux_command)
@@ -157,8 +158,10 @@ def respawn_owned_tmux_pane(
 ) -> bool:
     """Atomically verify ``identity`` and respawn its pane with ``command``.
 
-    Retries without the ``--`` separator only when the generation fence matched and tmux
-    rejected the ``--`` syntax; a generation mismatch returns ``False`` immediately.
+    Retries without the ``--`` separator only after positively verifying that the
+    owned session generation is still live (handling older tmux builds that reject
+    ``--``); a generation mismatch or absent session/server returns ``False`` without
+    retrying.
     """
     if not command:
         return False
@@ -171,6 +174,13 @@ def respawn_owned_tmux_pane(
     )
     if succeeded or not matched:
         return succeeded
+    if (
+        capture_tmux_session_identity(
+            identity.session_id, expected_generation=identity.generation, tmux_command=tmux_command
+        )
+        is None
+    ):
+        return False
     retry_ok, _retry_matched = _run_owned_tmux_command(
         identity,
         f"respawn-pane -k -t {target} {quoted_args}",

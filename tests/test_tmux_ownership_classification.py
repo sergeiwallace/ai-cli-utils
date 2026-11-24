@@ -200,13 +200,14 @@ def test_given_owned_session_identity_when_set_option_fences_then_uses_if_shell_
     assert "$0|gen-abc123" in seen[0][5]
     assert seen[0][6] == "set-option -t '$0' '@ai_cli_client' 'agy'"
 
-    # Generation mismatch prints sentinel and returns False.
+    # Generation mismatch prints sentinel and returns False; invalid option names are rejected.
     monkeypatch.setattr(
         "ai_cli.tmux_ownership.subprocess.run",
         lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})(),
     )
     assert set_owned_tmux_option(identity, "@ai_cli_client", "agy", tmux_command=("tmux",)) is False
-    assert set_owned_tmux_option(identity, "", "agy", tmux_command=("tmux",)) is False
+    for bad_option in ("", "-g", "--flag", "bad option"):
+        assert set_owned_tmux_option(identity, bad_option, "agy", tmux_command=("tmux",)) is False
 
 
 def test_given_owned_session_identity_when_respawn_pane_fences_then_retries_without_separator_only_on_fence_match(
@@ -225,18 +226,33 @@ def test_given_owned_session_identity_when_respawn_pane_fences_then_retries_with
     assert respawn_owned_tmux_pane(identity, ("/bin/sh", "-c", "echo hi"), tmux_command=("tmux",)) is False
     assert len(mismatch_calls) == 1
 
-    # 2. Fence matched but `--` failed (older tmux): retries once without `--` still under the same fence.
+    # 2. Absent session or dead server (rc=1, no sentinel): capture returns None, so NO retry runs.
+    dead_calls: list[list[str]] = []
+
+    def fake_dead(cmd, **kw):
+        dead_calls.append(list(cmd))
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "can't find session: $0\n"})()
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_dead)
+    assert respawn_owned_tmux_pane(identity, ("/bin/sh", "-c", "echo hi"), tmux_command=("tmux",)) is False
+    assert [c[1] for c in dead_calls] == ["if-shell", "display-message"]
+
+    # 3. Fence matched and session generation is positively live, but `--` failed (older tmux):
+    #    retries once without `--` still under the same fence.
     retry_calls: list[list[str]] = []
 
     def fake_retry(cmd, **kw):
         retry_calls.append(list(cmd))
+        if cmd[1] == "display-message":
+            return type("R", (), {"returncode": 0, "stdout": "$0\tg-myproject-1\tgen-abc123\n", "stderr": ""})()
         rc = 1 if " -- " in cmd[6] else 0
         return type("R", (), {"returncode": rc, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_retry)
     assert respawn_owned_tmux_pane(identity, ("/bin/sh", "-c", "echo hi"), tmux_command=("tmux",)) is True
-    assert len(retry_calls) == 2
-    assert " -- " in retry_calls[0][6]
-    assert " -- " not in retry_calls[1][6]
-    assert "$0|gen-abc123" in retry_calls[1][5]
+    if_shell_calls = [c for c in retry_calls if c[1] == "if-shell"]
+    assert len(if_shell_calls) == 2
+    assert " -- " in if_shell_calls[0][6]
+    assert " -- " not in if_shell_calls[1][6]
+    assert "$0|gen-abc123" in if_shell_calls[1][5]
     assert respawn_owned_tmux_pane(identity, (), tmux_command=("tmux",)) is False

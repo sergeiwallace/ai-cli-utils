@@ -1,1 +1,1 @@
-Fence Antigravity tmux `@ai_cli_client` marker writes and `respawn-pane` calls with atomic `@ai_cli_session_generation` verification so a tmux server restart recycling a session id cannot modify or respawn an unrelated replacement session.
+- Fence Antigravity tmux `@ai_cli_client` marker writes and `respawn-pane` calls with atomic `@ai_cli_session_generation` verification so a tmux server restart recycling a session id cannot modify or respawn an unrelated replacement session.
