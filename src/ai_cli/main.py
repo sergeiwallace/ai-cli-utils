@@ -3489,24 +3489,20 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
 
 
 _TMUX_CLIENT_OPTION = "@ai_cli_client"
-_G_CLIENT_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ash", "ksh", "fish", "cmd", "powershell", "pwsh"})
-_G_CLIENT_SHELL_CMD_FLAGS = frozenset({"-c", "-lc", "-ic", "/c", "/k", "-command"})
 _G_CLIENT_EXEC_EXTS = (".exe", ".cmd", ".bat", ".ps1", ".com")
-
-
-def _normalize_g_command_basename(token: str) -> str:
-    cleaned = token.strip().strip("\"'")
-    if not cleaned:
-        return ""
-    base = re.split(r"[/\\]", cleaned)[-1].lower()
-    for ext in _G_CLIENT_EXEC_EXTS:
-        if base.endswith(ext) and len(base) > len(ext):
-            return base[: -len(ext)]
-    return base
+_G_PANE_QUERY_FORMAT = f"#{{{_TMUX_CLIENT_OPTION}}}\t#{{pane_current_command}}"
+_G_ALL_PANES_QUERY_FORMAT = f"#{{session_name}}\t{_G_PANE_QUERY_FORMAT}"
 
 
 def _classify_g_command_name(token: str) -> str | None:
-    base = _normalize_g_command_basename(token)
+    cleaned = token.strip().strip("\"'")
+    if not cleaned:
+        return None
+    base = re.split(r"[/\\]", cleaned)[-1].lower()
+    for ext in _G_CLIENT_EXEC_EXTS:
+        if base.endswith(ext) and len(base) > len(ext):
+            base = base[: -len(ext)]
+            break
     if base in ("agy", "antigravity"):
         return "agy"
     if base == "gemini":
@@ -3514,167 +3510,23 @@ def _classify_g_command_name(token: str) -> str | None:
     return None
 
 
-def _split_shell_segments(script: str) -> list[str]:
-    segments: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    i = 0
-    length = len(script)
-    while i < length:
-        ch = script[i]
-        if quote is not None:
-            buf.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < length:
-                i += 1
-                buf.append(script[i])
-            elif ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < length:
-            buf.append(ch)
-            buf.append(script[i + 1])
-            i += 2
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            buf.append(ch)
-            i += 1
-            continue
-        if ch in (";", "\n"):
-            segments.append("".join(buf))
-            buf.clear()
-            i += 1
-            continue
-        if ch == "&" and i + 1 < length and script[i + 1] == "&":
-            segments.append("".join(buf))
-            buf.clear()
-            i += 2
-            continue
-        if ch == "|":
-            segments.append("".join(buf))
-            buf.clear()
-            i += 2 if (i + 1 < length and script[i + 1] == "|") else 1
-            continue
-        buf.append(ch)
-        i += 1
-    if buf:
-        segments.append("".join(buf))
-    return segments
-
-
-def _classify_g_command_line(command_line: str, *, _depth: int = 0) -> str | None:
-    if _depth > 2:
-        return None
-    stripped = command_line.strip()
-    if not stripped:
-        return None
-    use_posix = not (re.search(r'(?:^|[\s"\'])[A-Za-z]:\\', stripped) or stripped.startswith("\\\\"))
-    try:
-        tokens = shlex.split(stripped, posix=use_posix)
-    except ValueError:
-        tokens = stripped.split()
-    if len(tokens) == 1 and len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
-        inner = tokens[0].strip().strip("\"'") if not use_posix else tokens[0].strip()
-        if any(ch.isspace() for ch in inner):
-            return _classify_g_command_line(inner, _depth=_depth + 1)
-
-    idx = 0
-    while idx < len(tokens):
-        tok = tokens[idx]
-        if "=" in tok and not tok.startswith(("=", "-")):
-            idx += 1
-            continue
-        base = _normalize_g_command_basename(tok)
-        if base in ("exec", "command", "nohup", "time"):
-            idx += 1
-            while idx < len(tokens) and tokens[idx].startswith("-"):
-                flag = tokens[idx]
-                idx += 1
-                if base == "exec" and flag == "-a" and idx < len(tokens):
-                    idx += 1
-                if flag == "--":
-                    break
-            continue
-        if base == "env":
-            idx += 1
-            while idx < len(tokens):
-                arg = tokens[idx]
-                if arg == "--":
-                    idx += 1
-                    break
-                if arg.startswith("-"):
-                    idx += 1
-                    if arg in ("-u", "-C", "-S") and idx < len(tokens):
-                        idx += 1
-                    continue
-                if "=" in arg and not arg.startswith("="):
-                    idx += 1
-                    continue
-                break
-            continue
-        if base == "nice":
-            idx += 1
-            while idx < len(tokens) and tokens[idx].startswith("-"):
-                flag = tokens[idx]
-                idx += 1
-                if flag == "-n" and idx < len(tokens):
-                    idx += 1
-                if flag == "--":
-                    break
-            continue
-        break
-
-    if idx >= len(tokens):
-        return None
-
-    cmd_tok = tokens[idx]
-    direct = _classify_g_command_name(cmd_tok)
-    if direct is not None:
-        return direct
-
-    base = _normalize_g_command_basename(cmd_tok)
-    rest = tokens[idx + 1 :]
-    if base.startswith("python") or base in ("py", "pypy", "pypy3", "uv"):
-        for arg_idx, arg in enumerate(rest):
-            if arg in ("--", "-c"):
-                break
-            if arg == "-m" and arg_idx + 1 < len(rest) and rest[arg_idx + 1] == "ai_cli.agy_session":
-                return "agy"
-        return None
-
-    if base in _G_CLIENT_SHELLS:
-        for arg_idx, arg in enumerate(rest):
-            if arg.lower() in _G_CLIENT_SHELL_CMD_FLAGS and arg_idx + 1 < len(rest):
-                script_arg = rest[arg_idx + 1]
-                if (
-                    not use_posix
-                    and len(script_arg) >= 2
-                    and script_arg[0] == script_arg[-1]
-                    and script_arg[0] in ('"', "'")
-                ):
-                    script_arg = script_arg[1:-1]
-                found: set[str] = set()
-                for segment in _split_shell_segments(script_arg):
-                    client = _classify_g_command_line(segment, _depth=_depth + 1)
-                    if client is not None:
-                        found.add(client)
-                return next(iter(found)) if len(found) == 1 else None
-    return None
+def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
+    found: set[str] = set()
+    for marker, current_cmd in rows:
+        cleaned_marker = marker.strip()
+        if cleaned_marker in ("agy", "gemini"):
+            return cleaned_marker
+        client = _classify_g_command_name(current_cmd)
+        if client is not None:
+            found.add(client)
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
     """Fallback client detection for a live ``g-`` tmux session lacking metadata files."""
     try:
         res = subprocess.run(
-            tmux_binary.argv(
-                "list-panes",
-                "-s",
-                "-t",
-                f"={session_name}:",
-                "-F",
-                f"#{{{_TMUX_CLIENT_OPTION}}}\t#{{pane_current_command}}\t#{{pane_start_command}}",
-            ),
+            tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", _G_PANE_QUERY_FORMAT),
             capture_output=True,
             text=True,
             check=False,
@@ -3685,26 +3537,42 @@ def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
     if res.returncode != 0 or not isinstance(res.stdout, str):
         return None
 
-    found: set[str] = set()
+    rows: list[tuple[str, str]] = []
+    for line in res.stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t", 1)
+        rows.append((parts[0], parts[1] if len(parts) > 1 else ""))
+    return _client_from_pane_rows(rows)
+
+
+def _probe_all_g_session_clients_from_tmux() -> dict[str, str | None]:
+    """Batch-probe live ``g-`` tmux sessions in a single ``list-panes -a`` call."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-a", "-F", _G_ALL_PANES_QUERY_FORMAT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if res.returncode != 0 or not isinstance(res.stdout, str):
+        return {}
+
+    grouped: dict[str, list[tuple[str, str]]] = {}
     for line in res.stdout.splitlines():
         if not line:
             continue
         parts = line.split("\t", 2)
-        marker = parts[0].strip() if len(parts) >= 1 else ""
-        if marker in ("agy", "gemini"):
-            return marker
-        current_cmd = parts[1] if len(parts) >= 2 else ""
-        start_cmd = parts[2] if len(parts) >= 3 else ""
-        client = _classify_g_command_name(current_cmd) or _classify_g_command_line(start_cmd)
-        if client is not None:
-            found.add(client)
-    return next(iter(found)) if len(found) == 1 else None
+        if len(parts) < 3 or not parts[0].startswith("g-"):
+            continue
+        grouped.setdefault(parts[0], []).append((parts[1], parts[2]))
+    return {name: _client_from_pane_rows(rows) for name, rows in grouped.items()}
 
 
-def _g_session_client(session_name: str) -> str | None:
-    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
-    if not session_name.startswith("g-"):
-        return None
+def _g_session_client_from_files(session_name: str) -> str | None:
     state = _config.get_xdg_state_home()
     if (state / "sessions" / f"{session_name}.agy.json").is_file():
         return "agy"
@@ -3719,6 +3587,18 @@ def _g_session_client(session_name: str) -> str | None:
                 return "agy"
             if meta.get("engine") == "g":
                 return "gemini"
+    return None
+
+
+def _g_session_client(session_name: str, *, live_pane_clients: Mapping[str, str | None] | None = None) -> str | None:
+    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
+    if not session_name.startswith("g-"):
+        return None
+    from_files = _g_session_client_from_files(session_name)
+    if from_files is not None:
+        return from_files
+    if live_pane_clients is not None:
+        return live_pane_clients.get(session_name)
     return _probe_g_session_client_from_tmux(session_name)
 
 
@@ -4038,8 +3918,12 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
+    live_pane_clients: dict[str, str | None] | None = None
+    if any(name.startswith("g-") and _g_session_client_from_files(name) is None for name, _ in sessions):
+        live_pane_clients = _probe_all_g_session_clients_from_tmux()
+
     def _client_tag(name: str) -> str:
-        client = _g_session_client(name)
+        client = _g_session_client(name, live_pane_clients=live_pane_clients)
         if client == "agy":
             return " [agy]"
         if client == "gemini":

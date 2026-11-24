@@ -511,6 +511,7 @@ def test_given_remain_on_exit_server_when_once_agy_setup_fails_then_placeholder_
 def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_labels_agy_and_skips_plain_shell(
     tmux_socket, tmp_path, monkeypatch
 ):
+    import shutil
     import subprocess
     import time
 
@@ -525,12 +526,14 @@ def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_la
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_agy = fake_bin / "agy"
-    fake_agy.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    sleep_bin = shutil.which("sleep")
+    assert sleep_bin is not None
+    shutil.copy2(sleep_bin, fake_agy)
     fake_agy.chmod(0o755)
 
-    # Manually started g- tmux session running agy directly, with NO .agy.json, NO session-meta, NO @ai_cli_client.
+    # Manually started g- tmux session running an executable named agy, with NO metadata or @ai_cli_client marker.
     subprocess.run(
-        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-manual", "--", str(fake_agy)],
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-manual", "--", str(fake_agy), "60"],
         check=True,
     )
     # Manually started g- tmux session running a plain shell command.

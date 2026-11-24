@@ -2995,28 +2995,21 @@ def test_given_stopped_worktree_agy_slot_when_checking_saved_no_worktree_cwd_the
 
 
 @pytest.mark.parametrize(
-    ("command_line", "expected"),
+    ("command_name", "expected"),
     [
         ("agy", "agy"),
-        ("/usr/local/bin/agy --mode chat", "agy"),
-        (r"C:\Tools\agy.exe --chat", "agy"),
+        ("/usr/local/bin/agy", "agy"),
+        (r"C:\Tools\agy.exe", "agy"),
+        ("agy.cmd", "agy"),
         ("antigravity", "agy"),
-        ("\"/bin/sh -c 'exec agy --chat'\"", "agy"),
-        ("env FOO=1 nice -n 10 /opt/bin/agy", "agy"),
-        ("python3 -m ai_cli.agy_session launch slot.json", "agy"),
-        ("uv run python -m ai_cli.agy_session launch slot.json", "agy"),
-        ("cmd /c agy.cmd --chat", "agy"),
-        ("bash -lc 'cd /work && exec agy'", "agy"),
-        ("gemini --yolo", "gemini"),
-        ("vim agy.py", None),
-        ("grep agy notes.txt", None),
-        ("bash -c 'echo \"foo; agy\"'", None),
-        ("bash -c 'sleep 60'", None),
-        ("bash -c 'agy && gemini'", None),
+        ("gemini", "gemini"),
+        ("bash", None),
+        ("vim", None),
+        ("", None),
     ],
 )
-def test_given_pane_command_line_when_classifying_g_client_then_matches_only_real_clients(command_line, expected):
-    assert main._classify_g_command_line(command_line) == expected
+def test_given_pane_command_name_when_classifying_g_client_then_matches_only_real_clients(command_name, expected):
+    assert main._classify_g_command_name(command_name) == expected
 
 
 def test_given_manually_started_agy_pane_without_metadata_when_do_attach_runs_then_prints_agy_label(
@@ -3034,7 +3027,7 @@ def test_given_manually_started_agy_pane_without_metadata_when_do_attach_runs_th
         if "has-session" in cmd:
             return type("R", (), {"returncode": 0, "stdout": ""})()
         if "list-panes" in cmd:
-            return type("R", (), {"returncode": 0, "stdout": "\tagy\tagy --mode chat\n"})()
+            return type("R", (), {"returncode": 0, "stdout": "\tagy\n"})()
         return type("R", (), {"returncode": 1, "stdout": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
@@ -3058,7 +3051,7 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "agy\tbash\t/bin/bash\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "agy\tbash\n"})(),
     )
     assert main._g_session_client("g-myproject-1") == "agy"
 
@@ -3066,9 +3059,7 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type(
-            "R", (), {"returncode": 0, "stdout": "\tbash\t/bin/bash\n\tagy\t/usr/local/bin/agy\n"}
-        )(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tbash\n\tagy\n"})(),
     )
     assert main._g_session_client("g-myproject-2") == "agy"
 
@@ -3076,7 +3067,7 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tagy\tagy\n\tgemini\tgemini\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tagy\n\tgemini\n"})(),
     )
     assert main._g_session_client("g-myproject-3") is None
 
@@ -3084,7 +3075,7 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tzsh\t/bin/zsh\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tzsh\n"})(),
     )
     assert main._g_session_client("g-myproject-4") is None
 
@@ -3094,3 +3085,41 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
 
     monkeypatch.setattr(main.subprocess, "run", raise_timeout)
     assert main._g_session_client("g-myproject-5") is None
+
+
+def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_single_list_panes_call(
+    tmp_path, monkeypatch
+):
+    import time
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    monkeypatch.setattr(main.shutil, "which", lambda _cmd: None)
+    now = int(time.time())
+    list_panes_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        if "list-sessions" in cmd:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": f"g-myproject-1 {now - 30}\ng-myproject-2 {now - 60}\n"},
+            )()
+        if "list-panes" in cmd:
+            list_panes_calls.append(cmd)
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": "g-myproject-1\t\tagy\ng-myproject-2\t\tbash\n"},
+            )()
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    res = CliRunner().invoke(main._cli_group, ["ls"])
+    assert res.exit_code == 0, res.output
+    assert len(list_panes_calls) == 1
+    assert "-a" in list_panes_calls[0]
+    assert "g-myproject-1" in res.output and "[agy]" in res.output
+    assert "g-myproject-2" in res.output
