@@ -2442,3 +2442,179 @@ def test_given_detached_replay_with_print_args_when_tmux_healthy_then_still_runs
     assert len(handed_off) == 1
     assert "ai_cli.agy_session" in handed_off[0][1]
     assert not any("new-session" in cmd for cmd in seen_tmux)
+
+
+def _fake_tmux_has_session(live_sessions: list[str]):
+    """Build a subprocess.run stub answering ``has-session -t =<name>`` against ``live_sessions``."""
+    live_set = set(live_sessions)
+
+    def _run(cmd, **_kw):
+        if "has-session" in cmd and "-t" in cmd:
+            target = cmd[cmd.index("-t") + 1].lstrip("=")
+            return type("R", (), {"returncode": 0 if target in live_set else 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    return _run
+
+
+@pytest.mark.parametrize(
+    ("naming_prefix", "legacy_prefix", "live_sessions", "name", "is_remote"),
+    [
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "", False),
+        ("myproject-box", "oldproj", ["g-myproject-box-1", "g-oldproj-1"], "", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker-1", "g-myproject-worker-1"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker", "g-myproject-worker"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "1", False),
+        ("myproject-box", "myproject", ["g-r-myproject-box-worker-1", "g-r-myproject-worker-1"], "worker", True),
+    ],
+)
+def test_given_current_and_legacy_live_agy_slots_when_resuming_ambiguously_then_refuses(
+    tmp_path, monkeypatch, capsys, naming_prefix, legacy_prefix, live_sessions, name, is_remote
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main._resolve_resume_target(
+            "g",
+            naming_prefix,
+            legacy_prefix,
+            name,
+            is_remote=is_remote,
+            bare=False,
+            repo_root=tmp_path,
+            reporter=reporter,
+        )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "ambiguous Antigravity resume" in combined
+    for expected in live_sessions:
+        assert expected in combined
+
+
+@pytest.mark.parametrize(
+    ("live_sessions", "name", "expected_session"),
+    [
+        (["g-myproject-box-1"], "", "g-myproject-box-1"),
+        (["g-myproject-1"], "", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-1", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-box-worker-1", "g-myproject-box-worker-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-worker-1", "g-myproject-worker-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-box-myproject-1", "g-myproject-box-myproject-1"),
+        (
+            ["g-myproject-1", "g-myproject-box-myproject-1-a", "g-myproject-box-myproject-1-b"],
+            "myproject-1",
+            "g-myproject-1",
+        ),
+    ],
+)
+def test_given_current_or_legacy_live_agy_slots_when_resuming_unambiguously_then_resolves_target(
+    tmp_path, monkeypatch, live_sessions, name, expected_session
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    target = main._resolve_resume_target(
+        "g",
+        "myproject-box",
+        "myproject",
+        name,
+        is_remote=False,
+        bare=False,
+        repo_root=tmp_path,
+        reporter=reporter,
+    )
+    assert target.session == expected_session
+
+
+@pytest.mark.parametrize(
+    ("legacy_convention", "expect_refusal"),
+    [
+        ("off", False),
+        ("full", True),
+    ],
+)
+def test_given_live_current_and_legacy_agy_slots_when_launching_resume_with_legacy_convention_then_honors_setting(
+    tmp_path, monkeypatch, capsys, legacy_convention, expect_refusal
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    live_sessions = ["g-myproject-box-1", "g-myproject-1"]
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box",
+            repo_alias if cfg.get("naming", {}).get("legacy_convention", "full") in ("reach", "full") else None,
+            "box",
+            False,
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _s: None)
+    monkeypatch.setattr(main._session_launch_state, "reattach", lambda _s: None)
+    monkeypatch.setattr(main, "_track_launch", lambda *_a, **_kw: None)
+    attached: list[list[str]] = []
+    created: list[str] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attached.append(list(argv)), sys.exit(0)))
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created.append("wt"))
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="",
+            resume=True,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"naming": {"legacy_convention": legacy_convention}},
+            detached=False,
+        )
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert created == []
+    if expect_refusal:
+        assert exc.value.code == 1
+        assert "ambiguous Antigravity resume" in combined
+        assert "g-myproject-box-1" in combined and "g-myproject-1" in combined
+        assert attached == []
+    else:
+        assert exc.value.code == 0
+        assert len(attached) == 1
+        assert attached[0][-1] == "g-myproject-box-1"

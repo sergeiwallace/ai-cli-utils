@@ -2589,7 +2589,7 @@ def _handle_internal(argv: list[str]) -> None:
                 target = _resolve_resume_target(
                     engine,
                     naming_prefix,
-                    project_prefix,
+                    launch_naming.legacy_prefix,
                     name,
                     is_remote=True,
                     bare=not use_tmux,
@@ -5035,7 +5035,7 @@ def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path
 def _resolve_resume_target(
     engine: str,
     naming_prefix: str,
-    legacy_prefix: str,
+    legacy_prefix: str | None,
     name: str,
     *,
     is_remote: bool,
@@ -5055,17 +5055,64 @@ def _resolve_resume_target(
     from . import name_registry as _names
 
     remote_seg = "-r" if is_remote else ""
-    prefix = f"{engine}{remote_seg}-{naming_prefix}-"
+    engine_prefix = f"{engine}{remote_seg}-"
+    prefix = f"{engine_prefix}{naming_prefix}-"
     clean = _session._slot_name(name, naming_prefix) if name else ""
     # A full tmux name (what the remote allocator hands back) is matched as given; a
     # title typed in full is reduced to its slot so the prefix is not applied twice.
     query = name if name and _session.session_name_for(prefix, name) == name else clean
+    has_legacy = bool(legacy_prefix and legacy_prefix.casefold() != naming_prefix.casefold())
     if not bare:
         try:
-            session = _session.resolve_session(prefix, query)
-            if not session and legacy_prefix.casefold() != naming_prefix.casefold():
-                # Migration window: a session named before the host alias joined the name.
-                session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+            if engine == "g" and has_legacy:
+                assert legacy_prefix is not None
+                legacy_tmux_prefix = f"{engine_prefix}{legacy_prefix}-"
+                legacy_clean = _session._slot_name(name, legacy_prefix) if name else ""
+                legacy_query = (
+                    name if name and _session.session_name_for(legacy_tmux_prefix, name) == name else legacy_clean
+                )
+                exact_targets = {name.casefold(), f"{engine_prefix}{name}".casefold()} if name else set()
+                current_err: _session.SessionSlotAmbiguityError | None = None
+                legacy_err: _session.SessionSlotAmbiguityError | None = None
+                try:
+                    session = _session.resolve_session(prefix, query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    session = ""
+                    current_err = exc
+                try:
+                    legacy_session = _session.resolve_session(legacy_tmux_prefix, legacy_query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    legacy_session = ""
+                    legacy_err = exc
+                # An exact full-title or full-session match wins before ambiguity refusal
+                # (e.g. `ai g myproject-1 -r` with both `g-myproject-1` and `g-myproject-box-myproject-1` live).
+                if session and session.casefold() in exact_targets:
+                    pass
+                elif legacy_session and legacy_session.casefold() in exact_targets:
+                    session = legacy_session
+                elif current_err is not None:
+                    raise current_err
+                elif legacy_err is not None:
+                    raise legacy_err
+                elif session and legacy_session and session.casefold() != legacy_session.casefold():
+                    matches = sorted((session, legacy_session))
+                    if name:
+                        raise _session.SessionSlotAmbiguityError(
+                            f"ambiguous Antigravity resume for {name!r}: {len(matches)} live slots match "
+                            f"({', '.join(matches)}); specify an exact session name"
+                        )
+                    raise _session.SessionSlotAmbiguityError(
+                        f"ambiguous Antigravity resume: {len(matches)} live slots match "
+                        f"({', '.join(matches)}); specify a session name explicitly"
+                    )
+                else:
+                    session = session or legacy_session
+            else:
+                session = _session.resolve_session(prefix, query)
+                if not session and has_legacy:
+                    assert legacy_prefix is not None
+                    # Migration window: a session named before the host alias joined the name.
+                    session = _session.resolve_session(f"{engine_prefix}{legacy_prefix}-", name)
         except _session.SessionSlotAmbiguityError as exc:
             _naming_exit(reporter, str(exc), 1)
         if session:
@@ -5087,7 +5134,8 @@ def _resolve_resume_target(
                 1,
             )
         candidates = [held, wanted]
-        if legacy_prefix.casefold() != naming_prefix.casefold():
+        if has_legacy:
+            assert legacy_prefix is not None
             candidates.append(
                 _session_naming.compose_session_name(legacy_prefix, _session._slot_name(name, legacy_prefix))
             )
@@ -5096,7 +5144,7 @@ def _resolve_resume_target(
             if found:
                 return _ResumeTarget(title=found)
     host = _session_naming.host_id()
-    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix), repo_root)
+    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix) if legacy_prefix else (naming_prefix,), repo_root)
     close = difflib.get_close_matches(wanted, pool, n=5, cutoff=0.6) or pool[:5]
     holds = "tmux session or worktree" if engine != "c" else "tmux session, worktree or transcript"
     if positional is not None and positional.kind == "title":
@@ -6353,7 +6401,7 @@ def _do_session_launch(
             resume_target = _resolve_resume_target(
                 engine,
                 naming_prefix,
-                project_prefix,
+                launch_naming.legacy_prefix,
                 name,
                 is_remote=is_remote,
                 bare=bare,
