@@ -1422,6 +1422,7 @@ def _await_peer_update(
 
 
 UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+SKIP_AUTO_UPDATE_ENV = "AI_CLI_SKIP_AUTO_UPDATE"
 _LAUNCH_REEXEC_ENV = "AI_CLI_LAUNCH_REEXEC"
 
 
@@ -1433,6 +1434,15 @@ def _update_verbose_requested() -> bool:
     whether a source change actually reached the installed build.
     """
     return os.environ.get(UPDATE_VERBOSE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _auto_update_skipped() -> bool:
+    """Whether the operator opted out of launch-time auto-update via ``AI_CLI_SKIP_AUTO_UPDATE``.
+
+    Used by isolated canaries, review checkouts, and tests so launching from an
+    alternate tree never fingerprints or reinstalls the global ``uv tool`` build.
+    """
+    return os.environ.get(SKIP_AUTO_UPDATE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _packaged_source_paths(project_path: Path) -> list[Path]:
@@ -1596,6 +1606,8 @@ def _auto_update_if_stale(config: dict) -> bool:
     A successful reinstall rewrote this process's own installed tree, so the
     caller must re-exec: True says so. Every other outcome returns False.
     """
+    if _auto_update_skipped():
+        return False
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
         return False
@@ -1716,6 +1728,8 @@ def _auto_update_if_stale(config: dict) -> bool:
 
 
 def trigger_background_update():
+    if _auto_update_skipped():
+        return
     state_file = _config.get_xdg_state_home() / "update_check.json"
     now = time.time()
     if state_file.exists():
@@ -3071,14 +3085,17 @@ def _sync_launch_client(config: dict, origin: InstallOrigin) -> "_LaunchClient |
     return _LaunchClient(checkout, sync_client_checkout(checkout))
 
 
-def _install_decision(client: "_LaunchClient | None", reinstalled: bool) -> str:
+def _install_decision(client: "_LaunchClient | None", reinstalled: bool, *, skipped: bool = False) -> str:
     if client is not None:
         check = client.check
         if check.state is ClientState.SYNCED:
             return f"fast-forwarded {check.behind} commit(s) from origin/main; restarting"
         if check.state is ClientState.BEHIND:
             return f"{check.behind} commit(s) behind origin/main, not updated"
-    decision = "reinstalled; restarting" if reinstalled else "current"
+    if skipped:
+        decision = f"skipped ({SKIP_AUTO_UPDATE_ENV})"
+    else:
+        decision = "reinstalled; restarting" if reinstalled else "current"
     if client is not None and client.check.state is ClientState.UNCHECKED:
         return f"{decision} locally; could not check origin/main ({client.check.reason})"
     return decision
@@ -7294,9 +7311,10 @@ def _session_command(engine: str):
                 trigger_background_update()
                 with reporter.phase("install", "checking installed version") as install_phase:
                     origin = _launch_install_origin()
-                    client = _sync_launch_client(config, origin) if remote else None
-                    reexec = _auto_update_if_stale(config) is True
-                    decision = _install_decision(client, reexec)
+                    skip_auto_update = _auto_update_skipped()
+                    client = None if skip_auto_update else (_sync_launch_client(config, origin) if remote else None)
+                    reexec = False if skip_auto_update else (_auto_update_if_stale(config) is True)
+                    decision = _install_decision(client, reexec, skipped=skip_auto_update)
                     reexec = reexec or (client is not None and client.check.state is ClientState.SYNCED)
                     install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
                 if client is not None and client.check.state is ClientState.BEHIND:
