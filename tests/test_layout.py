@@ -248,7 +248,7 @@ class TestGenerateLayoutProfiles:
             name="multi",
             tabs=[
                 Tab(name="a", session_type="cc", root=Pane(dir="~")),
-                Tab(name="b", session_type="gemini", root=Pane(dir="~")),
+                Tab(name="b", session_type="agy", root=Pane(dir="~")),
                 Tab(name="c", session_type="shell", root=Pane(dir="~")),
             ],
         )
@@ -535,7 +535,7 @@ class TestGenerateLayoutProfilesExtended:
 
     def test_every_session_type_parents_to_default(self, tmp_path):
         # Named per-type profiles retired — every layout profile parents to Default.
-        for stype in ("cc", "gemini", "shell", "chrome", "caffeinate", "ssh"):
+        for stype in ("cc", "agy", "shell", "chrome", "caffeinate", "ssh"):
             profile, _ = self._run(stype, tmp_path)
             assert profile["Dynamic Profile Parent Name"] == "Default", stype
 
@@ -544,9 +544,12 @@ class TestGenerateLayoutProfilesExtended:
         _, icon_mock = self._run("chrome", tmp_path)
         assert icon_mock.call_args.args[2] == "chrome"
 
-    def test_invalid_session_type_rejected(self):
+    @pytest.mark.parametrize("session_type", ["bogus", "gemini"])
+    def test_given_unsupported_session_type_when_validated_then_rejects_it(self, session_type):
         with pytest.raises(ValidationError):
-            Layout.model_validate({"name": "t", "tabs": [{"name": "x", "session_type": "bogus", "root": {"dir": "~"}}]})
+            Layout.model_validate(
+                {"name": "t", "tabs": [{"name": "x", "session_type": session_type, "root": {"dir": "~"}}]}
+            )
 
     def test_background_color_included_when_set(self, tmp_path):
         """line 214: bg_hex present → profile has 'Background Color' key."""
@@ -621,7 +624,7 @@ class TestWriteLaunchScript:
             "name": "multi",
             "tabs": [
                 {"name": "tab-a", "session_type": "cc", "root": {"dir": "~"}},
-                {"name": "tab-b", "session_type": "gemini", "root": {"dir": "~"}},
+                {"name": "tab-b", "session_type": "agy", "root": {"dir": "~"}},
             ],
         }
         layout = Layout(**multi_tab)

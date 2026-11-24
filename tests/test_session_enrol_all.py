@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -73,7 +74,7 @@ def live_sessions(tmp_path, monkeypatch, register_repo):
         if argv[:2] == ["tmux", "list-sessions"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         if argv[:2] == ["tmux", "list-panes"]:
-            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=")], "")
+            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=").removesuffix(":")], "")
         pytest.fail(f"unexpected subprocess: {argv[:2]}")
 
     monkeypatch.setattr(session_enrol.subprocess, "run", run)
@@ -183,6 +184,41 @@ def test_given_legacy_supervisor_when_bulk_enrolled_then_valid_local_recipe_with
     assert script.read_bytes() != source
     assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
     assert {cmd[1] for cmd in w.commands} == {"list-sessions", "list-panes"}
+
+
+@pytest.mark.parametrize("engine", ["c", "g", "p"])
+@pytest.mark.parametrize("changed_flags", [False, True])
+def test_given_pre_codex_thread_script_when_enrolled_then_only_unchanged_active_launch_is_accepted(
+    live_sessions, engine, changed_flags
+):
+    w = live_sessions
+    name = f"{engine}-session-1"
+    script = w.add(name, engine=engine)
+    source = script.read_text(encoding="utf-8")
+    source = re.sub(r"(?ms)^    # BEGIN CODEX THREAD\n.*?^    # END CODEX THREAD\n", "", source)
+    source = re.sub(
+        r"(?m)^( *)_run_codex\n",
+        r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
+        source,
+    )
+    if changed_flags:
+        if engine == "g":
+            source = source.replace("ai_cli.agy_session launch", "ai_cli.agy_session launch --unexpected")
+        else:
+            command = {"c": "claude", "p": "pi"}[engine]
+            source = source.replace(f"run_agent {command} ", f"run_agent {command} --unexpected ")
+    script.write_text(source, encoding="utf-8")
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)[0]
+    if changed_flags:
+        assert report["status"] == "skipped" and report["reason"]
+        assert not registry.registry_path().exists()
+        assert script.read_text(encoding="utf-8") == source
+    else:
+        assert report["status"] == "registered", report
+        assert state.valid_boot_recipe(registry.load_registry()["sessions"][0])
+        assert script.read_text(encoding="utf-8") == main._engine_script_from_meta(w.meta[name])
 
 
 def test_given_existing_ownership_and_policy_when_bulk_repeated_then_bytes_and_records_survive(live_sessions):
@@ -464,3 +500,20 @@ def test_given_uninitialised_host_profile_when_enrolled_then_owner_matches_futur
     record = registry.load_registry()["sessions"][0]
     assert record["owning_host"] == record["boot_recipe"]["owning_host"] == "host-a"
     assert not path.exists()
+
+
+@pytest.mark.parametrize("replacement", ["other_module", "prepare"])
+def test_given_codex_launch_wrapper_when_its_operation_is_changed_then_enrolment_refuses(live_sessions, replacement):
+    script = live_sessions.add("cx-session-1", engine="cx", saved=False)
+    source = script.read_text(encoding="utf-8")
+    changed = source.replace(
+        "ai_cli.codex_session launch",
+        f"{replacement} launch" if replacement == "other_module" else "ai_cli.codex_session prepare",
+    )
+    assert changed != source
+    script.write_text(changed, encoding="utf-8")
+    result = invoke("-a", "-j")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["status"] == "skipped"
+    assert not registry.registry_path().exists()
+    assert script.read_text(encoding="utf-8") == changed

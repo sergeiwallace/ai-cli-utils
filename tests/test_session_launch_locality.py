@@ -23,6 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
+from ai_cli import direnv_exec
+from ai_cli.git_repair import pull_rebase_autostash
 from ai_cli.main import _do_session_launch, _exec_with_direnv
 from ai_cli.session import _resolve_is_remote
 
@@ -105,7 +107,8 @@ def test_given_usable_envrc_when_exec_then_goes_through_direnv(tmp_path):
         with pytest.raises(SystemExit):
             _exec_with_direnv(tmp_path, ["claude", "--name", "app-1"])
 
-    assert execs[0][0] == "direnv"
+    # `direnv exec`, or on Windows, where direnv cannot exec a native program, its stand-in.
+    assert execs[0][0] == direnv_exec.prefix(tmp_path)[0]
     assert "claude" in execs[0]
 
 
@@ -225,7 +228,6 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.config._get_main_project_name", return_value="mainproject"),
@@ -280,13 +282,19 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     monkeypatch.chdir(repo)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
 
+    def pull_with_progress(path):
+        result, stranded = pull_rebase_autostash(path)
+        assert result.returncode != 0
+        result.stderr += "\nApplied autostash.\n"
+        return result, stranded
+
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main._pty_handoff", return_value=mock_exec),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.main.pull_rebase_autostash", side_effect=pull_with_progress),
     ):
         with pytest.raises(SystemExit) as exc_info:
             _do_session_launch(
@@ -313,7 +321,8 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     err = capsys.readouterr().err
     assert "git pull --rebase failed" in err
     assert "autostash pop conflict" not in err, "must not assert a cause it did not verify"
-    assert "Last git error:" in err, f"git's own reason must be surfaced; got: {err!r}"
+    assert "Last git error: fatal:" in err, f"git's own reason must be surfaced; got: {err!r}"
+    assert "Last git error: Applied autostash." not in err
 
 
 def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_segment(tmp_path, monkeypatch):
@@ -330,7 +339,6 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -362,12 +370,17 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
 def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected_exception=SystemExit):
     """Run one bare launch from the current directory, up to the engine exec."""
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    home = tmp_path / "home"
+    if engine == "g":
+        token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"access_token": "tok"}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setenv("AI_HOST", "my-linux-box")
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/agy"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),

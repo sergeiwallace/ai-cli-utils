@@ -7,17 +7,17 @@
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils) <!-- public-hygiene: allow -->
 
-Unified AI session manager and automation toolkit for Claude Code, Gemini CLI, pi, and Codex.
+Unified AI session manager and automation toolkit for Claude Code, Antigravity (`agy`), pi, and Codex.
 
 <video src="demo/demo-20260420-053045-1cdf560.mp4" autoplay loop muted playsinline width="100%"></video>
 
-*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls` and checking token quota with `ai quota status`.*
+*Four iTerm2 panes: launching Claude Code (`ai c 1`), Antigravity (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls` and checking token quota with `ai quota status`.*
 
 Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
 ## What it does
 
-`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
+`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Antigravity (`agy`), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
 
 ## Features
 
@@ -38,7 +38,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Session recovery** | `ai audit-sessions`, `ai adopt-session`, and `ai migrate-transcript` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
-| **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
+| **Notifications** | Multi-channel notification delivery (Discord or Slack webhook, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
 | **iTerm2 restore** | `ai iterm2 restore` reopens recorded sessions in their panes after a terminal quit or a reboot, recording why each one ended |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
@@ -142,7 +142,7 @@ ai c 1
 # Launch a second session in parallel (isolated worktree)
 ai c 2
 
-# Launch Gemini CLI session
+# Launch Antigravity (agy) session
 ai g research
 
 # Launch pi or Codex session
@@ -171,7 +171,7 @@ session is already running, `ai c NAME` attaches to it, so `ai attach` is not ne
 | Command | What it does |
 |---|---|
 | `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
-| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai g NAME` | The same for Antigravity (`agy`); `ai p NAME` for Pi and `ai cx NAME` for Codex |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
@@ -190,7 +190,7 @@ after changing a command's help, never edit it by hand.
 | Command | Summary |
 |---|---|
 | [`ai add-name`](docs/reference/cli.md#ai-add-name) | Session names: add a name to the name database without a prompt |
-| [`ai adopt-session`](docs/reference/cli.md#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai adopt-session`](docs/reference/cli.md#ai-adopt-session) | Register a Claude Code or Antigravity session started outside `ai` for managed resume. |
 | [`ai attach`](docs/reference/cli.md#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](docs/reference/cli.md#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](docs/reference/cli.md#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -207,12 +207,12 @@ after changing a command's help, never edit it by hand.
 | [`ai color`](docs/reference/cli.md#ai-color) | Reassign iTerm2 color for the current ai session |
 | [`ai copier-update`](docs/reference/cli.md#ai-copier-update) | Propagate project-template changes to downstream projects |
 | [`ai cos`](docs/reference/cli.md#ai-cos) | Attach to, resume or launch this machine's chief-of-staff Claude Code session, here or with -R on a remote machine (`ai c --chief`). |
-| [`ai cx`](docs/reference/cli.md#ai-cx) | Launch a Codex session |
+| [`ai cx`](docs/reference/cli.md#ai-cx) | Launch a Codex session. |
 | [`ai deploy`](docs/reference/cli.md#ai-deploy) | Alias for update (historical) |
 | [`ai doctor`](docs/reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](docs/reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](docs/reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](docs/reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](docs/reference/cli.md#ai-g) | Launch an Antigravity (agy) session. |
 | [`ai import-names`](docs/reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](docs/reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](docs/reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -221,6 +221,7 @@ after changing a command's help, never edit it by hand.
 | [`ai layout list`](docs/reference/cli.md#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](docs/reference/cli.md#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](docs/reference/cli.md#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](docs/reference/cli.md#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](docs/reference/cli.md#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](docs/reference/cli.md#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](docs/reference/cli.md#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
@@ -242,8 +243,9 @@ after changing a command's help, never edit it by hand.
 | [`ai quota history`](docs/reference/cli.md#ai-quota-history) | Print quota history |
 | [`ai quota publish`](docs/reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](docs/reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
+| [`ai quota render-statusline`](docs/reference/cli.md#ai-quota-render-statusline) | Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state |
 | [`ai quota status`](docs/reference/cli.md#ai-quota-status) | Print current quota snapshot |
-| [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
+| [`ai quota statusline-part`](docs/reference/cli.md#ai-quota-statusline-part) | Emit the quota section of a client statusline |
 | [`ai quota sync`](docs/reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
 | [`ai reassign-name`](docs/reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](docs/reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
@@ -272,6 +274,7 @@ after changing a command's help, never edit it by hand.
 | [`ai sessions publish-timer status`](docs/reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](docs/reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](docs/reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions render-title`](docs/reference/cli.md#ai-sessions-render-title) | Render a plain-text terminal window title from Antigravity stdin JSON |
 | [`ai sessions repair-policy`](docs/reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](docs/reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](docs/reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
@@ -279,8 +282,6 @@ after changing a command's help, never edit it by hand.
 | [`ai set-name-verdict`](docs/reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](docs/reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](docs/reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](docs/reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](docs/reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](docs/reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](docs/reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](docs/reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -308,7 +309,7 @@ after changing a command's help, never edit it by hand.
 
 ```bash
 ai c <name>            # Start/resume Claude Code session
-ai g <name>            # Start/resume Gemini CLI session
+ai g <name>            # Start/resume Antigravity (agy) session
 ai p <name>            # Start/resume pi session
 ai cx <name>           # Start/resume Codex session
 ai c <title> -r        # Resume an existing session by name; refuses, creating nothing, if none exists
@@ -353,6 +354,31 @@ relaunched under the same title, which resumes its worktree, branch and conversa
 session named before the name registry has no registry row and is found the same way,
 by its worktree. With `-R` the launcher asks the remote host for that session, and the
 remote host answers only with one that exists there.
+
+Numbered Codex slots (`ai cx 1`) retain the native thread ID confirmed by Codex's
+`SessionStart` hook. Restart uses `codex resume <recorded-id>`, including when a newer
+thread exists in the same directory. Version 2 slot records keep confirmed history
+separate from an in-flight launch and its process identity. Quitting before the first
+prompt no longer strands a slot: after the old writer exits, relaunch logs the abandoned
+launch and resumes confirmed history, or starts fresh if none was confirmed. A live
+writer collision or unreadable writer identity refuses. Old record schemas also refuse.
+
+A null hook transcript path leaves the thread live-only. It becomes resumable only
+through a later event for that exact thread with a path, or an exact thread-ID rollout
+match under the slot's native sessions directory. Otherwise relaunch uses the last
+proved resumable thread, or starts fresh. Missing or ambiguous confirmed persisted
+history refuses; directory-only slots are never adopted automatically. A live tmux
+pane remains attachable independently. The launch trampoline requires POSIX exec;
+Windows refuses because writer identity continuity is unverified there.
+
+The versioned hook contract covers Codex 0.169.0 and 0.171.0; unsupported versions report unknown.
+The stable hook command is `ai internal codex-session-confirm`; launch identity travels
+through the child environment rather than hook arguments. `ai internal codex-hook-contract`
+prints the versioned declaration, key and expected hash for a policy installer to verify
+against Codex's `hooks/list` before approving that exact hook. Until installed, normal
+hook trust can leave a launch unconfirmed. SessionStart runs at the first accepted turn.
+A fresh untrusted Git project still requires separate directory consent. See the
+[session-client contract](docs/plans/session-name-identifiers-phase-3-notes.md#codex-slot-identity-contract).
 
 When no session holds NAME, `-r` exits 1 before it reserves a name, creates a worktree,
 branch or transcript, or asks the remote host to allocate anything. The refusal lists
@@ -861,6 +887,21 @@ an agent shell, `ai update`) the launch is refused with every path checked, rath
 invented alias. Sessions named before the host alias joined the name
 (`myrepo-3`) still resolve by slot until they are moved with
 `ai migrate-session myrepo-3 myrepo-box-3`; nothing new is created in that form.
+
+A machine whose host id changed keeps its older name-registry rows under the old
+id, and their titles under its old alias. List the old ids in any of those files
+so the machine still owns them:
+
+```toml
+[former_host_ids]
+my-host = ["my-host-old"]
+```
+
+Every id in one entry is the same machine, whichever is current. `ai c NAME` then
+reattaches a session recorded under `my-host-old` by its recorded title, and every
+other check of whether a session is this machine's (exit, relaunch at boot,
+reconcile, audit) reads the same table. A malformed entry is refused at launch,
+naming the file.
 
 Choosing between the two verbs: `ai migrate-session OLD NEW` renames a session
 already registered in an `ai` slot (worktree, branch, transcript, tasks, memory,
@@ -1430,6 +1471,11 @@ Each phase is the line's operation (see
   is running, the lines its session script prints join the same launch's log, and
   its warnings and errors, such as a failed direnv load, also reach telemetry. A reload
   row is stored only once it has escalated.
+- When an agent exits during its first 15 seconds, the launch log records its exit
+  status and up to 12 recent terminal lines. This applies to managed and one-shot
+  tmux panes and bare sessions with a launcher-owned PTY. On a remote launch, SSH
+  and mosh also report the saved startup diagnostic when the connection ends.
+  New launch logs are created with owner-only permissions on POSIX systems.
 - `--dry-run` prints its plan of resolved values on stdout instead of launching.
 - Every line starts at column 0 of its own row and the process exits on a fresh row,
   even after `ai c -R` reattaches: on a terminal each line ends in CR LF, text from a
@@ -1720,7 +1766,7 @@ iTerm2 visual identity settings live in `~/.config/ai-cli-utils/iterm2.toml` (cr
 [iterm2.base_profiles]
 # Base Dynamic Profile each session type inherits from
 cc         = "ClaudeCode"
-gemini     = "GeminiCLI"
+agy        = "Antigravity"
 shell      = "ShellUtility"
 
 [iterm2.project_colors]
@@ -1743,7 +1789,7 @@ The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. E
   and the shipped source is byte-compiled on 3.11 in CI so the wider claim stays falsifiable.
 - [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`, unless psmux is installed, which answers to `tmux`. Where more than one build answers to `tmux`, `[tmux] binary` names the one every call runs. Native Windows also has no pty API, so there the harness cannot drive compaction (the engine's own auto-compact still runs); a launch says so only under `-v`, and `ai doctor` reports it as its `compact` row)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Antigravity (`agy`), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)

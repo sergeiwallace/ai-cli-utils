@@ -8,6 +8,8 @@ source: claude-sonnet-4-6 2026-04-21
 
 # Citation Validation for `ai gemini` Research Output
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## Table of Contents
 
 - [Problem](#problem)

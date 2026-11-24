@@ -62,6 +62,7 @@ def _wait_for(path: Path, deadline: float) -> None:
 
 # By name: Windows has no SIGHUP, and the list is built at collection, before the skip applies.
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
+@pytest.mark.real_pty
 def test_given_a_remote_session_under_ssh_when_the_launcher_is_signalled_then_the_terminal_cleanup_and_outcome_survive(
     tmp_path, signame
 ):

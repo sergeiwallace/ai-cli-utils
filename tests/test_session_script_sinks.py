@@ -26,6 +26,8 @@ from pathlib import Path
 from test_output_sinks import _event_fields, _fields
 from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
 
+pytestmark = pytest.mark.real_pty
+
 DIRENV_TEXT = "direnv could not load"
 SHELL_TEXT = "Auto-restart stopped. Returning to the calling shell."
 _SEED = "launch log started for session test-session"
@@ -73,6 +75,44 @@ def _terminal_lines(session: Session) -> list[str]:
 
 def _containing(lines: list[str], text: str) -> list[str]:
     return [line for line in lines if text in line]
+
+
+@pytest.mark.parametrize("status", [0, 7, 137])
+def test_given_a_quick_agent_exit_when_the_pane_closes_then_the_launch_log_keeps_its_output_and_status(
+    session_factory,  # noqa: F811
+    launch_log,
+    monkeypatch,
+    status,
+):
+    original = Session._fakes
+
+    def fakes(bin_dir, *args):
+        original(bin_dir, *args)
+        agent = bin_dir / "claude"
+        pane = bin_dir.parent / "pane-stderr"
+        agent.write_text(
+            agent.read_text().replace(
+                "sys.exit(1)",
+                "assert all(os.isatty(fd) for fd in (0, 1, 2))\n"
+                "message = 'Agent could not initialize the workspace'\n"
+                "print(message, file=sys.stderr, flush=True)\n"
+                f"open({str(pane)!r}, 'w').write(message + '\\n')\n"
+                f"sys.exit({status})",
+            )
+        )
+        (bin_dir / "direnv").write_text("#!/bin/sh\nprintf 'export TMUX_PANE=%%21\\n'\n")
+        (bin_dir / "tmux").write_text(
+            f'#!/bin/sh\nif [ "$1" = capture-pane ] && [ "$4" = %21 ]; then cat \'{pane}\'; fi\n'
+        )
+
+    monkeypatch.setattr(Session, "_fakes", staticmethod(fakes))
+    session = session_factory(reload_on=(), agent_runs=(0.0,), launch_log=launch_log)
+
+    assert session.process.wait(timeout=30) == 0
+    session._reader.join(timeout=5)
+    assert b"Agent could not initialize the workspace" in session.received
+    assert _containing(_log(launch_log), "Agent could not initialize the workspace")
+    assert _containing(_log(launch_log), f"agent exited with status {status}")
 
 
 def test_given_a_session_script_warning_when_emitted_then_terminal_log_and_telemetry_agree(

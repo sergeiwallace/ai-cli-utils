@@ -156,6 +156,10 @@ uv run pytest tests/test_main.py
 uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_sshs_to_host
 ```
 
+By default on macOS, pytest runs tests marked `real_tmux` or `real_pty` in one
+xdist worker per job. Use `real_pty` for tests that open a pseudo-terminal
+outside tmux. The other workers can run ordinary tests in parallel.
+
 ### Running a required CI check locally
 
 `scripts/run_local_ci.py` runs the commands of one required check (`lint`, `test`, `test-macos`
@@ -345,7 +349,7 @@ written when a fragment is malformed or the changelog has no `## [Unreleased]` h
 - Mock at system boundaries only (subprocess, filesystem, network)
 - Session-launch tests that mock `os.execvp` must also mock `subprocess.run` when the
   path can create or manage a tmux session. The test safety guard rejects unmocked
-  `tmux`, `claude`, `gemini`, and `direnv` processes so tests cannot leave live sessions behind.
+  `tmux`, `claude`, `agy` (including `agy.exe`), and `direnv` processes so tests cannot leave live sessions behind.
 - Every public function needs at least one failure-path test
 
 ## Project Structure

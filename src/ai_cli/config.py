@@ -673,6 +673,58 @@ def read_messaging_config(config: dict) -> dict:
     return result
 
 
+RESUME_RESTORE_PLACEHOLDER = "{session_id}"
+DEFAULT_RESUME_RESTORE_TIMEOUT = 300.0
+
+
+def read_resume_restore_config(config: dict) -> dict | None:
+    """``[resume_restore]``: the command run before a Claude Code resume, or ``None`` when unset.
+
+    Raises ``ValueError`` for a setting that is present but unusable, so a mistyped
+    command stops the resume instead of silently resuming without a restore.
+    """
+    section = config.get("resume_restore", {})
+    if not isinstance(section, dict):
+        raise ValueError("resume_restore must be a table")
+    command = section.get("command")
+    if command is None or command == []:
+        return None
+    if not isinstance(command, list) or not all(isinstance(word, str) and word for word in command):
+        raise ValueError("invalid resume_restore.command: use a list of non-empty strings")
+    if not any(RESUME_RESTORE_PLACEHOLDER in word for word in command):
+        raise ValueError(f"invalid resume_restore.command: no argument contains {RESUME_RESTORE_PLACEHOLDER}")
+    timeout = section.get("timeout_seconds", DEFAULT_RESUME_RESTORE_TIMEOUT)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid resume_restore.timeout_seconds: use a positive number")
+    return {"command": command, "timeout_seconds": float(timeout)}
+
+
+SESSION_REGISTER_PLACEHOLDER = "{client}"
+DEFAULT_SESSION_REGISTER_TIMEOUT = 15.0
+
+
+def read_session_register_config(config: dict) -> dict | None:
+    """``[session_register]``: the command a Codex or agy session-start hook runs, or ``None``.
+
+    Raises ``ValueError`` for a setting that is present but unusable; the hook reports it
+    and starts the session unregistered.
+    """
+    section = config.get("session_register", {})
+    if not isinstance(section, dict):
+        raise ValueError("session_register must be a table")
+    command = section.get("command")
+    if command is None or command == []:
+        return None
+    if not isinstance(command, list) or not all(isinstance(word, str) and word for word in command):
+        raise ValueError("invalid session_register.command: use a list of non-empty strings")
+    if not any(SESSION_REGISTER_PLACEHOLDER in word for word in command):
+        raise ValueError(f"invalid session_register.command: no argument contains {SESSION_REGISTER_PLACEHOLDER}")
+    timeout = section.get("timeout_seconds", DEFAULT_SESSION_REGISTER_TIMEOUT)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid session_register.timeout_seconds: use a positive number")
+    return {"command": command, "timeout_seconds": float(timeout)}
+
+
 def read_relaunch_config(config: dict) -> dict:
     """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
     section = config.get("relaunch", {})
@@ -817,16 +869,10 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"
 
-[gemini]
-## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["session"]
-## Set true only after AI-CLI-43 confirms billing credit status.
-## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
-# paid_fallback_enabled = false
-## Command used to launch gemini-cli. Override if the binary is not on PATH
-## (e.g. "npx @google/gemini-cli" for npx-only installs).
-# command = "gemini"
+[agy]
+## Command used to launch Antigravity (`ai g`). Override if the binary is not on PATH.
+## Quote paths containing spaces.
+# command = "agy"
 
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
@@ -858,6 +904,9 @@ notify_on_exit = true
 ## reads it on every call. A window counts as current while its newest reading is at most
 ## max_age_seconds old and its reset time has not passed.
 # state_file = "~/.claude/state/quota.json"
+## State file written by `ai quota render-statusline` from Antigravity's statusLine quota payload.
+## Defaults to $XDG_STATE_HOME/ai-cli-utils/agy-quota.json (e.g. ~/.local/state/ai-cli-utils/agy-quota.json).
+# agy_state_file = "~/.local/state/ai-cli-utils/agy-quota.json"
 # max_age_seconds = 1800
 ## Fallback weekly reset anchor, used until a reading carries its own reset time.
 # reset_anchor_utc = "2026-04-04T06:00:00Z"
@@ -930,6 +979,30 @@ stale_session_timeout = 15
 ## every clean exit, so a change applies at the next one.
 # restart_stop_window_seconds = 3
 
+[resume_restore]
+## A command run before every Claude Code resume (`ai c`, its automatic restarts and the
+## bare launch), for a deployment that archives idle transcripts, for example as
+## <session-id>.jsonl.zst. Point it at your own restore tool. "{session_id}" in any
+## argument is replaced by the session's id. It runs without a shell: when no live
+## transcript is the one to resume, once for each archived <session-id>.jsonl.zst in the
+## session's project directory before choosing again; then for the session being resumed. Exit 0: the resume goes ahead.
+## Any other exit, or a timeout: the resume stops and its output and exit status are
+## printed. Read on every resume. Unset: nothing runs. Guide: docs/guides/resume-restore.md.
+# command = ["restore-transcript", "--session-id", "{session_id}"]
+## Seconds the command may run before it is stopped and the resume refused. Default 300.
+# timeout_seconds = 300
+
+[session_register]
+## A command the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks run once the
+## launch is confirmed, for a deployment that keeps a registry of live agent sessions.
+## "{client}" in any argument is replaced by "codex" or "agy". It runs without a shell,
+## inside the client's own process tree, so the command can find the client among its
+## ancestors. Its output is captured. A failure or timeout prints one warning line and the
+## session starts unregistered. Read at every session start. Unset: nothing runs.
+# command = ["register-session", "--client", "{client}"]
+## Seconds the command may run before it is stopped. Default 15.
+# timeout_seconds = 15
+
 [tmux]
 ## The multiplexer executable every tmux call runs: the launch, attach, ls and every
 ## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more
@@ -960,6 +1033,10 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
+## Session names skipped by automatic launch pickers (ai c, ai cx, ai p, ai g),
+## even when no live session currently holds them. Read on every call and matched
+## case-insensitively; explicit -N/--name still allows launching one directly.
+# reserved = ["ada", "max"]
 ## Seconds one fetch, and one push, of a shared name registry may take before the
 ## registry counts as unreachable, each read on every call. Separate from the
 ## registry's publish timeout.
@@ -1178,16 +1255,6 @@ boot = false
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
 ## Port `ai cdp start` opens when -p/--port is not given.
-# port = 9222
-
-[gemini_billing]
-## GCP project that holds the BigQuery billing export dataset.
-## Required for `ai spend gemini` to show actual billed amounts.
-# gcp_project_id = "my-gcp-project"
-## Fully-qualified BigQuery table ID for the GCP detailed billing export.
-## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
-# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
-## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 
 [workspace]
@@ -1836,33 +1903,6 @@ def resolve_project_prefix_by_name(project_name: str) -> str:
             f"the name of a repository that is checked out under {candidate.parent}."
         )
     return resolve_project_prefix(candidate)
-
-
-# --- State Management ---
-
-
-def get_session_map_path(engine="c"):
-    state_dir = get_xdg_state_home()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    if engine == "c":
-        return Path.home() / ".claude" / "cc-sessions.json"
-    return state_dir / "gemini_sessions.json"
-
-
-def get_session_map(engine="c"):
-    path = get_session_map_path(engine)
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
-
-
-def save_session_map(d, engine="c"):
-    path = get_session_map_path(engine)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(d, indent=2))
 
 
 # --- Project & Session Logic ---
