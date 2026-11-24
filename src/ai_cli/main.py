@@ -5063,9 +5063,29 @@ def _resolve_resume_target(
     if not bare:
         try:
             session = _session.resolve_session(prefix, query)
-            if not session and legacy_prefix.casefold() != naming_prefix.casefold():
+            if legacy_prefix.casefold() != naming_prefix.casefold():
                 # Migration window: a session named before the host alias joined the name.
-                session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+                legacy_tmux_prefix = f"{engine}{remote_seg}-{legacy_prefix}-"
+                if engine == "g":
+                    legacy_clean = _session._slot_name(name, legacy_prefix) if name else ""
+                    legacy_query = (
+                        name if name and _session.session_name_for(legacy_tmux_prefix, name) == name else legacy_clean
+                    )
+                    legacy_session = _session.resolve_session(legacy_tmux_prefix, legacy_query)
+                    if session and legacy_session and session.casefold() != legacy_session.casefold():
+                        matches = sorted((session, legacy_session))
+                        if name:
+                            raise _session.SessionSlotAmbiguityError(
+                                f"ambiguous Antigravity resume for {name!r}: {len(matches)} live slots match "
+                                f"({', '.join(matches)}); specify an exact session name"
+                            )
+                        raise _session.SessionSlotAmbiguityError(
+                            f"ambiguous Antigravity resume: {len(matches)} live slots match "
+                            f"({', '.join(matches)}); specify a session name explicitly"
+                        )
+                    session = session or legacy_session
+                elif not session:
+                    session = _session.resolve_session(legacy_tmux_prefix, name)
         except _session.SessionSlotAmbiguityError as exc:
             _naming_exit(reporter, str(exc), 1)
         if session:

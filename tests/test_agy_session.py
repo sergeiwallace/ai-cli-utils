@@ -2442,3 +2442,92 @@ def test_given_detached_replay_with_print_args_when_tmux_healthy_then_still_runs
     assert len(handed_off) == 1
     assert "ai_cli.agy_session" in handed_off[0][1]
     assert not any("new-session" in cmd for cmd in seen_tmux)
+
+
+def _fake_tmux_has_session(live_sessions: list[str]):
+    """Build a subprocess.run stub answering ``has-session -t =<name>`` against ``live_sessions``."""
+    live_set = set(live_sessions)
+
+    def _run(cmd, **_kw):
+        if "has-session" in cmd and "-t" in cmd:
+            target = cmd[cmd.index("-t") + 1].lstrip("=")
+            return type("R", (), {"returncode": 0 if target in live_set else 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    return _run
+
+
+@pytest.mark.parametrize(
+    ("naming_prefix", "legacy_prefix", "live_sessions", "name", "is_remote"),
+    [
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "", False),
+        ("myproject-box", "oldproj", ["g-myproject-box-1", "g-oldproj-1"], "", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker-1", "g-myproject-worker-1"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker", "g-myproject-worker"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "1", False),
+        ("myproject-box", "myproject", ["g-r-myproject-box-worker-1", "g-r-myproject-worker-1"], "worker", True),
+    ],
+)
+def test_given_current_and_legacy_live_agy_slots_when_resuming_ambiguously_then_refuses(
+    tmp_path, monkeypatch, capsys, naming_prefix, legacy_prefix, live_sessions, name, is_remote
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main._resolve_resume_target(
+            "g",
+            naming_prefix,
+            legacy_prefix,
+            name,
+            is_remote=is_remote,
+            bare=False,
+            repo_root=tmp_path,
+            reporter=reporter,
+        )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "ambiguous Antigravity resume" in combined
+    for expected in live_sessions:
+        assert expected in combined
+
+
+@pytest.mark.parametrize(
+    ("live_sessions", "name", "expected_session"),
+    [
+        (["g-myproject-box-1"], "", "g-myproject-box-1"),
+        (["g-myproject-1"], "", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-1", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-box-worker-1", "g-myproject-box-worker-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-worker-1", "g-myproject-worker-1"),
+    ],
+)
+def test_given_current_or_legacy_live_agy_slots_when_resuming_unambiguously_then_resolves_target(
+    tmp_path, monkeypatch, live_sessions, name, expected_session
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    target = main._resolve_resume_target(
+        "g",
+        "myproject-box",
+        "myproject",
+        name,
+        is_remote=False,
+        bare=False,
+        repo_root=tmp_path,
+        reporter=reporter,
+    )
+    assert target.session == expected_session
