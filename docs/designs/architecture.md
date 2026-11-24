@@ -87,6 +87,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `stale_session_reaper.py` | Fail-closed stale tmux session evaluation and explicit reaping |
 | `suspended_session.py` | Launcher-side resume of a session Ctrl+Z left stopped: continues a pane foreground group before re-attach, and tells a process suspended in its own terminal (resumed) from AI-CLI-2139's abandoned one (reclaimed) |
 | `transcript_restore.py` | Runs the configured `[resume_restore] command` before every Claude Code resume, so a transcript a deployment archived (for example `<session-id>.jsonl.zst`) is back in place first; a failure stops the resume ([resume-restore-hook.md](resume-restore-hook.md)) |
+| `session_register.py` | Runs the configured `[session_register] command` from the Codex and agy session-start hooks once a launch is confirmed, so a deployment's session registry learns each new session; a failure is one warning line and never refuses the session |
 | `trust.py` | Claude Code workspace-trust registration and backfill |
 | `workspace.py` | Workspace-wide git pull/rebase operations across repositories and worktrees |
 | `data/statusline-command.sh` | Shell script deployed by `ai update`; called by the iTerm2 statusline |

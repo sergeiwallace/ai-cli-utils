@@ -699,6 +699,32 @@ def read_resume_restore_config(config: dict) -> dict | None:
     return {"command": command, "timeout_seconds": float(timeout)}
 
 
+SESSION_REGISTER_PLACEHOLDER = "{client}"
+DEFAULT_SESSION_REGISTER_TIMEOUT = 15.0
+
+
+def read_session_register_config(config: dict) -> dict | None:
+    """``[session_register]``: the command a Codex or agy session-start hook runs, or ``None``.
+
+    Raises ``ValueError`` for a setting that is present but unusable; the hook reports it
+    and starts the session unregistered.
+    """
+    section = config.get("session_register", {})
+    if not isinstance(section, dict):
+        raise ValueError("session_register must be a table")
+    command = section.get("command")
+    if command is None or command == []:
+        return None
+    if not isinstance(command, list) or not all(isinstance(word, str) and word for word in command):
+        raise ValueError("invalid session_register.command: use a list of non-empty strings")
+    if not any(SESSION_REGISTER_PLACEHOLDER in word for word in command):
+        raise ValueError(f"invalid session_register.command: no argument contains {SESSION_REGISTER_PLACEHOLDER}")
+    timeout = section.get("timeout_seconds", DEFAULT_SESSION_REGISTER_TIMEOUT)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("invalid session_register.timeout_seconds: use a positive number")
+    return {"command": command, "timeout_seconds": float(timeout)}
+
+
 def read_relaunch_config(config: dict) -> dict:
     """Validate a fresh relaunch section; an invalid setting never enables the resolver."""
     section = config.get("relaunch", {})
