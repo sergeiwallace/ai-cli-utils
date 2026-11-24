@@ -5019,6 +5019,39 @@ def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str 
     return None
 
 
+def _saved_agy_no_worktree_cwd(session_id: str, repo_root: "Path | None") -> "Path | None":
+    """Return the saved non-worktree cwd for a stopped ``ai g`` slot launched with ``-W``."""
+    if repo_root is None:
+        return None
+    record_path = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+    if not record_path.is_file():
+        return None
+    try:
+        doc = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("slot") != session_id:
+        return None
+    raw_cwd = doc.get("cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        return None
+    saved_path = Path(raw_cwd)
+    if not saved_path.is_absolute():
+        return None
+    try:
+        saved_cwd = saved_path.resolve()
+        resolved_root = Path(repo_root).resolve()
+    except OSError:
+        return None
+    if not saved_cwd.is_dir():
+        return None
+    if saved_cwd == resolved_root:
+        return saved_cwd
+    if resolved_root in saved_cwd.parents and _session.WORKTREE_DIR not in saved_cwd.relative_to(resolved_root).parts:
+        return saved_cwd
+    return None
+
+
 def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path | None") -> list[str]:
     """Every title a resume could reach here: live tmux sessions and session worktrees of this repository."""
     titles = set()
@@ -6392,11 +6425,13 @@ def _do_session_launch(
     # above the dry-run exit and every write: a resume that fell through to naming
     # reserved a fresh first name for a NAME no session held.
     resume_target: _ResumeTarget | None = None
+    _resume_root_path: Path | None = None
     if resume and replay_recipe is None:
         try:
             _resume_root = _session.detect_repo_root()
         except RuntimeError:
             _resume_root = None
+        _resume_root_path = Path(_resume_root) if _resume_root else None
         try:
             resume_target = _resolve_resume_target(
                 engine,
@@ -6405,7 +6440,7 @@ def _do_session_launch(
                 name,
                 is_remote=is_remote,
                 bare=bare,
-                repo_root=Path(_resume_root) if _resume_root else None,
+                repo_root=_resume_root_path,
                 reporter=reporter,
             )
         except _session.SessionSlotAmbiguityError as exc:
@@ -6436,13 +6471,21 @@ def _do_session_launch(
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
+        _dry_run_saved_no_worktree = (
+            engine == "g"
+            and resume_target is not None
+            and bool(resume_target.title)
+            and _saved_agy_no_worktree_cwd(session_id, _resume_root_path) is not None
+        )
         _print_launch_plan(
             engine=engine,
             session_id=session_id,
             ai_name=ai_name,
             bare=bare,
             remote=remote,
-            worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
+            worktree_enabled=(
+                config.get("worktree", {}).get("enabled", True) and not no_worktree and not _dry_run_saved_no_worktree
+            ),
             sandbox=use_sandbox,
             extra_args=extra_args,
             agy_command=agy_cmd,
@@ -6555,6 +6598,23 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    saved_agy_no_worktree_cwd = (
+        _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
+        if engine == "g" and replay_recipe is None and resume_target is not None and resume_target.title
+        else None
+    )
+    if saved_agy_no_worktree_cwd is not None and _resume_root_path is not None:
+        no_worktree = True
+        if saved_agy_no_worktree_cwd == _resume_root_path.resolve() or bare or once:
+            worktree_path = saved_agy_no_worktree_cwd
+        elif Path.cwd().resolve() != saved_agy_no_worktree_cwd:
+            reporter.error(
+                "worktree",
+                f"stopped Antigravity slot '{session_id}' was launched with --no-worktree in "
+                f"{saved_agy_no_worktree_cwd}; run from that directory to resume it",
+            )
+            sys.exit(1)
+        reporter.phase("worktree").outcome(f"reusing saved --no-worktree directory {saved_agy_no_worktree_cwd}")
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
