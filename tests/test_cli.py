@@ -1155,7 +1155,7 @@ class TestCliOncePath:
         respawn_cmd = next(
             c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$7'")
         )
-        bash_cmd = respawn_cmd[6]
+        bash_cmd = shlex.split(respawn_cmd[6])[-1]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "g-session-research.agy.json" in bash_cmd
@@ -1201,7 +1201,7 @@ class TestCliOncePath:
         respawn_cmd = next(
             c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$8'")
         )
-        bash_cmd = respawn_cmd[6]
+        bash_cmd = shlex.split(respawn_cmd[6])[-1]
         assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
         assert "ai_cli.agy_session" in bash_cmd
         assert "--command agy" in bash_cmd

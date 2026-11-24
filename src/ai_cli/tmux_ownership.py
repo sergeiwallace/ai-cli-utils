@@ -19,7 +19,7 @@ _FENCE_MISMATCH = "__ai_cli_ownership_mismatch__"
 _PANE_PID_FORMAT = "#{pane_pid}"
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_OPTION_NAME_RE = re.compile(r"^@?[A-Za-z0-9_-]+$")
+_OPTION_NAME_RE = re.compile(r"^@?[A-Za-z0-9_][A-Za-z0-9_-]*$")
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 1.0
 
 

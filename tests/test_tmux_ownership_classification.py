@@ -200,14 +200,18 @@ def test_given_owned_session_identity_when_set_option_fences_then_uses_if_shell_
     assert "$0|gen-abc123" in seen[0][5]
     assert seen[0][6] == "set-option -t '$0' '@ai_cli_client' 'agy'"
 
-    # Generation mismatch prints sentinel and returns False; invalid option names are rejected.
+    # Invalid option names (empty, flag-like, whitespace) are rejected BEFORE calling tmux.
+    seen.clear()
+    for bad_option in ("", "-g", "--flag", "@-bad", "bad option"):
+        assert set_owned_tmux_option(identity, bad_option, "agy", tmux_command=("tmux",)) is False
+    assert seen == []
+
+    # Generation mismatch prints sentinel and returns False.
     monkeypatch.setattr(
         "ai_cli.tmux_ownership.subprocess.run",
         lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})(),
     )
     assert set_owned_tmux_option(identity, "@ai_cli_client", "agy", tmux_command=("tmux",)) is False
-    for bad_option in ("", "-g", "--flag", "bad option"):
-        assert set_owned_tmux_option(identity, bad_option, "agy", tmux_command=("tmux",)) is False
 
 
 def test_given_owned_session_identity_when_respawn_pane_fences_then_retries_without_separator_only_on_fence_match(
