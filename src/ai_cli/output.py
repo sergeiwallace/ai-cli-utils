@@ -146,6 +146,7 @@ class Untagged(StrEnum):
     VERSION = "the `--version` string scripts compare"
     HELP = "Click-rendered help text, the CLI's reference documentation"
     SERVICE_UNIT = "exact service-unit text and installation plan for inspection"
+    SHELL_COMMAND = "a shell command a person can copy and run"
     TERMINAL_CONTROL = "a terminal escape sequence, not a line"
     TABLE = "an aligned table a person reads; a tag on each row would break its columns"
     CAPABILITY = "a capability token a deployment's probe matches as a whole line"

@@ -324,13 +324,13 @@ def get_engine_script(
     pi_provider: str = "openai-codex",
     launch_log_path: str | None = None,
 ) -> str:
+    from . import agy_session as _agy_session
+
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
     if engine == "g":
-        from . import agy_session as _agy_session
-
         resolved_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
         resolved_agy_args = list(agy_args or [])
         agy_is_print = _agy_session.is_print_mode([*shlex.split(resolved_agy_cmd)[1:], *resolved_agy_args])
@@ -338,7 +338,24 @@ def get_engine_script(
         resolved_agy_cmd = "agy"
         resolved_agy_args = []
         agy_is_print = False
-    agy_fresh_arg = "false" if resume else '"$first_run"'
+    shell_words = {
+        "__agy_record__": '"$_ai_state_dir/sessions/$tmux_session.agy.json"',
+        "__agy_cwd__": '"$PWD"',
+        "__agy_slot__": '"$tmux_session"',
+        "__agy_title__": '"$ai_name"',
+        "__agy_fresh__": '"$first_run"',
+    }
+    agy_argv = _agy_session.launch_command(
+        resolved_agy_cmd,
+        "__agy_record__",
+        "__agy_cwd__",
+        "__agy_slot__",
+        "__agy_title__",
+        fresh=False if resume else "__agy_fresh__",
+        route="paired-host-tmux" if is_remote else "local-tmux",
+        sandbox=sandbox,
+    )
+    agy_pane = " ".join(shell_words.get(word, shlex.quote(word)) for word in agy_argv)
     agy_post_run = (
         'exit "${agent_exit_code:-0}"' if agy_is_print else 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi'
     )
@@ -362,7 +379,6 @@ def get_engine_script(
         else ""
     )
     agy_supervisor_after_child = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n" if engine == "g" else ""
-    agy_sandbox_arg = " --sandbox" if sandbox else ""
     agy_extra_tokens = " ".join(shlex.quote(arg) for arg in resolved_agy_args)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
@@ -1939,14 +1955,14 @@ with open(path, 'w') as f:
         if [[ -n "$_agy_signin_token" ]]; then
           tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true
           if [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
-            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
           else
-            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg}
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane}
           fi
         elif [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
-          run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+          run_agent {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
         else
-          run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "$_ai_state_dir/sessions/$tmux_session.agy.json" "$PWD" "$tmux_session" "$ai_name" {agy_fresh_arg} {"paired-host-tmux" if is_remote else "local-tmux"} --command {shlex.quote(resolved_agy_cmd)}{agy_sandbox_arg}
+          run_agent {agy_pane}
         fi
         {agy_post_run}
       }}

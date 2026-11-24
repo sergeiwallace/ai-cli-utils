@@ -34,7 +34,7 @@ from pathlib import Path
 
 import portalocker
 
-from . import output
+from . import output, tmux_binary
 from .output import Untagged
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_clients import PRESENT, Antigravity, Gemini, Probe
@@ -803,6 +803,17 @@ def _probe_slot_conversation(client: Antigravity, cwd: Path, conversation_id: st
     return proof
 
 
+def bound_slot_conversation(path: Path, cwd: Path, slot: str, client: Antigravity | None = None) -> str | None:
+    if not path.is_file():
+        return None
+    doc = _read(path)
+    if doc["slot"] != slot or Path(doc["cwd"]).resolve() != cwd.resolve() or doc["phase"] != "confirmed":
+        return None
+    source = Path(doc["adopted_from"]) if "adopted_from" in doc else None
+    proof = _probe_slot_conversation(client or Antigravity(), cwd, doc["conversation_id"], source)
+    return doc["conversation_id"] if proof.state == PRESENT else None
+
+
 def prepare(
     path: Path,
     cwd: Path,
@@ -1097,7 +1108,7 @@ def launch_command(
     slot: str,
     ai_name: str,
     *,
-    fresh: bool,
+    fresh: bool | str,
     route: str,
     sandbox: bool = False,
     extra_args: Sequence[str] | None = None,
@@ -1112,7 +1123,7 @@ def launch_command(
         str(cwd),
         slot,
         ai_name,
-        "true" if fresh else "false",
+        fresh if isinstance(fresh, str) else "true" if fresh else "false",
         route,
         "--command",
         command,
@@ -1123,6 +1134,19 @@ def launch_command(
         argv.append("--")
         argv.extend(extra_args)
     return argv
+
+
+def tmux_launch_line(slot: str, cwd: Path, pane_argv: Sequence[str]) -> str:
+    target = f"={slot}"
+    return " && ".join(
+        (
+            shlex.join(
+                tmux_binary.argv("new-session", "-d", "-s", slot, "-c", str(cwd), f"exec {shlex.join(pane_argv)}")
+            ),
+            shlex.join(tmux_binary.argv("set-option", "-t", target, "@ai_cli_client", "agy")),
+            shlex.join(tmux_binary.argv("attach-session", "-t", target)),
+        )
+    )
 
 
 def _run_print_child(exec_argv: list[str], stdin_payload: str | None) -> int:

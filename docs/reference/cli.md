@@ -11,7 +11,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | Command | Summary |
 |---|---|
 | [`ai add-name`](#ai-add-name) | Session names: add a name to the name database without a prompt |
-| [`ai adopt-session`](#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai adopt-session`](#ai-adopt-session) | Register a Claude Code or Antigravity session started outside `ai` for managed resume. |
 | [`ai attach`](#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -167,7 +167,9 @@ Arguments:
 ai adopt-session [OPTIONS] [NAME]
 ```
 
-Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.
+Register a Claude Code or Antigravity session started outside `ai` for managed resume.
+
+Antigravity adoption is explicit and owner-approved. Select `-e agy` with a conversation UUID, an agy PID or a tmux session name, and stop the conversation before applying the plan.
 
 To rename a session already in an `ai` slot, use `ai migrate-session`.
 
@@ -188,6 +190,12 @@ Arguments:
 | `-n` | `--dry-run` |  | Show what would happen without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt (never covers a title collision) |
 | `-m` | `--name` | `TEXT` | Adopt into a slot named with this first name, reserved first |
+| `-e` | `--engine` | `[claude\|agy]` | Session client |
+| `-u` | `--conversation` | `TEXT` | Exact Antigravity conversation UUID |
+| `-P` | `--pid` | `INTEGER RANGE` | Discover the Antigravity conversation from an agy PID  [x>=1] |
+| `-M` | `--tmux-session` | `TEXT` | Discover the Antigravity conversation from a tmux session |
+| `-R` | `--paired-host` |  | Adopt on the paired host for a g-r- tmux slot |
+| `-S` | `--stopped` |  | Confirm Antigravity has stopped when liveness cannot be checked |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai attach
