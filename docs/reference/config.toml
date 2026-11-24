@@ -232,6 +232,17 @@ stale_session_timeout = 15
 ## Seconds the command may run before it is stopped and the resume refused. Default 300.
 # timeout_seconds = 300
 
+[session_register]
+## A command the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks run once the
+## launch is confirmed, for a deployment that keeps a registry of live agent sessions.
+## "{client}" in any argument is replaced by "codex" or "agy". It runs without a shell,
+## inside the client's own process tree, so the command can find the client among its
+## ancestors. Its output is captured. A failure or timeout prints one warning line and the
+## session starts unregistered. Read at every session start. Unset: nothing runs.
+# command = ["register-session", "--client", "{client}"]
+## Seconds the command may run before it is stopped. Default 15.
+# timeout_seconds = 15
+
 [tmux]
 ## The multiplexer executable every tmux call runs: the launch, attach, ls and every
 ## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more

@@ -324,6 +324,9 @@ def confirm_from_environment(args: list[str]) -> int:
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, portalocker.LockException):
         output.error(output.Tag.SESSION, "session", "Codex identity unknown: launch confirmation refused.")
         return 1
+    from .session_register import register
+
+    register("codex")
     return 0
 
 
