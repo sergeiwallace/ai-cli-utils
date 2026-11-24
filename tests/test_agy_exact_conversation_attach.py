@@ -148,6 +148,7 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
     # must run `agy models` to verify Google sign-in.
     token = agy_session.sign_in_cache_token("agy", home)
     events_log = tmp_path / "events.log"
+    release_file = tmp_path / "release-child-1"
     script_path = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SLOT}.sh"
 
     fake_ai = (
@@ -162,6 +163,7 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
         "import json, os, subprocess, sys, time\n"
         "from pathlib import Path\n"
         f"log = Path({str(events_log)!r})\n"
+        f"release = Path({str(release_file)!r})\n"
         f"script = Path({str(script_path)!r})\n"
         "if sys.argv[1:] == ['--version']:\n"
         "    print('1.5.14')\n"
@@ -171,20 +173,27 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
         "        f.write('probe:models\\n')\n"
         "    print('Error: Please sign in to view models.', file=sys.stderr)\n"
         "    sys.exit(1)\n"
+        "started_at = time.monotonic()\n"
         "with log.open('a', encoding='utf-8') as f:\n"
         "    f.write(f\"launch:{os.environ.get('AI_CLI_AGY_SIGN_IN_VERIFIED', 'UNSET')}\\n\")\n"
-        "# Confirm slot 1 via SessionStart hook, outlive the 3s quick-failure guard, and bump\n"
-        "# script mtime so child 1 exits 78 and the persistent supervisor spawns replacement child 2.\n"
+        "# Confirm slot 1 via SessionStart hook, bump script mtime so child 1 triggers reload\n"
+        "# on exit, and hold child 1 live until the test releases it after checking tmux env.\n"
         "payload = json.dumps({'hookEventName': 'SessionStart', 'conversationId': '11111111-2222-4333-8444-555555555555', 'cwd': os.getcwd()})\n"
         "subprocess.run(['ai', 'internal', 'agy-session-confirm'], input=payload, text=True, check=False)\n"
         "st = script.stat()\n"
         "os.utime(script, (st.st_atime + 20, st.st_mtime + 20))\n"
-        "time.sleep(3.5)\n"
+        "wait_deadline = time.monotonic() + 30.0\n"
+        "while time.monotonic() < wait_deadline and not release.exists():\n"
+        "    time.sleep(0.05)\n"
+        "# Outlive the supervisor's 3s quick-failure guard so child 1 exits 78 and reloads.\n"
+        "remaining = 3.5 - (time.monotonic() - started_at)\n"
+        "if remaining > 0:\n"
+        "    time.sleep(remaining)\n"
         "sys.exit(1)\n"
     )
 
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv(agy_session.SIGN_IN_VERIFIED_ENV, token)
+    monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
     monkeypatch.setattr(
         "test_session_reload_loop.get_engine_script",
         lambda *_args, **_kw: get_engine_script(
@@ -198,37 +207,51 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
             SLOT,
             rewrite_once_during_startup=False,
             extra_fakes={"ai": fake_ai, "agy": fake_agy},
+            session_env={agy_session.SIGN_IN_VERIFIED_ENV: token},
         )
 
-    # 1. Wait until child 1 has launched fake_agy (which sleeps 3.5s) and verify the tmux
-    #    session env cleared AI_CLI_AGY_SIGN_IN_VERIFIED while the pane is STILL LIVE.
+    # 1. Wait until child 1 has launched fake_agy (held live by release_file) and verify the
+    #    session-scoped tmux env cleared AI_CLI_AGY_SIGN_IN_VERIFIED while child 1 is STILL LIVE.
     deadline = time.monotonic() + 25.0
     lines: list[str] = []
-    while time.monotonic() < deadline:
-        if events_log.is_file():
-            lines = events_log.read_text(encoding="utf-8").splitlines()
-            if "launch:UNSET" in lines:
-                break
-        time.sleep(0.05)
-    assert "launch:UNSET" in lines, f"child 1 never launched: {lines!r}; pane:\n{_pane_history(tmux_socket, SLOT)}"
+    try:
+        while time.monotonic() < deadline:
+            if events_log.is_file():
+                lines = events_log.read_text(encoding="utf-8").splitlines()
+                if "launch:UNSET" in lines:
+                    break
+            time.sleep(0.05)
+        assert "launch:UNSET" in lines, f"child 1 never launched: {lines!r}; pane:\n{_pane_history(tmux_socket, SLOT)}"
 
-    live_check = subprocess.run(
-        ["tmux", "-S", tmux_socket, "has-session", "-t", f"={SLOT}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert live_check.returncode == 0, "expected tmux session to be live during child 1"
-    env_res = subprocess.run(
-        ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert env_res.returncode != 0 or env_res.stdout.strip().startswith("-"), (
-        f"expected {agy_session.SIGN_IN_VERIFIED_ENV} cleared while session live, got rc={env_res.returncode} "
-        f"stdout={env_res.stdout!r}"
-    )
+        live_check = subprocess.run(
+            ["tmux", "-S", tmux_socket, "has-session", "-t", f"={SLOT}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert live_check.returncode == 0, "expected tmux session to be live during child 1"
+        global_env = subprocess.run(
+            ["tmux", "-S", tmux_socket, "show-environment", "-g", agy_session.SIGN_IN_VERIFIED_ENV],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert global_env.returncode != 0 or global_env.stdout.strip().startswith("-"), (
+            f"expected {agy_session.SIGN_IN_VERIFIED_ENV} absent from server env, got rc={global_env.returncode} "
+            f"stdout={global_env.stdout!r}"
+        )
+        env_res = subprocess.run(
+            ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert (env_res.returncode != 0 or env_res.stdout.strip().startswith("-")) and token not in env_res.stdout, (
+            f"expected session-scoped {agy_session.SIGN_IN_VERIFIED_ENV} cleared while child 1 live, "
+            f"got rc={env_res.returncode} stdout={env_res.stdout!r}"
+        )
+    finally:
+        release_file.touch()
 
     # 2. Wait for replacement child 2 to re-probe `agy models` and refuse after sign-out.
     while time.monotonic() < deadline:
