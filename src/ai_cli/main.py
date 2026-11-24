@@ -5471,6 +5471,16 @@ def _do_session_launch(
         bare = True
         tmux_reason = "[session] use_tmux = false in config.toml"
 
+    agy_cmd = config.get("agy", {}).get("command") or "agy"
+    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
+    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
+    if agy_print_mode:
+        # Headless print runs are synchronous and non-interactive; resolve bare before
+        # the tmux preflight and version gate so tmux is never probed or required.
+        if not bare:
+            tmux_reason = "Antigravity headless print mode runs synchronously without tmux"
+        bare = True
+
     # The runnability preflight and the report are both emitted further down,
     # AFTER input validation: a launch rejected for a bad --project-prefix must
     # reach no probe at all, which is the no-side-effect-before-rejection contract
@@ -5785,14 +5795,7 @@ def _do_session_launch(
     # about the wrong machine.
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    agy_cmd = config.get("agy", {}).get("command") or "agy"
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
-    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
-    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
-    if agy_print_mode:
-        # Headless print runs are synchronous and non-interactive; never detach them inside
-        # tmux (which would exit 0 before the model runs) and never require interactive PTY.
-        bare = True
 
     compact_transport = None
     if not remote and not agy_print_mode:
