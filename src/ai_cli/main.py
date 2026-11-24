@@ -3609,28 +3609,10 @@ def _create_marked_agy_once_session(
     identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
     if identity is None:
         raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    client_marked = subprocess.run(
-        tmux_binary.argv("set-option", "-t", identity.session_id, _TMUX_CLIENT_OPTION, "agy"),
-        capture_output=True,
-        check=False,
-    )
-    if client_marked.returncode != 0:
+    if not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
         _tmux_ownership.kill_owned_tmux_session(identity)
         raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-    started = subprocess.run(
-        tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, "--", session_shell, "-c", pane_command),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if started.returncode != 0:
-        started = subprocess.run(
-            tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, session_shell, "-c", pane_command),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    if started.returncode != 0:
+    if not _tmux_ownership.respawn_owned_tmux_pane(identity, (session_shell, "-c", pane_command)):
         _tmux_ownership.kill_owned_tmux_session(identity)
         raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
     return identity
@@ -7072,17 +7054,11 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
-        if engine == "g":
-            client_marked = subprocess.run(
-                tmux_binary.argv("set-option", "-t", identity.session_id, _TMUX_CLIENT_OPTION, "agy"),
-                capture_output=True,
-                check=False,
-            )
-            if client_marked.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-                sys.exit(1)
+        if engine == "g" and not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+            sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
         tmux_options = (
             tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
@@ -7096,25 +7072,11 @@ def _do_session_launch(
                 Path(_script_path).unlink(missing_ok=True)
                 reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
                 sys.exit(1)
-        if engine == "g":
-            started = subprocess.run(
-                tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, "--", _session_shell, _script_path),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if started.returncode != 0:
-                started = subprocess.run(
-                    tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, _session_shell, _script_path),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            if started.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
-                sys.exit(1)
+        if engine == "g" and not _tmux_ownership.respawn_owned_tmux_pane(identity, (_session_shell, _script_path)):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
+            sys.exit(1)
         if detached:
             reporter.phase("session").outcome(f"{session_id} running detached")
             return

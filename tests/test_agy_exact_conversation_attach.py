@@ -291,3 +291,139 @@ def test_given_real_tmux_sessions_when_verifying_live_agy_marker_then_exact_slot
     assert missing is not None and "missing the @ai_cli_client=agy marker" in missing
     absent = main._verify_live_agy_tmux_session("g-myproject-999")
     assert absent is not None and "Relaunch with `ai g`" in absent
+
+
+def test_given_tmux_server_restart_recycling_session_id_when_fenced_marker_or_respawn_runs_then_replacement_session_is_untouched(
+    tmux_socket, tmp_path
+):
+    import subprocess
+    import time
+
+    from ai_cli import tmux_ownership
+
+    tmux_cmd = ("tmux", "-S", tmux_socket)
+    created = subprocess.run(
+        [
+            *tmux_cmd,
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
+            "-s",
+            "g-myproject-1",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 60",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    orig_id = created.stdout.strip()
+    subprocess.run(
+        [*tmux_cmd, "set-option", "-t", orig_id, "@ai_cli_session_generation", "gen-original-1"],
+        check=True,
+    )
+    stale_identity = tmux_ownership.capture_tmux_session_identity(
+        orig_id, expected_generation="gen-original-1", tmux_command=tmux_cmd
+    )
+    assert stale_identity is not None
+
+    # Simulate a tmux server restart that recycles the exact same opaque session id ($0) for an unrelated session.
+    subprocess.run([*tmux_cmd, "kill-server"], check=True)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and Path(tmux_socket).exists():
+        time.sleep(0.05)
+    replacement = subprocess.run(
+        [
+            *tmux_cmd,
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
+            "-s",
+            "unrelated-slot",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 60",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    replacement_id = replacement.stdout.strip()
+    assert replacement_id == stale_identity.session_id
+
+    orig_pane_pid = subprocess.run(
+        [*tmux_cmd, "display-message", "-p", "-t", replacement_id, "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    # Neither marker write nor respawn-pane may touch the replacement session when its generation is absent or different.
+    touched_flag = tmp_path / "replacement-respawned"
+    for gen_value in (None, "gen-different-2"):
+        if gen_value is not None:
+            subprocess.run(
+                [*tmux_cmd, "set-option", "-t", replacement_id, "@ai_cli_session_generation", gen_value],
+                check=True,
+            )
+        assert (
+            tmux_ownership.set_owned_tmux_option(stale_identity, main._TMUX_CLIENT_OPTION, "agy", tmux_command=tmux_cmd)
+            is False
+        )
+        assert (
+            tmux_ownership.respawn_owned_tmux_pane(
+                stale_identity,
+                ("/bin/sh", "-c", f"touch {shlex.quote(str(touched_flag))} && sleep 60"),
+                tmux_command=tmux_cmd,
+            )
+            is False
+        )
+        time.sleep(0.1)
+        marker = subprocess.run(
+            [*tmux_cmd, "show-options", "-t", "=unrelated-slot:", "-qv", main._TMUX_CLIENT_OPTION],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert marker == ""
+        assert not touched_flag.exists()
+        current_pane_pid = subprocess.run(
+            [*tmux_cmd, "display-message", "-p", "-t", replacement_id, "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert current_pane_pid == orig_pane_pid
+
+    # Verify matching generation passes special characters (quotes, $, #, ;, backslash, newline) verbatim.
+    live_identity = tmux_ownership.capture_tmux_session_identity(
+        replacement_id, expected_generation="gen-different-2", tmux_command=tmux_cmd
+    )
+    assert live_identity is not None
+    out_file = tmp_path / "quoted-payload.txt"
+    payload = 'it\'s "$HOME" #{session_id}; a\\b\nline2'
+    assert (
+        tmux_ownership.respawn_owned_tmux_pane(
+            live_identity,
+            (
+                sys.executable,
+                "-c",
+                "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8'); time.sleep(60)",
+                str(out_file),
+                payload,
+            ),
+            tmux_command=tmux_cmd,
+        )
+        is True
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not (out_file.is_file() and out_file.stat().st_size > 0):
+        time.sleep(0.05)
+    assert out_file.read_text(encoding="utf-8") == payload

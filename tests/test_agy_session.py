@@ -1797,7 +1797,9 @@ def test_given_new_agy_tmux_launch_when_ai_g_creates_session_then_sets_client_ma
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
 
     def fake_run(cmd, **kwargs):
@@ -1813,19 +1815,29 @@ def test_given_new_agy_tmux_launch_when_ai_g_creates_session_then_sets_client_ma
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
 
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 0
     new_idx = next(i for i, c in enumerate(seen_cmds) if "new-session" in c)
-    mark_idx = seen_cmds.index(["tmux", "set-option", "-t", "$7", main._TMUX_CLIENT_OPTION, "agy"])
-    respawn_idx = next(i for i, c in enumerate(seen_cmds) if "respawn-pane" in c)
+    mark_idx = next(
+        i
+        for i, c in enumerate(seen_cmds)
+        if c[:5] == ["tmux", "if-shell", "-F", "-t", "$7"]
+        and c[6] == f"set-option -t '$7' '{main._TMUX_CLIENT_OPTION}' 'agy'"
+    )
+    respawn_idx = next(
+        i
+        for i, c in enumerate(seen_cmds)
+        if c[:5] == ["tmux", "if-shell", "-F", "-t", "$7"] and c[6].startswith("respawn-pane -k -t '$7'")
+    )
     # Agent script must NOT start on new-session; marker is written before respawn-pane starts the script.
     assert "sleep 60" in seen_cmds[new_idx]
     assert not any("g-myproject-1.sh" in arg for arg in seen_cmds[new_idx])
     assert new_idx < mark_idx < respawn_idx
-    assert any("g-myproject-1.sh" in arg for arg in seen_cmds[respawn_idx])
+    assert "g-myproject-1.sh" in seen_cmds[respawn_idx][6]
     assert attached == [["tmux", "attach-session", "-d", "-t", "$7"]]
 
 
@@ -1839,7 +1851,9 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
     monkeypatch.setattr(main._tmux_ownership, "kill_owned_tmux_session", lambda ident: (killed.append(ident), True)[1])
 
@@ -1851,18 +1865,19 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
         if "new-session" in cmd:
             return type("R", (), {"returncode": 0, "stdout": "$9\n", "stderr": ""})()
-        if "set-option" in cmd and main._TMUX_CLIENT_OPTION in cmd:
+        if "if-shell" in cmd and any(main._TMUX_CLIENT_OPTION in part for part in cmd):
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
 
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 1
     assert len(killed) == 1
-    assert not any("respawn-pane" in c for c in seen_cmds)
+    assert not any("respawn-pane" in part for c in seen_cmds for part in c)
     assert not (state_dir / "sessions" / "g-myproject-1.sh").exists()
     assert "failed to mark tmux session" in capsys.readouterr().err
 
@@ -1948,11 +1963,14 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
     tmp_path, monkeypatch, capsys
 ):
     _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("/custom/bin/psmux",))
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["/custom/bin/psmux", *args])
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
 
     # 1. Attached --once: ONE ownership-fenced marker write on configured mux binary BEFORE respawn-pane and handoff.
@@ -1973,20 +1991,30 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
 
     monkeypatch.setattr(main, "_exec_tmux", fake_exec)
     monkeypatch.setattr(main.subprocess, "run", fake_run_ok)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run_ok)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 0
     new_idx = next(i for i, c in enumerate(seen_ok) if "new-session" in c)
-    mark_idx = seen_ok.index(["/custom/bin/psmux", "set-option", "-t", "$11", main._TMUX_CLIENT_OPTION, "agy"])
-    respawn_idx = next(i for i, c in enumerate(seen_ok) if "respawn-pane" in c)
+    mark_idx = next(
+        i
+        for i, c in enumerate(seen_ok)
+        if c[:5] == ["/custom/bin/psmux", "if-shell", "-F", "-t", "$11"]
+        and c[6] == f"set-option -t '$11' '{main._TMUX_CLIENT_OPTION}' 'agy'"
+    )
+    respawn_idx = next(
+        i
+        for i, c in enumerate(seen_ok)
+        if c[:5] == ["/custom/bin/psmux", "if-shell", "-F", "-t", "$11"] and c[6].startswith("respawn-pane -k -t '$11'")
+    )
     assert "sleep 60" in seen_ok[new_idx]
     assert new_idx < mark_idx < respawn_idx
-    assert "ai_cli.agy_session" in seen_ok[respawn_idx][-1]
-    assert "@ai_cli_client" not in seen_ok[respawn_idx][-1]
+    assert "ai_cli.agy_session" in seen_ok[respawn_idx][6]
+    assert "@ai_cli_client" not in seen_ok[respawn_idx][6]
     assert execed == [["/custom/bin/psmux", "attach-session", "-t", "$11"]]
 
-    # 2. Attached --once marker write failure: kills owned session by identity, never respawns, never hands off!
+    # 2. Attached --once marker write failure (or fence mismatch): kills owned session by identity, never respawns, never hands off!
     execed.clear()
     seen_fail: list[list[str]] = []
     killed: list[object] = []
@@ -1998,18 +2026,19 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
             return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
         if "new-session" in cmd:
             return type("R", (), {"returncode": 0, "stdout": "$12\n", "stderr": ""})()
-        if "set-option" in cmd and main._TMUX_CLIENT_OPTION in cmd:
-            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
+        if "if-shell" in cmd and any(main._TMUX_CLIENT_OPTION in part for part in cmd):
+            return type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run_fail)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run_fail)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc2:
         main.cli()
     assert exc2.value.code == 1
     assert len(killed) == 1
-    assert not any("respawn-pane" in c for c in seen_fail)
-    assert not any("kill-session" in c for c in seen_fail)
+    assert not any("respawn-pane" in part for c in seen_fail for part in c)
+    assert not any("kill-session" in part for c in seen_fail for part in c)
     assert not execed
     assert "failed to mark tmux session" in capsys.readouterr().err
 

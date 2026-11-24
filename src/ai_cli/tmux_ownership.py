@@ -19,6 +19,7 @@ _FENCE_MISMATCH = "__ai_cli_ownership_mismatch__"
 _PANE_PID_FORMAT = "#{pane_pid}"
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_OPTION_NAME_RE = re.compile(r"^@?[A-Za-z0-9_][A-Za-z0-9_-]*$")
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 1.0
 
 
@@ -90,6 +91,104 @@ def capture_tmux_session_identity(
     return TmuxSessionIdentity(session_id, session_name, generation)
 
 
+def _tmux_quote(arg: str) -> str:
+    """Quote ``arg`` for tmux's ``if-shell`` command parser without expanding ``$`` or ``#``."""
+    return "'" + arg.replace("'", "'\"'\"'").replace("\n", "'\"\\n\"'").replace("\r", "'\"\\r\"'") + "'"
+
+
+def _run_owned_tmux_command(
+    identity: TmuxSessionIdentity,
+    command_text: str,
+    *,
+    tmux_command: Sequence[str] | None = None,
+) -> tuple[bool, bool]:
+    """Atomically revalidate ``identity`` and run ``command_text`` inside tmux ``if-shell -F``.
+
+    Returns ``(succeeded, fence_matched)`` so callers distinguish a generation mismatch
+    (which must never be retried) from a tmux subcommand failure on a matching session.
+    """
+    if not _SESSION_ID_RE.fullmatch(identity.session_id) or not _GENERATION_RE.fullmatch(identity.generation):
+        return False, False
+    expected = f"{identity.session_id}|{identity.generation}"
+    predicate = f"#{{==:{_FENCE_FORMAT},{expected}}}"
+    try:
+        result = subprocess.run(
+            [
+                *tmux_binary.command(tmux_command),
+                "if-shell",
+                "-F",
+                "-t",
+                identity.session_id,
+                predicate,
+                command_text,
+                f"display-message -p {_FENCE_MISMATCH}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False, False
+    output = result.stdout if isinstance(result.stdout, str) else ""
+    if _FENCE_MISMATCH in output:
+        return False, False
+    return result.returncode == 0, True
+
+
+def set_owned_tmux_option(
+    identity: TmuxSessionIdentity,
+    option: str,
+    value: str,
+    *,
+    tmux_command: Sequence[str] | None = None,
+) -> bool:
+    """Atomically verify ``identity`` and set session option ``option`` to ``value``."""
+    if not _OPTION_NAME_RE.fullmatch(option):
+        return False
+    command_text = f"set-option -t {_tmux_quote(identity.session_id)} {_tmux_quote(option)} {_tmux_quote(value)}"
+    succeeded, _matched = _run_owned_tmux_command(identity, command_text, tmux_command=tmux_command)
+    return succeeded
+
+
+def respawn_owned_tmux_pane(
+    identity: TmuxSessionIdentity,
+    command: Sequence[str],
+    *,
+    tmux_command: Sequence[str] | None = None,
+) -> bool:
+    """Atomically verify ``identity`` and respawn its pane with ``command``.
+
+    Retries without the ``--`` separator only after positively verifying that the
+    owned session generation is still live (handling older tmux builds that reject
+    ``--``); a generation mismatch or absent session/server returns ``False`` without
+    retrying.
+    """
+    if not command:
+        return False
+    quoted_args = " ".join(_tmux_quote(part) for part in command)
+    target = _tmux_quote(identity.session_id)
+    succeeded, matched = _run_owned_tmux_command(
+        identity,
+        f"respawn-pane -k -t {target} -- {quoted_args}",
+        tmux_command=tmux_command,
+    )
+    if succeeded or not matched:
+        return succeeded
+    if (
+        capture_tmux_session_identity(
+            identity.session_id, expected_generation=identity.generation, tmux_command=tmux_command
+        )
+        is None
+    ):
+        return False
+    retry_ok, _retry_matched = _run_owned_tmux_command(
+        identity,
+        f"respawn-pane -k -t {target} {quoted_args}",
+        tmux_command=tmux_command,
+    )
+    return retry_ok
+
+
 def kill_owned_tmux_session(
     identity: TmuxSessionIdentity,
     *,
@@ -107,28 +206,11 @@ def kill_owned_tmux_session(
     if not _SESSION_ID_RE.fullmatch(identity.session_id) or not _GENERATION_RE.fullmatch(identity.generation):
         return False
     pane_processes = _capture_pane_process_tree(identity.session_id, tmux_command) if terminate_pane_processes else []
-    expected = f"{identity.session_id}|{identity.generation}"
-    predicate = f"#{{==:{_FENCE_FORMAT},{expected}}}"
-    try:
-        result = subprocess.run(
-            [
-                *tmux_binary.command(tmux_command),
-                "if-shell",
-                "-F",
-                "-t",
-                identity.session_id,
-                predicate,
-                f"kill-session -t '{identity.session_id}'",
-                f"display-message -p {_FENCE_MISMATCH}",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return False
-    output = result.stdout if isinstance(result.stdout, str) else ""
-    killed = result.returncode == 0 and _FENCE_MISMATCH not in output
+    killed, _matched = _run_owned_tmux_command(
+        identity,
+        f"kill-session -t {_tmux_quote(identity.session_id)}",
+        tmux_command=tmux_command,
+    )
     if killed and pane_processes:
         _terminate_processes(pane_processes, process_timeout)
     return killed
