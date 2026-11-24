@@ -24,7 +24,14 @@ import psutil
 import pytest
 from process_ownership import watch_tmux_directory
 
-from ai_cli.tmux_ownership import capture_tmux_session_identity, classify_new_session_output, kill_owned_tmux_session
+from ai_cli.tmux_ownership import (
+    TmuxSessionIdentity,
+    capture_tmux_session_identity,
+    classify_new_session_output,
+    kill_owned_tmux_session,
+    respawn_owned_tmux_pane,
+    set_owned_tmux_option,
+)
 
 
 @pytest.mark.parametrize("raw", ["$0", "$3", "$42", "  $7  ", "$7\n"])
@@ -176,3 +183,60 @@ def test_given_term_resistant_pane_tree_when_owned_session_is_killed_then_no_pan
                 if pid > 0 and not _process_has_ended(pid):
                     with contextlib.suppress(ProcessLookupError, PermissionError):
                         os.kill(pid, signal.SIGKILL)
+
+
+def test_given_owned_session_identity_when_set_option_fences_then_uses_if_shell_and_rejects_mismatch(monkeypatch):
+    seen: list[list[str]] = []
+    identity = TmuxSessionIdentity("$0", "g-myproject-1", "gen-abc123")
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_run)
+    assert set_owned_tmux_option(identity, "@ai_cli_client", "agy", tmux_command=("tmux",)) is True
+    assert len(seen) == 1
+    assert seen[0][:5] == ["tmux", "if-shell", "-F", "-t", "$0"]
+    assert "$0|gen-abc123" in seen[0][5]
+    assert seen[0][6] == "set-option -t '$0' '@ai_cli_client' 'agy'"
+
+    # Generation mismatch prints sentinel and returns False.
+    monkeypatch.setattr(
+        "ai_cli.tmux_ownership.subprocess.run",
+        lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})(),
+    )
+    assert set_owned_tmux_option(identity, "@ai_cli_client", "agy", tmux_command=("tmux",)) is False
+    assert set_owned_tmux_option(identity, "", "agy", tmux_command=("tmux",)) is False
+
+
+def test_given_owned_session_identity_when_respawn_pane_fences_then_retries_without_separator_only_on_fence_match(
+    monkeypatch,
+):
+    identity = TmuxSessionIdentity("$0", "g-myproject-1", "gen-abc123")
+
+    # 1. Fence mismatch MUST NOT retry without `--`.
+    mismatch_calls: list[list[str]] = []
+
+    def fake_mismatch(cmd, **kw):
+        mismatch_calls.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})()
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_mismatch)
+    assert respawn_owned_tmux_pane(identity, ("/bin/sh", "-c", "echo hi"), tmux_command=("tmux",)) is False
+    assert len(mismatch_calls) == 1
+
+    # 2. Fence matched but `--` failed (older tmux): retries once without `--` still under the same fence.
+    retry_calls: list[list[str]] = []
+
+    def fake_retry(cmd, **kw):
+        retry_calls.append(list(cmd))
+        rc = 1 if " -- " in cmd[6] else 0
+        return type("R", (), {"returncode": rc, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_retry)
+    assert respawn_owned_tmux_pane(identity, ("/bin/sh", "-c", "echo hi"), tmux_command=("tmux",)) is True
+    assert len(retry_calls) == 2
+    assert " -- " in retry_calls[0][6]
+    assert " -- " not in retry_calls[1][6]
+    assert "$0|gen-abc123" in retry_calls[1][5]
+    assert respawn_owned_tmux_pane(identity, (), tmux_command=("tmux",)) is False
