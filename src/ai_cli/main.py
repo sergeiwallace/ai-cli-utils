@@ -3488,10 +3488,106 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     sys.exit(0)
 
 
-def _g_session_client(session_name: str) -> str | None:
-    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
-    if not session_name.startswith("g-"):
+_TMUX_CLIENT_OPTION = "@ai_cli_client"
+_G_CLIENT_EXEC_EXTS = (".exe", ".cmd", ".bat", ".ps1", ".com")
+_G_PANE_QUERY_FORMAT = f"#{{{_TMUX_CLIENT_OPTION}}}\t#{{pane_current_command}}"
+_G_ALL_PANES_QUERY_FORMAT = f"#{{session_name}}\t{_G_PANE_QUERY_FORMAT}"
+
+
+def _classify_g_command_name(token: str) -> str | None:
+    cleaned = token.strip().strip("\"'")
+    if not cleaned:
         return None
+    base = re.split(r"[/\\]", cleaned)[-1].lower()
+    for ext in _G_CLIENT_EXEC_EXTS:
+        if base.endswith(ext) and len(base) > len(ext):
+            base = base[: -len(ext)]
+            break
+    if base in ("agy", "antigravity"):
+        return "agy"
+    if base == "gemini":
+        return "gemini"
+    return None
+
+
+def _decode_tmux_stdout(raw_out: bytes | str | None) -> str | None:
+    if isinstance(raw_out, bytes):
+        return raw_out.decode("utf-8", errors="replace")
+    if isinstance(raw_out, str):
+        return raw_out
+    return None
+
+
+def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
+    found: set[str] = set()
+    for marker, current_cmd in rows:
+        if marker:
+            return marker if marker in ("agy", "gemini") else None
+        client = _classify_g_command_name(current_cmd)
+        if client is not None:
+            found.add(client)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
+    """Fallback client detection for a live ``g-`` tmux session lacking metadata files."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", _G_PANE_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return None
+
+    rows: list[tuple[str, str]] = []
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], parts[1]))
+    return _client_from_pane_rows(rows)
+
+
+def _probe_all_g_session_clients_from_tmux() -> dict[str, str | None]:
+    """Batch-probe live ``g-`` tmux sessions in a single ``list-panes -a`` call."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-a", "-F", _G_ALL_PANES_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if res.returncode != 0:
+        return {}
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return {}
+
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith("g-"):
+            continue
+        grouped.setdefault(parts[0], []).append((parts[1], parts[2]))
+    return {name: _client_from_pane_rows(rows) for name, rows in grouped.items()}
+
+
+def _g_session_client_from_files(session_name: str) -> str | None:
     state = _config.get_xdg_state_home()
     if (state / "sessions" / f"{session_name}.agy.json").is_file():
         return "agy"
@@ -3509,7 +3605,16 @@ def _g_session_client(session_name: str) -> str | None:
     return None
 
 
-_TMUX_CLIENT_OPTION = "@ai_cli_client"
+def _g_session_client(session_name: str, *, live_pane_clients: Mapping[str, str | None] | None = None) -> str | None:
+    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
+    if not session_name.startswith("g-"):
+        return None
+    from_files = _g_session_client_from_files(session_name)
+    if from_files is not None:
+        return from_files
+    if live_pane_clients is not None:
+        return live_pane_clients.get(session_name)
+    return _probe_g_session_client_from_tmux(session_name)
 
 
 def _verify_live_agy_tmux_session(session_name: str) -> str | None:
@@ -3828,8 +3933,17 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
+    file_clients = {name: _g_session_client_from_files(name) for name, _ in sessions if name.startswith("g-")}
+    live_pane_clients: dict[str, str | None] = (
+        _probe_all_g_session_clients_from_tmux() if any(client is None for client in file_clients.values()) else {}
+    )
+
     def _client_tag(name: str) -> str:
-        client = _g_session_client(name)
+        if not name.startswith("g-"):
+            return ""
+        client = file_clients.get(name)
+        if client is None:
+            client = live_pane_clients.get(name)
         if client == "agy":
             return " [agy]"
         if client == "gemini":

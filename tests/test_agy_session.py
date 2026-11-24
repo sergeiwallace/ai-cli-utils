@@ -2992,3 +2992,227 @@ def test_given_stopped_worktree_agy_slot_when_checking_saved_no_worktree_cwd_the
     # Repo root itself is recognized.
     _write_agy_slot_record(state_dir, "g-myproject-box-3", repo_root.resolve())
     assert main._saved_agy_no_worktree_cwd("g-myproject-box-3", repo_root) == repo_root.resolve()
+
+
+@pytest.mark.parametrize(
+    ("command_name", "expected"),
+    [
+        ("agy", "agy"),
+        ("/usr/local/bin/agy", "agy"),
+        (r"C:\Tools\agy.exe", "agy"),
+        ("agy.cmd", "agy"),
+        ("antigravity", "agy"),
+        ("gemini", "gemini"),
+        ("bash", None),
+        ("vim", None),
+        ("", None),
+    ],
+)
+def test_given_pane_command_name_when_classifying_g_client_then_matches_only_real_clients(command_name, expected):
+    assert main._classify_g_command_name(command_name) == expected
+
+
+def test_given_manually_started_agy_pane_without_metadata_when_do_attach_runs_then_prints_agy_label(
+    tmp_path, monkeypatch
+):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    seen_cmds: list[list[str]] = []
+    attach_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        seen_cmds.append(cmd)
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": ""})()
+        if "list-panes" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "\tagy\n"})()
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-manual"])
+    assert res.exit_code == 0, res.output
+    assert "Attaching to g-myproject-manual [agy]" in res.output
+    list_pane_calls = [cmd for cmd in seen_cmds if "list-panes" in cmd]
+    assert list_pane_calls and "=g-myproject-manual:" in list_pane_calls[0]
+    assert attach_calls and attach_calls[0][-1] == "=g-myproject-manual"
+
+
+def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_marker_ambiguity_and_errors(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+
+    # 1. @ai_cli_client option wins even when pane command is a shell.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\tbash\n"})(),
+    )
+    assert main._g_session_client("g-myproject-1") == "agy"
+
+    # 2. Explicit non-agy/non-gemini (or padded/space-only) @ai_cli_client marker refuses fallback.
+    for raw_marker in (b"legacy\tagy\n", b" agy \tagy\n", b" \tagy\n"):
+        monkeypatch.setattr(
+            main.subprocess,
+            "run",
+            lambda *_a, _raw=raw_marker, **_kw: type("R", (), {"returncode": 0, "stdout": _raw})(),
+        )
+        assert main._g_session_client("g-myproject-marked-other") is None
+
+    # 3. Malformed single-field row is ignored and never treated as an authoritative marker.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-malformed") is None
+
+    # 4. Non-UTF-8 bytes in tmux stdout are decoded with replacement instead of raising UnicodeDecodeError.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\t\xff\xfe\n\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonutf8") == "agy"
+
+    # 5. Multi-pane session with one agy pane and one helper shell still resolves to agy.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tbash\n\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-2") == "agy"
+
+    # 6. Multi-pane session with both agy and gemini is ambiguous -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tagy\n\tgemini\n"})(),
+    )
+    assert main._g_session_client("g-myproject-3") is None
+
+    # 7. Plain shell pane or empty output -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tzsh\n"})(),
+    )
+    assert main._g_session_client("g-myproject-4") is None
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b""})(),
+    )
+    assert main._g_session_client("g-myproject-empty") is None
+
+    # 8. Nonzero exit, missing tmux binary, and timeout degrade cleanly to None with exact argv + timeout=5.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 1, "stdout": b"\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonzero") is None
+
+    def raise_missing(*_a, **_kw):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr(main.subprocess, "run", raise_missing)
+    assert main._g_session_client("g-myproject-missing-tmux") is None
+
+    timeout_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def raise_timeout(argv, **kwargs):
+        timeout_calls.append((list(argv), dict(kwargs)))
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._g_session_client("g-myproject-5") is None
+    assert len(timeout_calls) == 1
+    assert timeout_calls[0][0][-4:] == ["-t", "=g-myproject-5:", "-F", main._G_PANE_QUERY_FORMAT]
+    assert timeout_calls[0][1].get("timeout") == 5
+    assert timeout_calls[0][1].get("text") is False
+
+
+def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_single_list_panes_call(
+    tmp_path, monkeypatch
+):
+    import time
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    monkeypatch.setattr(main.shutil, "which", lambda _cmd: None)
+    now = int(time.time())
+    list_panes_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        if "list-sessions" in cmd:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": f"g-myproject-1 {now - 30}\ng-myproject-10 {now - 60}\n"},
+            )()
+        if "list-panes" in cmd:
+            list_panes_calls.append(cmd)
+            assert kwargs.get("text") is False
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        b"g-myproject-1\t\tagy\n"
+                        b"g-myproject-1\t\t\xff\xfe\n"
+                        b"g-myproject-10\tlegacy\tagy\n"
+                        b"g-myproject-malformed\tagy\n"
+                        b"g-myproject-padded\t agy \tagy\n"
+                    ),
+                },
+            )()
+        return type("R", (), {"returncode": 1, "stdout": b""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    res = CliRunner().invoke(main._cli_group, ["ls"])
+    assert res.exit_code == 0, res.output
+    assert len(list_panes_calls) == 1
+    assert "-a" in list_panes_calls[0]
+    row_1 = next(line for line in res.output.splitlines() if "g-myproject-1 " in line)
+    row_10 = next(line for line in res.output.splitlines() if "g-myproject-10 " in line)
+    assert "[agy]" in row_1
+    assert "[agy]" not in row_10 and "[legacy gemini]" not in row_10
+
+    # Batch probe degrades cleanly on timeout and malformed/unknown rows.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    b"g-myproject-1\t\t\xff\n"
+                    b"g-myproject-bad\tagy\n"
+                    b"g-myproject-other\tcustom\tagy\n"
+                    b"g-myproject-space\t \tagy\n"
+                ),
+            },
+        )(),
+    )
+    assert main._probe_all_g_session_clients_from_tmux() == {
+        "g-myproject-1": None,
+        "g-myproject-other": None,
+        "g-myproject-space": None,
+    }
+
+    def raise_timeout(*_a, **_kw):
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._probe_all_g_session_clients_from_tmux() == {}
