@@ -1,1 +1,1 @@
-The stale `task_prefix` warning now says to pull the project registry's repository before editing it. The usual cause is a checkout that is behind a fix already made upstream.
+- The stale `task_prefix` warning now says to pull the project registry's repository before editing it. The usual cause is a checkout that is behind a fix already made upstream.
