@@ -2305,3 +2305,140 @@ def test_given_non_g_engine_when_session_script_generated_then_omits_agy_signin_
             engine, AI_NAME, slot, f"{engine}-myproject-", "myproject", None, False, str(tmp_path)
         )
         assert "_supervisor_agy_signin_token" not in other
+
+
+@pytest.mark.parametrize(
+    ("extra_argv", "stdin_tty"),
+    [
+        (["--print", "--mode", "plan"], False),
+        (["-p", "inspect", "--mode", "plan"], True),
+    ],
+)
+def test_given_mismatched_tmux_server_when_agy_print_mode_launches_then_skips_tmux_version_gate(
+    tmp_path, monkeypatch, extra_argv, stdin_tty
+):
+    import io
+
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main.tmux_binary, "which", lambda: "/usr/bin/tmux")
+    # If the tmux preflight or version gate probes tmux at all, fail immediately (simulating a
+    # mismatched client/server that would otherwise block headless print runs).
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "_tmux_probe",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(f"unexpected tmux probe: {args}")),
+    )
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "tmux_runs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tmux_runs must not run for agy print mode")),
+    )
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "formats_expand",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("formats_expand must not run for agy print mode")),
+    )
+
+    class _FakeStdin(io.StringIO):
+        def isatty(self) -> bool:
+            return stdin_tty
+
+    monkeypatch.setattr(main.sys, "stdin", _FakeStdin("hello from pipe\n"))
+    handed_off: list[tuple[str, list[str]]] = []
+
+    def fake_handoff(file, args, **_kw):
+        handed_off.append((file, list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree", "--", *extra_argv])
+
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 0
+    assert len(handed_off) == 1
+    _file, argv = handed_off[0]
+    assert "ai_cli.agy_session" in argv
+    assert "--mode" in argv and "plan" in argv
+
+
+def test_given_detached_replay_with_print_args_when_tmux_unusable_then_still_refuses(tmp_path, monkeypatch):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: False)
+    with pytest.raises(RuntimeError, match="detached replay requires a working tmux executable"):
+        main._do_session_launch(
+            engine="g",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=True,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=["--print", "--mode", "plan", "hi"],
+            config={},
+            detached=True,
+        )
+
+
+def test_given_detached_replay_with_print_args_when_tmux_healthy_then_still_runs_bare(tmp_path, monkeypatch):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    seen_tmux: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        seen_tmux.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    handed_off: list[tuple[str, list[str]]] = []
+
+    def fake_handoff(file, args, **_kw):
+        handed_off.append((file, list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=True,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=["--print", "--mode", "plan", "hi"],
+            config={},
+            detached=True,
+        )
+    assert exc.value.code == 0
+    assert len(handed_off) == 1
+    assert "ai_cli.agy_session" in handed_off[0][1]
+    assert not any("new-session" in cmd for cmd in seen_tmux)
