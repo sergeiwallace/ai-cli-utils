@@ -2388,3 +2388,57 @@ def test_given_detached_replay_with_print_args_when_tmux_unusable_then_still_ref
             config={},
             detached=True,
         )
+
+
+def test_given_detached_replay_with_print_args_when_tmux_healthy_then_still_runs_bare(tmp_path, monkeypatch):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    seen_tmux: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        seen_tmux.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    handed_off: list[tuple[str, list[str]]] = []
+
+    def fake_handoff(file, args, **_kw):
+        handed_off.append((file, list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=True,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=["--print", "--mode", "plan", "hi"],
+            config={},
+            detached=True,
+        )
+    assert exc.value.code == 0
+    assert len(handed_off) == 1
+    assert "ai_cli.agy_session" in handed_off[0][1]
+    assert not any("new-session" in cmd for cmd in seen_tmux)

@@ -5796,6 +5796,10 @@ def _do_session_launch(
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
+    if agy_print_mode:
+        # Headless print runs are synchronous and non-interactive; even a detached
+        # invocation that passed the tmux gates above must run bare rather than in tmux.
+        bare = True
 
     compact_transport = None
     if not remote and not agy_print_mode:
