@@ -506,3 +506,56 @@ def test_given_remain_on_exit_server_when_once_agy_setup_fails_then_placeholder_
         main._create_marked_agy_once_session("g-myproject-3", [], "/bin/sh", "sleep 60")
     monkeypatch.setattr(main._tmux_ownership, "respawn_owned_tmux_pane", real_respawn)
     assert _live_sessions() == {"unrelated-slot"}
+
+
+def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_labels_agy_and_skips_plain_shell(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+    import time
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_agy = fake_bin / "agy"
+    fake_agy.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    fake_agy.chmod(0o755)
+
+    # Manually started g- tmux session running agy directly, with NO .agy.json, NO session-meta, NO @ai_cli_client.
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-manual", "--", str(fake_agy)],
+        check=True,
+    )
+    # Manually started g- tmux session running a plain shell command.
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-shell", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+
+    # Wait briefly for tmux panes to initialize before probing.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and main._g_session_client("g-myproject-manual") != "agy":
+        time.sleep(0.05)
+
+    assert main._g_session_client("g-myproject-manual") == "agy"
+    assert main._g_session_client("g-myproject-shell") is None
+
+    attach_calls: list[list[str]] = []
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    manual_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-manual"])
+    assert manual_res.exit_code == 0, manual_res.output
+    assert "Attaching to g-myproject-manual [agy]" in manual_res.output
+
+    shell_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-shell"])
+    assert shell_res.exit_code == 0, shell_res.output
+    assert "[agy]" not in shell_res.output
+    assert "[legacy gemini]" not in shell_res.output

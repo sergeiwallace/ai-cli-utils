@@ -2992,3 +2992,105 @@ def test_given_stopped_worktree_agy_slot_when_checking_saved_no_worktree_cwd_the
     # Repo root itself is recognized.
     _write_agy_slot_record(state_dir, "g-myproject-box-3", repo_root.resolve())
     assert main._saved_agy_no_worktree_cwd("g-myproject-box-3", repo_root) == repo_root.resolve()
+
+
+@pytest.mark.parametrize(
+    ("command_line", "expected"),
+    [
+        ("agy", "agy"),
+        ("/usr/local/bin/agy --mode chat", "agy"),
+        (r"C:\Tools\agy.exe --chat", "agy"),
+        ("antigravity", "agy"),
+        ("\"/bin/sh -c 'exec agy --chat'\"", "agy"),
+        ("env FOO=1 nice -n 10 /opt/bin/agy", "agy"),
+        ("python3 -m ai_cli.agy_session launch slot.json", "agy"),
+        ("uv run python -m ai_cli.agy_session launch slot.json", "agy"),
+        ("cmd /c agy.cmd --chat", "agy"),
+        ("bash -lc 'cd /work && exec agy'", "agy"),
+        ("gemini --yolo", "gemini"),
+        ("vim agy.py", None),
+        ("grep agy notes.txt", None),
+        ("bash -c 'echo \"foo; agy\"'", None),
+        ("bash -c 'sleep 60'", None),
+        ("bash -c 'agy && gemini'", None),
+    ],
+)
+def test_given_pane_command_line_when_classifying_g_client_then_matches_only_real_clients(command_line, expected):
+    assert main._classify_g_command_line(command_line) == expected
+
+
+def test_given_manually_started_agy_pane_without_metadata_when_do_attach_runs_then_prints_agy_label(
+    tmp_path, monkeypatch
+):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    seen_cmds: list[list[str]] = []
+    attach_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        seen_cmds.append(cmd)
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": ""})()
+        if "list-panes" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "\tagy\tagy --mode chat\n"})()
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-manual"])
+    assert res.exit_code == 0, res.output
+    assert "Attaching to g-myproject-manual [agy]" in res.output
+    list_pane_calls = [cmd for cmd in seen_cmds if "list-panes" in cmd]
+    assert list_pane_calls and "=g-myproject-manual:" in list_pane_calls[0]
+    assert attach_calls and attach_calls[0][-1] == "=g-myproject-manual"
+
+
+def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_marker_ambiguity_and_errors(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+
+    # 1. @ai_cli_client option wins even when pane command is a shell.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "agy\tbash\t/bin/bash\n"})(),
+    )
+    assert main._g_session_client("g-myproject-1") == "agy"
+
+    # 2. Multi-pane session with one agy pane and one helper shell still resolves to agy.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type(
+            "R", (), {"returncode": 0, "stdout": "\tbash\t/bin/bash\n\tagy\t/usr/local/bin/agy\n"}
+        )(),
+    )
+    assert main._g_session_client("g-myproject-2") == "agy"
+
+    # 3. Multi-pane session with both agy and gemini is ambiguous -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tagy\tagy\n\tgemini\tgemini\n"})(),
+    )
+    assert main._g_session_client("g-myproject-3") is None
+
+    # 4. Plain shell pane with no client command -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tzsh\t/bin/zsh\n"})(),
+    )
+    assert main._g_session_client("g-myproject-4") is None
+
+    # 5. Subprocess failure or timeout degrades cleanly to None.
+    def raise_timeout(*_a, **_kw):
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._g_session_client("g-myproject-5") is None
