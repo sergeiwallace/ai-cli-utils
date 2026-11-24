@@ -81,6 +81,29 @@ def _mark_writer_dead(record_path: Path) -> None:
     record_path.write_text(json.dumps(doc), encoding="utf-8")
 
 
+def test_given_approved_source_workspace_when_slot_is_adopted_then_it_resumes_without_rewriting_native_store(tmp_path):
+    home = tmp_path / "home"
+    source = tmp_path / "original"
+    worktree = tmp_path / "worktree"
+    record = tmp_path / "state" / f"{SLOT}.agy.json"
+    store = _seed_agy_home(home, db_rows=[(CONV_1, [str(source)], "manual session")], conv_files=[CONV_1])
+    db = store / "conversation_summaries.db"
+    original = db.read_bytes()
+
+    def prepare(**options):
+        return agy_session.prepare(
+            record, worktree, SLOT, fresh=False, route="local-tmux", client_version="1.5.14", home=home, **options
+        )
+
+    with pytest.raises(agy_session.IdentityError, match="working directory"):
+        prepare(adopt_conversation=(CONV_1, SLOT), adopted_from=tmp_path / "unrelated")
+    assert not record.exists()
+    assert prepare(adopt_conversation=(CONV_1, SLOT), adopted_from=source)[0] == CONV_1
+    _mark_writer_dead(record)
+    assert prepare()[0] == CONV_1
+    assert db.read_bytes() == original
+
+
 def test_given_missing_oauth_token_when_subscription_refusal_checked_then_refuses_with_signin_step(tmp_path):
     reason = agy_session.subscription_refusal(home=tmp_path)
     assert reason is not None
