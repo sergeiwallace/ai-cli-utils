@@ -292,6 +292,11 @@ def test_given_real_tmux_sessions_when_verifying_live_agy_marker_then_exact_slot
         time.sleep(0.05)
     assert ran_flag.is_file(), "expected respawned one-shot pane command to execute"
 
+    # Pin the leading `=` exact-match operator while g-myproject-1 is the sole live session on the server:
+    # without `=`, tmux prefix-matches g-myproject to g-myproject-1 and returns @ai_cli_client=agy.
+    absent_prefix = main._verify_live_agy_tmux_session("g-myproject")
+    assert absent_prefix is not None and "Relaunch with `ai g`" in absent_prefix
+
     # 2. Create prefix-colliding slot 10 marked non-agy and unmarked slot 2 on the same real tmux server.
     subprocess.run(
         ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-10", "--", "/bin/sh", "-c", "sleep 60"],
