@@ -5474,7 +5474,7 @@ def _do_session_launch(
     agy_cmd = config.get("agy", {}).get("command") or "agy"
     agy_argv = shlex.split(agy_cmd) if engine == "g" else []
     agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
-    if agy_print_mode:
+    if agy_print_mode and not detached:
         # Headless print runs are synchronous and non-interactive; resolve bare before
         # the tmux preflight and version gate so tmux is never probed or required.
         if not bare:

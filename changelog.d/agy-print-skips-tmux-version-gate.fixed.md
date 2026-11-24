@@ -1,1 +1,1 @@
-- Resolve Antigravity headless print mode (`ai g -- --print --mode plan`) to bare mode before the tmux preflight and client/server version-mismatch gate so synchronous piped print runs never probe tmux or fail on a mismatched tmux server.
+- Resolve Antigravity headless print mode (for example `ai g 1 -- --print --mode plan "prompt"`) to bare mode before the tmux preflight and client/server version-mismatch gate so synchronous piped print runs never probe tmux or fail on a mismatched tmux server.
