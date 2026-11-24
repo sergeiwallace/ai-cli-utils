@@ -438,20 +438,49 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
 _FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$")
 
 
+def _is_indented_code_line(line: str) -> bool:
+    """Return True when a non-blank line has >= 4 columns of leading spaces/tabs (CommonMark §4.4)."""
+    cols = 0
+    for ch in line:
+        if ch == " ":
+            cols += 1
+        elif ch == "\t":
+            cols += 4 - (cols % 4)
+        else:
+            break
+        if cols >= 4:
+            return True
+    return False
+
+
 def _has_plain_text_auto_denial(text: str) -> bool:
-    """Return True when ``text`` has an unquoted, non-fenced auto-denial diagnostic line.
+    """Return True when ``text`` has an unquoted, non-code auto-denial diagnostic line.
 
     Follows CommonMark fenced code block rules (0-3 leading spaces, matching delimiter
-    character and minimum length) so a 4-space-indented backtick line cannot open a
-    fence to hide a genuine denial and a shorter inner fence cannot close an outer fence.
+    character and minimum length) and indented code block rules (>= 4 columns of leading
+    spaces/tabs at document start or after a blank/non-paragraph block) so an indented
+    code example is skipped without allowing an indented backtick line to open a fence
+    and hide a subsequent unindented denial.
     """
     fence_char = ""
     fence_len = 0
+    in_indented_code = False
+    in_paragraph = False
     for line in text.splitlines():
         if fence_char:
             if re.match(rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$", line):
                 fence_char = ""
                 fence_len = 0
+            continue
+        if not line.strip():
+            in_paragraph = False
+            continue
+        if in_indented_code:
+            if _is_indented_code_line(line):
+                continue
+            in_indented_code = False
+        elif not in_paragraph and _is_indented_code_line(line):
+            in_indented_code = True
             continue
         match = _FENCE_OPEN_RE.match(line)
         if match:
@@ -459,11 +488,14 @@ def _has_plain_text_auto_denial(text: str) -> bool:
             if marker[0] == "~" or "`" not in info:
                 fence_char = marker[0]
                 fence_len = len(marker)
+                in_paragraph = False
                 continue
         if re.match(r"^[ ]{0,3}>", line):
+            in_paragraph = False
             continue
         if _STDOUT_AUTO_DENIAL_LINE_RE.match(line):
             return True
+        in_paragraph = True
     return False
 
 
