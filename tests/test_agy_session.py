@@ -1239,6 +1239,36 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         ),
         (
             ["-p", "hi", "--mode", "plan"],
+            "- Run failed:\n\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "1. Run failed:\n\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "- step\n\nAfter the list.\n\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Run failed:\n\u00a0\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "## Example\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
             "```\nhello\n```\ntool call auto-denied by policy\n",
             "",
             agy_session.EXIT_PRINT_AUTO_DENIED,

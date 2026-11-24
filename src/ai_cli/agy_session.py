@@ -436,6 +436,9 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
 
 
 _FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$")
+_LIST_ITEM_RE = re.compile(r"^[ ]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)")
+_THEMATIC_BREAK_RE = re.compile(r"^[ ]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+_ATX_HEADING_RE = re.compile(r"^[ ]{0,3}#{1,6}(?:[ \t]|$)")
 
 
 def _is_indented_code_line(line: str) -> bool:
@@ -461,27 +464,45 @@ def _has_plain_text_auto_denial(text: str) -> bool:
     spaces/tabs at document start or after a blank/non-paragraph block) so an indented
     code example is skipped without allowing an indented backtick line to open a fence
     and hide a subsequent unindented denial.
+
+    Only a line of spaces and tabs is blank, and a heading or thematic break ends a
+    paragraph. Inside a list, an indented line after a blank line continues the list item
+    rather than opening a code block, so it is checked; the list ends at an unindented,
+    non-list line after a blank line. This is not full CommonMark: an indented code block
+    nested in a list item is checked too, which errs toward reporting a denial. A genuine
+    denial printed with 4 or more columns of indent outside a paragraph or list is skipped
+    as code; agy prints its diagnostic at column 0.
     """
     fence_char = ""
     fence_len = 0
     in_indented_code = False
     in_paragraph = False
+    in_list = False
     for line in text.splitlines():
         if fence_char:
             if re.match(rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$", line):
                 fence_char = ""
                 fence_len = 0
             continue
-        if not line.strip():
+        if not line.strip(" \t"):
             in_paragraph = False
             continue
         if in_indented_code:
             if _is_indented_code_line(line):
                 continue
             in_indented_code = False
-        elif not in_paragraph and _is_indented_code_line(line):
+        elif not in_paragraph and not in_list and _is_indented_code_line(line):
             in_indented_code = True
             continue
+        if not _is_indented_code_line(line):
+            if _THEMATIC_BREAK_RE.match(line) or _ATX_HEADING_RE.match(line):
+                in_paragraph = False
+                in_list = False
+                continue
+            if _LIST_ITEM_RE.match(line):
+                in_list = True
+            elif not in_paragraph:
+                in_list = False
         match = _FENCE_OPEN_RE.match(line)
         if match:
             marker, info = match.group(1), match.group(2)
