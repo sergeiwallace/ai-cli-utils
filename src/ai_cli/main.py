@@ -3510,12 +3510,20 @@ def _classify_g_command_name(token: str) -> str | None:
     return None
 
 
+def _decode_tmux_stdout(raw_out: bytes | str | None) -> str | None:
+    if isinstance(raw_out, bytes):
+        return raw_out.decode("utf-8", errors="replace")
+    if isinstance(raw_out, str):
+        return raw_out
+    return None
+
+
 def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
     found: set[str] = set()
     for marker, current_cmd in rows:
         cleaned_marker = marker.strip()
-        if cleaned_marker in ("agy", "gemini"):
-            return cleaned_marker
+        if cleaned_marker:
+            return cleaned_marker if cleaned_marker in ("agy", "gemini") else None
         client = _classify_g_command_name(current_cmd)
         if client is not None:
             found.add(client)
@@ -3528,21 +3536,26 @@ def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
         res = subprocess.run(
             tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", _G_PANE_QUERY_FORMAT),
             capture_output=True,
-            text=True,
+            text=False,
             check=False,
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if res.returncode != 0 or not isinstance(res.stdout, str):
+    if res.returncode != 0:
+        return None
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
         return None
 
     rows: list[tuple[str, str]] = []
-    for line in res.stdout.splitlines():
+    for line in stdout.splitlines():
         if not line:
             continue
-        parts = line.split("\t", 1)
-        rows.append((parts[0], parts[1] if len(parts) > 1 else ""))
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], parts[1]))
     return _client_from_pane_rows(rows)
 
 
@@ -3552,21 +3565,24 @@ def _probe_all_g_session_clients_from_tmux() -> dict[str, str | None]:
         res = subprocess.run(
             tmux_binary.argv("list-panes", "-a", "-F", _G_ALL_PANES_QUERY_FORMAT),
             capture_output=True,
-            text=True,
+            text=False,
             check=False,
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return {}
-    if res.returncode != 0 or not isinstance(res.stdout, str):
+    if res.returncode != 0:
+        return {}
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
         return {}
 
     grouped: dict[str, list[tuple[str, str]]] = {}
-    for line in res.stdout.splitlines():
+    for line in stdout.splitlines():
         if not line:
             continue
-        parts = line.split("\t", 2)
-        if len(parts) < 3 or not parts[0].startswith("g-"):
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith("g-"):
             continue
         grouped.setdefault(parts[0], []).append((parts[1], parts[2]))
     return {name: _client_from_pane_rows(rows) for name, rows in grouped.items()}

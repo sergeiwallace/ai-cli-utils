@@ -3051,40 +3051,90 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "agy\tbash\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\tbash\n"})(),
     )
     assert main._g_session_client("g-myproject-1") == "agy"
 
-    # 2. Multi-pane session with one agy pane and one helper shell still resolves to agy.
+    # 2. Explicit non-agy/non-gemini @ai_cli_client marker refuses fallback to pane_current_command.
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tbash\n\tagy\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"legacy\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-marked-other") is None
+
+    # 3. Malformed single-field row is ignored and never treated as an authoritative marker.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-malformed") is None
+
+    # 4. Non-UTF-8 bytes in tmux stdout are decoded with replacement instead of raising UnicodeDecodeError.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\t\xff\xfe\n\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonutf8") == "agy"
+
+    # 5. Multi-pane session with one agy pane and one helper shell still resolves to agy.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tbash\n\tagy\n"})(),
     )
     assert main._g_session_client("g-myproject-2") == "agy"
 
-    # 3. Multi-pane session with both agy and gemini is ambiguous -> None.
+    # 6. Multi-pane session with both agy and gemini is ambiguous -> None.
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tagy\n\tgemini\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tagy\n\tgemini\n"})(),
     )
     assert main._g_session_client("g-myproject-3") is None
 
-    # 4. Plain shell pane with no client command -> None.
+    # 7. Plain shell pane or empty output -> None.
     monkeypatch.setattr(
         main.subprocess,
         "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "\tzsh\n"})(),
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tzsh\n"})(),
     )
     assert main._g_session_client("g-myproject-4") is None
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b""})(),
+    )
+    assert main._g_session_client("g-myproject-empty") is None
 
-    # 5. Subprocess failure or timeout degrades cleanly to None.
-    def raise_timeout(*_a, **_kw):
+    # 8. Nonzero exit, missing tmux binary, and timeout degrade cleanly to None with exact argv + timeout=5.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 1, "stdout": b"\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonzero") is None
+
+    def raise_missing(*_a, **_kw):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr(main.subprocess, "run", raise_missing)
+    assert main._g_session_client("g-myproject-missing-tmux") is None
+
+    timeout_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def raise_timeout(argv, **kwargs):
+        timeout_calls.append((list(argv), dict(kwargs)))
         raise main.subprocess.TimeoutExpired(["tmux"], 5)
 
     monkeypatch.setattr(main.subprocess, "run", raise_timeout)
     assert main._g_session_client("g-myproject-5") is None
+    assert len(timeout_calls) == 1
+    assert timeout_calls[0][0][-4:] == ["-t", "=g-myproject-5:", "-F", main._G_PANE_QUERY_FORMAT]
+    assert timeout_calls[0][1].get("timeout") == 5
+    assert timeout_calls[0][1].get("text") is False
 
 
 def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_single_list_panes_call(
