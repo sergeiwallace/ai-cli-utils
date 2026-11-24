@@ -3055,13 +3055,14 @@ def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_m
     )
     assert main._g_session_client("g-myproject-1") == "agy"
 
-    # 2. Explicit non-agy/non-gemini @ai_cli_client marker refuses fallback to pane_current_command.
-    monkeypatch.setattr(
-        main.subprocess,
-        "run",
-        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"legacy\tagy\n"})(),
-    )
-    assert main._g_session_client("g-myproject-marked-other") is None
+    # 2. Explicit non-agy/non-gemini (or padded/space-only) @ai_cli_client marker refuses fallback.
+    for raw_marker in (b"legacy\tagy\n", b" agy \tagy\n", b" \tagy\n"):
+        monkeypatch.setattr(
+            main.subprocess,
+            "run",
+            lambda *_a, _raw=raw_marker, **_kw: type("R", (), {"returncode": 0, "stdout": _raw})(),
+        )
+        assert main._g_session_client("g-myproject-marked-other") is None
 
     # 3. Malformed single-field row is ignored and never treated as an authoritative marker.
     monkeypatch.setattr(
@@ -3155,21 +3156,63 @@ def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_si
             return type(
                 "R",
                 (),
-                {"returncode": 0, "stdout": f"g-myproject-1 {now - 30}\ng-myproject-2 {now - 60}\n"},
+                {"returncode": 0, "stdout": f"g-myproject-1 {now - 30}\ng-myproject-10 {now - 60}\n"},
             )()
         if "list-panes" in cmd:
             list_panes_calls.append(cmd)
+            assert kwargs.get("text") is False
             return type(
                 "R",
                 (),
-                {"returncode": 0, "stdout": "g-myproject-1\t\tagy\ng-myproject-2\t\tbash\n"},
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        b"g-myproject-1\t\tagy\n"
+                        b"g-myproject-1\t\t\xff\xfe\n"
+                        b"g-myproject-10\tlegacy\tagy\n"
+                        b"g-myproject-malformed\tagy\n"
+                        b"g-myproject-padded\t agy \tagy\n"
+                    ),
+                },
             )()
-        return type("R", (), {"returncode": 1, "stdout": ""})()
+        return type("R", (), {"returncode": 1, "stdout": b""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
     res = CliRunner().invoke(main._cli_group, ["ls"])
     assert res.exit_code == 0, res.output
     assert len(list_panes_calls) == 1
     assert "-a" in list_panes_calls[0]
-    assert "g-myproject-1" in res.output and "[agy]" in res.output
-    assert "g-myproject-2" in res.output
+    row_1 = next(line for line in res.output.splitlines() if "g-myproject-1 " in line)
+    row_10 = next(line for line in res.output.splitlines() if "g-myproject-10 " in line)
+    assert "[agy]" in row_1
+    assert "[agy]" not in row_10 and "[legacy gemini]" not in row_10
+
+    # Batch probe degrades cleanly on timeout and malformed/unknown rows.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    b"g-myproject-1\t\t\xff\n"
+                    b"g-myproject-bad\tagy\n"
+                    b"g-myproject-other\tcustom\tagy\n"
+                    b"g-myproject-space\t \tagy\n"
+                ),
+            },
+        )(),
+    )
+    assert main._probe_all_g_session_clients_from_tmux() == {
+        "g-myproject-1": None,
+        "g-myproject-other": None,
+        "g-myproject-space": None,
+    }
+
+    def raise_timeout(*_a, **_kw):
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._probe_all_g_session_clients_from_tmux() == {}

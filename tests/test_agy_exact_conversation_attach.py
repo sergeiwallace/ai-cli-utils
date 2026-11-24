@@ -508,10 +508,13 @@ def test_given_remain_on_exit_server_when_once_agy_setup_fails_then_placeholder_
     assert _live_sessions() == {"unrelated-slot"}
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Linux symlink to Python sets pane_current_command=agy; macOS AMFI rejects renamed system binaries",
+)
 def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_labels_agy_and_skips_plain_shell(
     tmux_socket, tmp_path, monkeypatch
 ):
-    import shutil
     import subprocess
     import time
 
@@ -526,14 +529,25 @@ def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_la
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_agy = fake_bin / "agy"
-    sleep_bin = shutil.which("sleep")
-    assert sleep_bin is not None
-    shutil.copy2(sleep_bin, fake_agy)
-    fake_agy.chmod(0o755)
+    # Symlinking sys.executable avoids multi-call coreutils binaries (e.g. Ubuntu 26.04 uutils sleep)
+    # that reject argv[0]=="agy" while reporting pane_current_command=="agy" on Linux tmux.
+    fake_agy.symlink_to(sys.executable)
 
     # Manually started g- tmux session running an executable named agy, with NO metadata or @ai_cli_client marker.
     subprocess.run(
-        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-manual", "--", str(fake_agy), "60"],
+        [
+            "tmux",
+            "-S",
+            tmux_socket,
+            "new-session",
+            "-d",
+            "-s",
+            "g-myproject-manual",
+            "--",
+            str(fake_agy),
+            "-c",
+            "import time; time.sleep(60)",
+        ],
         check=True,
     )
     # Manually started g- tmux session running a plain shell command.
@@ -542,11 +556,31 @@ def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_la
         check=True,
     )
 
-    # Wait briefly for tmux panes to initialize before probing.
+    # Poll until tmux reflects the pane's foreground command before asserting.
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and main._g_session_client("g-myproject-manual") != "agy":
+    observed_cmd = ""
+    while time.monotonic() < deadline:
+        probe = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                tmux_socket,
+                "display-message",
+                "-p",
+                "-t",
+                "=g-myproject-manual:",
+                "#{pane_current_command}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        observed_cmd = probe.stdout.strip()
+        if observed_cmd == "agy":
+            break
         time.sleep(0.05)
 
+    assert observed_cmd == "agy", f"expected pane_current_command='agy', got {observed_cmd!r}"
     assert main._g_session_client("g-myproject-manual") == "agy"
     assert main._g_session_client("g-myproject-shell") is None
 
@@ -562,3 +596,53 @@ def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_la
     assert shell_res.exit_code == 0, shell_res.output
     assert "[agy]" not in shell_res.output
     assert "[legacy gemini]" not in shell_res.output
+
+
+def test_given_real_tmux_marked_g_session_without_metadata_when_attaching_then_labels_agy_cross_platform(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-marked", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "set-option", "-t", "=g-myproject-marked:", main._TMUX_CLIENT_OPTION, "agy"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-other", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "set-option", "-t", "=g-myproject-other:", main._TMUX_CLIENT_OPTION, "legacy"],
+        check=True,
+    )
+
+    assert main._g_session_client("g-myproject-marked") == "agy"
+    assert main._g_session_client("g-myproject-other") is None
+    assert main._probe_all_g_session_clients_from_tmux() == {
+        "g-myproject-marked": "agy",
+        "g-myproject-other": None,
+    }
+
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda _argv: sys.exit(0))
+
+    marked_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-marked"])
+    assert marked_res.exit_code == 0, marked_res.output
+    assert "Attaching to g-myproject-marked [agy]" in marked_res.output
+
+    other_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-other"])
+    assert other_res.exit_code == 0, other_res.output
+    assert "[agy]" not in other_res.output
+    assert "[legacy gemini]" not in other_res.output

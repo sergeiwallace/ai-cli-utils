@@ -3521,9 +3521,8 @@ def _decode_tmux_stdout(raw_out: bytes | str | None) -> str | None:
 def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
     found: set[str] = set()
     for marker, current_cmd in rows:
-        cleaned_marker = marker.strip()
-        if cleaned_marker:
-            return cleaned_marker if cleaned_marker in ("agy", "gemini") else None
+        if marker:
+            return marker if marker in ("agy", "gemini") else None
         client = _classify_g_command_name(current_cmd)
         if client is not None:
             found.add(client)
@@ -3934,12 +3933,17 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
-    live_pane_clients: dict[str, str | None] | None = None
-    if any(name.startswith("g-") and _g_session_client_from_files(name) is None for name, _ in sessions):
-        live_pane_clients = _probe_all_g_session_clients_from_tmux()
+    file_clients = {name: _g_session_client_from_files(name) for name, _ in sessions if name.startswith("g-")}
+    live_pane_clients: dict[str, str | None] = (
+        _probe_all_g_session_clients_from_tmux() if any(client is None for client in file_clients.values()) else {}
+    )
 
     def _client_tag(name: str) -> str:
-        client = _g_session_client(name, live_pane_clients=live_pane_clients)
+        if not name.startswith("g-"):
+            return ""
+        client = file_clients.get(name)
+        if client is None:
+            client = live_pane_clients.get(name)
         if client == "agy":
             return " [agy]"
         if client == "gemini":
