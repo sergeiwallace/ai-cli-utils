@@ -2508,6 +2508,13 @@ def test_given_current_and_legacy_live_agy_slots_when_resuming_ambiguously_then_
         (["g-myproject-box-1", "g-myproject-1"], "myproject-1", "g-myproject-1"),
         (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-box-worker-1", "g-myproject-box-worker-1"),
         (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-worker-1", "g-myproject-worker-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-box-myproject-1", "g-myproject-box-myproject-1"),
+        (
+            ["g-myproject-1", "g-myproject-box-myproject-1-a", "g-myproject-box-myproject-1-b"],
+            "myproject-1",
+            "g-myproject-1",
+        ),
     ],
 )
 def test_given_current_or_legacy_live_agy_slots_when_resuming_unambiguously_then_resolves_target(
@@ -2531,3 +2538,83 @@ def test_given_current_or_legacy_live_agy_slots_when_resuming_unambiguously_then
         reporter=reporter,
     )
     assert target.session == expected_session
+
+
+@pytest.mark.parametrize(
+    ("legacy_convention", "expect_refusal"),
+    [
+        ("off", False),
+        ("full", True),
+    ],
+)
+def test_given_live_current_and_legacy_agy_slots_when_launching_resume_with_legacy_convention_then_honors_setting(
+    tmp_path, monkeypatch, capsys, legacy_convention, expect_refusal
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    live_sessions = ["g-myproject-box-1", "g-myproject-1"]
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box",
+            repo_alias if cfg.get("naming", {}).get("legacy_convention", "full") in ("reach", "full") else None,
+            "box",
+            False,
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _s: None)
+    monkeypatch.setattr(main._session_launch_state, "reattach", lambda _s: None)
+    monkeypatch.setattr(main, "_track_launch", lambda *_a, **_kw: None)
+    attached: list[list[str]] = []
+    created: list[str] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attached.append(list(argv)), sys.exit(0)))
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created.append("wt"))
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="",
+            resume=True,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"naming": {"legacy_convention": legacy_convention}},
+            detached=False,
+        )
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert created == []
+    if expect_refusal:
+        assert exc.value.code == 1
+        assert "ambiguous Antigravity resume" in combined
+        assert "g-myproject-box-1" in combined and "g-myproject-1" in combined
+        assert attached == []
+    else:
+        assert exc.value.code == 0
+        assert len(attached) == 1
+        assert attached[0][-1] == "g-myproject-box-1"
