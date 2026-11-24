@@ -29,6 +29,7 @@ from ai_cli.tmux_ownership import (
     capture_tmux_session_identity,
     classify_new_session_output,
     kill_owned_tmux_session,
+    kill_unmarked_tmux_placeholder,
     respawn_owned_tmux_pane,
     set_owned_tmux_option,
 )
@@ -260,3 +261,47 @@ def test_given_owned_session_identity_when_respawn_pane_fences_then_retries_with
     assert " -- " not in if_shell_calls[1][6]
     assert "$0|gen-abc123" in if_shell_calls[1][5]
     assert respawn_owned_tmux_pane(identity, (), tmux_command=("tmux",)) is False
+
+
+def test_given_unmarked_placeholder_when_killed_then_fences_on_id_name_and_empty_markers(monkeypatch):
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", fake_run)
+    assert kill_unmarked_tmux_placeholder("$5", "g-myproject-1", tmux_command=("tmux",)) is True
+    assert len(seen) == 1
+    assert seen[0][:5] == ["tmux", "if-shell", "-F", "-t", "$5"]
+    assert "$5|g-myproject-1||" in seen[0][5]
+    assert seen[0][6] == "kill-session -t '$5'"
+
+    # Invalid session IDs or unsafe session names are rejected BEFORE calling tmux.
+    seen.clear()
+    for bad_id, bad_name in (
+        ("", "g-myproject-1"),
+        ("not-an-id", "g-myproject-1"),
+        ("$5", ""),
+        ("$5", "bad,name"),
+        ("$5", "bad}name"),
+        ("$5", "bad name"),
+    ):
+        assert kill_unmarked_tmux_placeholder(bad_id, bad_name, tmux_command=("tmux",)) is False
+    assert seen == []
+
+    # Fence mismatch returns False.
+    monkeypatch.setattr(
+        "ai_cli.tmux_ownership.subprocess.run",
+        lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})(),
+    )
+    assert kill_unmarked_tmux_placeholder("$5", "g-myproject-1", tmux_command=("tmux",)) is False
+
+    # TimeoutExpired / OSError return False cleanly without raising.
+    def raise_timeout(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 10.0)
+
+    monkeypatch.setattr("ai_cli.tmux_ownership.subprocess.run", raise_timeout)
+    assert kill_unmarked_tmux_placeholder("$5", "g-myproject-1", tmux_command=("tmux",)) is False
+    assert capture_tmux_session_identity("$5", tmux_command=("tmux",)) is None
+    assert set_owned_tmux_option(TmuxSessionIdentity("$5", "g-myproject-1", "gen-1"), "@ai_cli_client", "agy") is False

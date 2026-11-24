@@ -1797,7 +1797,7 @@ def test_given_new_agy_tmux_launch_when_ai_g_creates_session_then_sets_client_ma
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
             sid, "g-myproject-1", expected_generation or "gen-test"
         ),
     )
@@ -1851,7 +1851,7 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
             sid, "g-myproject-1", expected_generation or "gen-test"
         ),
     )
@@ -1968,7 +1968,7 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: main._tmux_ownership.TmuxSessionIdentity(
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
             sid, "g-myproject-1", expected_generation or "gen-test"
         ),
     )
@@ -2041,6 +2041,256 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
     assert not any("kill-session" in part for c in seen_fail for part in c)
     assert not execed
     assert "failed to mark tmux session" in capsys.readouterr().err
+
+
+def test_given_once_agy_launch_when_respawn_fails_then_kills_owned_session_without_attaching(
+    tmp_path, monkeypatch, capsys
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "capture_tmux_session_identity",
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
+    )
+    killed: list[object] = []
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main._tmux_ownership, "kill_owned_tmux_session", lambda ident: (killed.append(ident), True)[1])
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    def fake_run(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$13\n", "stderr": ""})()
+        if "if-shell" in cmd and len(cmd) > 6 and cmd[6].startswith("respawn-pane"):
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "respawn failed"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 1
+    assert len(killed) == 1
+    assert not execed
+    assert "failed to start Antigravity one-shot session" in capsys.readouterr().err
+
+
+def test_given_once_agy_launch_when_ownership_or_mux_fails_before_identity_then_cleans_up_placeholder(
+    tmp_path, monkeypatch, capsys
+):
+    import subprocess as _subprocess
+
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    # 1. set-option @ai_cli_session_generation fails -> tries provisional fenced kill, then unmarked placeholder kill.
+    provisional_kills: list[object] = []
+    placeholder_kills: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), False)[1],
+    )
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_unmarked_tmux_placeholder",
+        lambda sid, name, **_kw: (placeholder_kills.append((sid, name)), True)[1],
+    )
+
+    def fake_run_gen_fail(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$21\n", "stderr": ""})()
+        if "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_gen_fail)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+    with pytest.raises(SystemExit) as exc1:
+        main.cli()
+    assert exc1.value.code == 1
+    assert len(provisional_kills) == 1
+    assert placeholder_kills == [("$21", "g-myproject-1")]
+    assert not execed
+    assert "failed to establish ownership" in capsys.readouterr().err
+
+    # 2. capture_tmux_session_identity returns None after generation stamp -> provisional fenced kill succeeds.
+    provisional_kills.clear()
+    placeholder_kills.clear()
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), True)[1],
+    )
+
+    def fake_run_ok_gen(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$22\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_ok_gen)
+    with pytest.raises(SystemExit) as exc2:
+        main.cli()
+    assert exc2.value.code == 1
+    assert len(provisional_kills) == 1
+    assert placeholder_kills == []
+    assert not execed
+
+    # 3. Unexpected mux TimeoutExpired during set-option -> cleans up placeholder and exits 1 cleanly.
+    provisional_kills.clear()
+    placeholder_kills.clear()
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), False)[1],
+    )
+
+    def fake_run_timeout(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$23\n", "stderr": ""})()
+        if "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            raise _subprocess.TimeoutExpired(cmd, 10.0)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_timeout)
+    with pytest.raises(SystemExit) as exc3:
+        main.cli()
+    assert exc3.value.code == 1
+    assert placeholder_kills == [("$23", "g-myproject-1")]
+    assert not execed
+    assert "failed to initialize one-shot tmux session" in capsys.readouterr().err
+
+    # 4. format-not-expanded on new-session -> kills newly created =g-myproject-1 by exact name.
+    killed_by_name: list[list[str]] = []
+
+    def fake_run_unexpanded(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "#session_id\n", "stderr": ""})()
+        if "kill-session" in cmd:
+            killed_by_name.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_unexpanded)
+    with pytest.raises(SystemExit) as exc4:
+        main.cli()
+    assert exc4.value.code == 1
+    assert killed_by_name == [["tmux", "kill-session", "-t", "=g-myproject-1"]]
+    assert not execed
+
+
+def test_given_once_agy_launch_when_agent_exits_before_attach_then_handles_fast_exit_cleanly(
+    tmp_path, monkeypatch, capsys
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    def fake_run(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$30\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
+
+    # First capture (during setup) succeeds; second capture (right before attach) returns None (session already exited).
+    def _install_disappearing_capture():
+        calls = {"n": 0}
+
+        def capture(sid, expected_generation=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return main._tmux_ownership.TmuxSessionIdentity(sid, "g-myproject-1", expected_generation or "gen-test")
+            return None
+
+        monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", capture)
+
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+
+    # 1. Recorded clean exit (status 0) -> returns cleanly without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: 0)
+    with pytest.raises(SystemExit) as exc_clean:
+        main.cli()
+    assert exc_clean.value.code == 0
+    assert not execed
+    out_clean = capsys.readouterr()
+    assert "finished before attach" in (out_clean.out + out_clean.err)
+
+    # 2. Recorded failure exit (status 76) -> exits 76 without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: 76)
+    with pytest.raises(SystemExit) as exc_fail:
+        main.cli()
+    assert exc_fail.value.code == 76
+    assert not execed
+    assert "exited with status 76 before attach" in capsys.readouterr().err
+
+    # 3. Unrecorded exit (None) -> fail-closed exit 1 without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: None)
+    with pytest.raises(SystemExit) as exc_unknown:
+        main.cli()
+    assert exc_unknown.value.code == 1
+    assert not execed
+    assert "exited before attach" in capsys.readouterr().err
+
+
+def test_given_registry_records_when_reading_single_run_exit_status_then_ignores_stale_runs(monkeypatch):
+    monkeypatch.setattr(
+        main._session_registry,
+        "load_registry",
+        lambda: {
+            "sessions": [
+                {
+                    "kind": "local",
+                    "name": "g-myproject-stale",
+                    "run_state": "exited",
+                    "launched_at": "2026-11-24T10:00:00Z",
+                    "exit": {
+                        "cause": "manual_exit",
+                        "at": "2026-11-24T09:00:00Z",
+                        "evidence": {"source": "single-run", "status": 0},
+                    },
+                },
+                {
+                    "kind": "local",
+                    "name": "g-myproject-fresh",
+                    "run_state": "exited",
+                    "launched_at": "2026-11-24T10:00:00Z",
+                    "supervisor_exit": {
+                        "cause": "manual_exit",
+                        "at": "2026-11-24T10:00:01Z",
+                        "evidence": {"source": "single-run", "status": 76},
+                    },
+                },
+            ]
+        },
+    )
+    assert main._recorded_single_run_exit_status("g-myproject-stale") is None
+    assert main._recorded_single_run_exit_status("g-myproject-fresh") == 76
 
 
 def test_given_non_g_engine_when_session_script_generated_then_omits_agy_signin_supervisor_logic(tmp_path):

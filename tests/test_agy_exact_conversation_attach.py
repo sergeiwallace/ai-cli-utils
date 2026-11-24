@@ -427,3 +427,59 @@ def test_given_tmux_server_restart_recycling_session_id_when_fenced_marker_or_re
     while time.monotonic() < deadline and not (out_file.is_file() and out_file.stat().st_size > 0):
         time.sleep(0.05)
     assert out_file.read_text(encoding="utf-8") == payload
+
+
+def test_given_remain_on_exit_server_when_once_agy_setup_fails_then_placeholder_session_is_cleaned_up(
+    tmux_socket, monkeypatch
+):
+    import subprocess
+
+    tmux_cmd = ("tmux", "-S", tmux_socket)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: tmux_cmd)
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: [*tmux_cmd, *args])
+
+    # Keep one unrelated session alive and enable global remain-on-exit on the real tmux server.
+    subprocess.run(
+        [*tmux_cmd, "new-session", "-d", "-s", "unrelated-slot", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run([*tmux_cmd, "set-option", "-g", "remain-on-exit", "on"], check=True)
+
+    def _live_sessions() -> set[str]:
+        res = subprocess.run(
+            [*tmux_cmd, "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return {line.strip() for line in res.stdout.splitlines() if line.strip()}
+
+    # 1. capture_tmux_session_identity returns None after generation stamp -> provisional fenced kill removes placeholder.
+    real_capture = main._tmux_ownership.capture_tmux_session_identity
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", lambda *_a, **_kw: None)
+    with pytest.raises(RuntimeError, match="failed to establish ownership"):
+        main._create_marked_agy_once_session("g-myproject-1", [], "/bin/sh", "sleep 60")
+    assert _live_sessions() == {"unrelated-slot"}
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", real_capture)
+
+    # 2. set-option @ai_cli_session_generation fails -> unmarked placeholder kill removes placeholder under remain-on-exit.
+    real_run = main.subprocess.run
+
+    def fail_gen_set(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, "", "simulated set-option failure")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(main.subprocess, "run", fail_gen_set)
+    with pytest.raises(RuntimeError, match="failed to establish ownership"):
+        main._create_marked_agy_once_session("g-myproject-2", [], "/bin/sh", "sleep 60")
+    monkeypatch.setattr(main.subprocess, "run", real_run)
+    assert _live_sessions() == {"unrelated-slot"}
+
+    # 3. respawn_owned_tmux_pane fails -> owned session kill removes placeholder under remain-on-exit.
+    real_respawn = main._tmux_ownership.respawn_owned_tmux_pane
+    monkeypatch.setattr(main._tmux_ownership, "respawn_owned_tmux_pane", lambda *_a, **_kw: False)
+    with pytest.raises(RuntimeError, match="failed to start Antigravity one-shot session"):
+        main._create_marked_agy_once_session("g-myproject-3", [], "/bin/sh", "sleep 60")
+    monkeypatch.setattr(main._tmux_ownership, "respawn_owned_tmux_pane", real_respawn)
+    assert _live_sessions() == {"unrelated-slot"}
