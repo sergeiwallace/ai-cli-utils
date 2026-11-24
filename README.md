@@ -1406,8 +1406,11 @@ immediately afterwards. Failures are never quiet — the captured `git`/`uv`
 transcript is printed in full on stderr, and the stamp is cleared so the next
 launch retries rather than remembering a failed install as done.
 
-Two escape hatches:
+Three escape hatches:
 
+- `AI_CLI_SKIP_AUTO_UPDATE=1` — skip launch-time auto-update checks, client
+  checkout syncing, and background `uv tool upgrade` (useful for isolated
+  canaries, review checkouts, and tests).
 - `AI_CLI_UPDATE_VERBOSE=1` — show the whole transcript at launch instead of the
   one-line summary.
 - `ai update --force` — reinstall on demand, bypassing uv's cache and
