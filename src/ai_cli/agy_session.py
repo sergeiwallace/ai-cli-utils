@@ -34,10 +34,10 @@ from pathlib import Path
 
 import portalocker
 
-from . import output
+from . import output, tmux_binary
 from .output import Untagged
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
-from .session_clients import PRESENT, Antigravity, Gemini
+from .session_clients import PRESENT, Antigravity, Gemini, Probe
 
 SCHEMA_VERSION = 1
 SIGN_IN_FILE = Path(".gemini") / "antigravity-cli" / "antigravity-oauth-token"
@@ -727,6 +727,8 @@ def _read(path: Path) -> dict:
         raise IdentityError("Antigravity saved resumable identity is malformed")
     if doc["phase"] == "unconfirmed" and saved is not None:
         raise IdentityError("Antigravity unconfirmed state cannot hold a resumable fallback")
+    if "adopted_from" in doc and (doc["phase"] != "confirmed" or not _is_abs_path(doc["adopted_from"])):
+        raise IdentityError("Antigravity adoption workspace is malformed")
     _recorded_writer(launch)
     return doc
 
@@ -794,6 +796,24 @@ def _existing_agy_records(cwd: Path, home: Path | None = None) -> list:
         return []
 
 
+def _probe_slot_conversation(client: Antigravity, cwd: Path, conversation_id: str, adopted_from: Path | None) -> Probe:
+    proof = client.probe_conversation(cwd, conversation_id)
+    if proof.state != PRESENT and adopted_from is not None and adopted_from != cwd:
+        return client.probe_conversation(adopted_from, conversation_id)
+    return proof
+
+
+def bound_slot_conversation(path: Path, cwd: Path, slot: str, client: Antigravity | None = None) -> str | None:
+    if not path.is_file():
+        return None
+    doc = _read(path)
+    if doc["slot"] != slot or Path(doc["cwd"]).resolve() != cwd.resolve() or doc["phase"] != "confirmed":
+        return None
+    source = Path(doc["adopted_from"]) if "adopted_from" in doc else None
+    proof = _probe_slot_conversation(client or Antigravity(), cwd, doc["conversation_id"], source)
+    return doc["conversation_id"] if proof.state == PRESENT else None
+
+
 def prepare(
     path: Path,
     cwd: Path,
@@ -804,6 +824,7 @@ def prepare(
     client_version: str,
     start_fresh: str | None = None,
     adopt_conversation: tuple[str, str] | None = None,
+    adopted_from: Path | None = None,
     home: Path | None = None,
 ) -> tuple[str, str, str]:
     """Reserve this process's launch while preserving confirmed native identity.
@@ -821,9 +842,12 @@ def prepare(
             raise IdentityError("adopt-conversation id must be a valid UUID")
     if start_fresh is not None and adopt_conversation is not None:
         raise IdentityError("cannot combine --start-fresh and --adopt-conversation")
+    if adopted_from is not None and adopt_conversation is None:
+        raise IdentityError("an adoption workspace requires an explicit conversation ID")
 
     path = path.resolve()
     resolved_cwd = cwd.resolve()
+    source = adopted_from.resolve() if adopted_from is not None else None
     if "\n" in str(path) or "\r" in str(path):
         raise IdentityError("Antigravity slot path cannot be represented in the launcher reply")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -845,7 +869,8 @@ def prepare(
                     raise IdentityError(
                         "recovery approval requires a missing or unconfirmed slot record; existing identity is preserved"
                     )
-                probe = agy_client.probe_conversation(resolved_cwd, doc["conversation_id"])
+                recorded_source = Path(doc["adopted_from"]) if "adopted_from" in doc else None
+                probe = _probe_slot_conversation(agy_client, resolved_cwd, doc["conversation_id"], recorded_source)
                 if probe.state == PRESENT:
                     if doc["result"] == "live-only":
                         doc["result"] = "confirmed"
@@ -870,7 +895,7 @@ def prepare(
                 if adopt_conversation is not None:
                     adopt_id = adopt_conversation[0]
                     _ensure_conversation_unowned(path, adopt_id)
-                    proof = agy_client.probe_conversation(resolved_cwd, adopt_id)
+                    proof = agy_client.probe_conversation(source or resolved_cwd, adopt_id)
                     if proof.state != PRESENT:
                         raise IdentityError(proof.reason)
                     doc.update(
@@ -896,7 +921,7 @@ def prepare(
             if adopt_conversation is not None:
                 adopt_id = adopt_conversation[0]
                 _ensure_conversation_unowned(path, adopt_id)
-                proof = agy_client.probe_conversation(resolved_cwd, adopt_id)
+                proof = agy_client.probe_conversation(source or resolved_cwd, adopt_id)
                 if proof.state != PRESENT:
                     raise IdentityError(proof.reason)
                 doc = {
@@ -943,6 +968,8 @@ def prepare(
                     "execution_mode": "interactive",
                     "route": route,
                 }
+        if source is not None and source != resolved_cwd:
+            doc["adopted_from"] = str(source)
         doc["in_flight"] = {
             "token": secrets.token_hex(16),
             "writer": _writer(),
@@ -1081,7 +1108,7 @@ def launch_command(
     slot: str,
     ai_name: str,
     *,
-    fresh: bool,
+    fresh: bool | str,
     route: str,
     sandbox: bool = False,
     extra_args: Sequence[str] | None = None,
@@ -1096,7 +1123,7 @@ def launch_command(
         str(cwd),
         slot,
         ai_name,
-        "true" if fresh else "false",
+        fresh if isinstance(fresh, str) else "true" if fresh else "false",
         route,
         "--command",
         command,
@@ -1107,6 +1134,19 @@ def launch_command(
         argv.append("--")
         argv.extend(extra_args)
     return argv
+
+
+def tmux_launch_line(slot: str, cwd: Path, pane_argv: Sequence[str]) -> str:
+    target = f"={slot}"
+    return " && ".join(
+        (
+            shlex.join(
+                tmux_binary.argv("new-session", "-d", "-s", slot, "-c", str(cwd), f"exec {shlex.join(pane_argv)}")
+            ),
+            shlex.join(tmux_binary.argv("set-option", "-t", target, "@ai_cli_client", "agy")),
+            shlex.join(tmux_binary.argv("attach-session", "-t", target)),
+        )
+    )
 
 
 def _run_print_child(exec_argv: list[str], stdin_payload: str | None) -> int:

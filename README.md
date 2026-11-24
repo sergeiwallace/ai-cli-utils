@@ -190,7 +190,7 @@ after changing a command's help, never edit it by hand.
 | Command | Summary |
 |---|---|
 | [`ai add-name`](docs/reference/cli.md#ai-add-name) | Session names: add a name to the name database without a prompt |
-| [`ai adopt-session`](docs/reference/cli.md#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai adopt-session`](docs/reference/cli.md#ai-adopt-session) | Register a Claude Code or Antigravity session started outside `ai` for managed resume. |
 | [`ai attach`](docs/reference/cli.md#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](docs/reference/cli.md#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](docs/reference/cli.md#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |

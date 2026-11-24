@@ -931,7 +931,9 @@ def words_cache_dir() -> Path:
     return _config.get_xdg_cache_home() / "session-names"
 
 
-def common_words(policy: dict, *, fetch: Callable[[str], bytes] | None = None) -> frozenset[str]:
+def common_words(
+    policy: dict, *, fetch: Callable[[str], bytes] | None = None, read_only: bool = False
+) -> frozenset[str]:
     """The lowercase entries of the policy's pinned dictionary, downloaded once and cached by digest.
 
     The cached archive is checked against the pinned digest on every read, so a
@@ -949,8 +951,9 @@ def common_words(policy: dict, *, fetch: Callable[[str], bytes] | None = None) -
             name_list.verify(data, digest, confusable["words_url"])
         except name_list.NameListError as exc:
             raise RegistryError(f"cannot check common words: {exc}") from exc
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
+        if not read_only:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(data)
     member = name_list.read_member(data, confusable["words_member"], confusable["words_url"])
     words = frozenset(name_list.parse_common_words(member.decode("utf-8")))
     _WORDS_CACHE[digest] = words

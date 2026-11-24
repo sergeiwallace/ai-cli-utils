@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
@@ -3807,6 +3807,7 @@ def _print_launch_plan(
     worktree_enabled: bool,
     sandbox: bool,
     extra_args: "list[str]",
+    agy_command: str = "agy",
 ) -> None:
     """Report what a launch would do, having done none of it.
 
@@ -3842,6 +3843,42 @@ def _print_launch_plan(
     if extra_args:
         lines.append(f"  engine args {' '.join(extra_args)}")
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
+    if engine == "g" and not bare:
+        with _config.inspection_only():
+            record = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+        cwd = Path(worktree).resolve() if worktree else Path.cwd()
+        try:
+            conversation = _agy_session.bound_slot_conversation(record, cwd, session_id)
+        except (OSError, ValueError):
+            conversation = None
+        if conversation is not None:
+            _print_agy_tmux_launch(
+                record, cwd, session_id, ai_name, agy_command, sandbox=sandbox, extra_args=extra_args
+            )
+
+
+def _print_agy_tmux_launch(
+    record: Path,
+    cwd: Path,
+    target: str,
+    title: str,
+    command: str,
+    *,
+    sandbox: bool = False,
+    extra_args: Sequence[str] = (),
+) -> None:
+    argv = _agy_session.launch_command(
+        command,
+        record,
+        cwd,
+        target,
+        title,
+        fresh=False,
+        route="paired-host-tmux" if target.startswith("g-r-") else "local-tmux",
+        sandbox=sandbox,
+        extra_args=extra_args,
+    )
+    _out.raw(Untagged.SHELL_COMMAND, _agy_session.tmux_launch_line(target, cwd, argv))
 
 
 def _remote_agent_diagnostic_setup(path: str) -> str:
@@ -6238,6 +6275,7 @@ def _do_session_launch(
             worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
             sandbox=use_sandbox,
             extra_args=extra_args,
+            agy_command=agy_cmd,
         )
         return
 
@@ -9123,10 +9161,58 @@ def _adoption_title(repo_root: Path, name: str, human: str):
     return title, reserve
 
 
+def _adopt_agy(name, repo, source, conversation, pid, tmux_session, paired_host, stopped, dry_run, yes):
+    from . import agy_adopt
+    from .session_adopt import AdoptionError
+
+    if not name or sum(value is not None for value in (conversation, pid, tmux_session)) != 1:
+        raise click.UsageError("Antigravity adoption requires NAME and one of --conversation, --pid or --tmux-session")
+    try:
+        with _config.inspection_only():
+            repo_root = repo or _session.detect_repo_root()
+            if repo_root is None:
+                raise AdoptionError("specify the owning Git repository with --repo")
+            adoption = agy_adopt.plan(
+                Path(repo_root).resolve(),
+                name,
+                conversation=conversation,
+                source=source,
+                pid=pid,
+                tmux=tmux_session,
+                paired_host=paired_host,
+                stopped=stopped,
+            )
+            agy_adopt.register_name(adoption, dry_run=True)
+            command = _config.load_config(read_only=True).get("agy", {}).get("command") or "agy"
+        if dry_run or not yes:
+            action = "create" if adoption.create_worktree else "reuse"
+            _out.emit(Tag.ADOPT, "adopt", f"{adoption.conversation} in {adoption.workspace}")
+            _out.emit(Tag.ADOPT, "adopt", f"  {action} worktree {adoption.worktree} and register {adoption.title}")
+            _out.emit(Tag.ADOPT, "adopt", f"  bind {adoption.target} in {adoption.record}")
+        if not dry_run:
+            if not yes and not adoption.already_adopted and not _out.confirm(Tag.ADOPT, "adopt", f"Adopt {name}?"):
+                raise click.ClickException("Adoption canceled.")
+            agy_adopt.apply(adoption, stopped=stopped, command=command)
+            status = "Already adopted" if adoption.already_adopted else "Adopted"
+            _out.emit(Tag.ADOPT, "adopt", f"{status} {name} ({adoption.conversation})")
+        _print_agy_tmux_launch(
+            adoption.record,
+            adoption.worktree,
+            adoption.target,
+            adoption.title,
+            command,
+            extra_args=("--dangerously-skip-permissions",),
+        )
+    except (AdoptionError, OSError, ValueError, RuntimeError, portalocker.exceptions.LockException) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @_cli_group.command(
     "adopt-session",
     help=(
-        "Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.\n\n"
+        "Register a Claude Code or Antigravity session started outside `ai` for managed resume.\n\n"
+        "Antigravity adoption is explicit and owner-approved. Select `-e agy` with a conversation UUID, "
+        "an agy PID or a tmux session name, and stop the conversation before applying the plan.\n\n"
         "\b\nTo rename a session already in an `ai` slot, use `ai migrate-session`."
     ),
 )
@@ -9168,6 +9254,12 @@ def _adoption_title(repo_root: Path, name: str, human: str):
 @click.option(
     "-m", "--name", "human_name", default="", help="Adopt into a slot named with this first name, reserved first"
 )
+@click.option("-e", "--engine", type=click.Choice(["claude", "agy"]), default="claude", help="Session client")
+@click.option("-u", "--conversation", help="Exact Antigravity conversation UUID")
+@click.option("-P", "--pid", type=click.IntRange(min=1), help="Discover the Antigravity conversation from an agy PID")
+@click.option("-M", "--tmux-session", help="Discover the Antigravity conversation from a tmux session")
+@click.option("-R", "--paired-host", is_flag=True, help="Adopt on the paired host for a g-r- tmux slot")
+@click.option("-S", "--stopped", is_flag=True, help="Confirm Antigravity has stopped when liveness cannot be checked")
 def cmd_adopt_session(
     name,
     source,
@@ -9181,6 +9273,12 @@ def cmd_adopt_session(
     dry_run,
     yes,
     human_name,
+    engine,
+    conversation,
+    pid,
+    tmux_session,
+    paired_host,
+    stopped,
 ):
     """Adopt a session's transcript, tasks, memory and worktree in one pass.
 
@@ -9194,6 +9292,16 @@ def cmd_adopt_session(
     """
     from .cc_migrate import find_transcript
     from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
+
+    if engine == "agy":
+        if adopt_every or transcript is not None or on_collision != "gate" or new_title or new_index is not None:
+            raise click.UsageError("Claude Code transcript, bulk and retitle options require -e claude")
+        if task_namespace or human_name:
+            raise click.UsageError("Claude Code task namespace and retitle options require -e claude")
+        _adopt_agy(name, repo, source, conversation, pid, tmux_session, paired_host, stopped, dry_run, yes)
+        return
+    if conversation is not None or pid is not None or tmux_session is not None or paired_host or stopped:
+        raise click.UsageError("Antigravity adoption options require -e agy")
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
 
