@@ -25,6 +25,7 @@ from test_agy_session import CONV_1, SLOT, _seed_agy_home
 from test_codex_control import slot  # noqa: F401
 
 from ai_cli import agy_session
+from ai_cli import config as ai_config
 
 _REGISTER_TOOL = """\
 import json, os, sys
@@ -46,7 +47,7 @@ def _configure(tmp_path: Path, command: list[str] | None, mode: str = "ok") -> P
     tool = tmp_path / "register_tool.py"
     tool.write_text(_REGISTER_TOOL, encoding="utf-8")
     log = tmp_path / "register-calls.jsonl"
-    config = Path(os.environ["XDG_CONFIG_HOME"]) / "ai-cli-utils" / "config.toml"
+    config = ai_config._config_path()
     config.parent.mkdir(parents=True, exist_ok=True)
     if command is None:
         config.write_text("", encoding="utf-8")
