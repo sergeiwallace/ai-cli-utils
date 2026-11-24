@@ -18,9 +18,11 @@ _FENCE_FORMAT = "#{session_id}|#{@ai_cli_session_generation}"
 _FENCE_MISMATCH = "__ai_cli_ownership_mismatch__"
 _PANE_PID_FORMAT = "#{pane_pid}"
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
+_SAFE_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _OPTION_NAME_RE = re.compile(r"^@?[A-Za-z0-9_][A-Za-z0-9_-]*$")
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 1.0
+_TMUX_COMMAND_TIMEOUT_SECONDS = 10.0
 
 
 def classify_new_session_output(stdout: str | None) -> tuple[str, str]:
@@ -71,8 +73,9 @@ def capture_tmux_session_identity(
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
@@ -126,8 +129,9 @@ def _run_owned_tmux_command(
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TMUX_COMMAND_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return False, False
     output = result.stdout if isinstance(result.stdout, str) else ""
     if _FENCE_MISMATCH in output:
@@ -214,6 +218,50 @@ def kill_owned_tmux_session(
     if killed and pane_processes:
         _terminate_processes(pane_processes, process_timeout)
     return killed
+
+
+def kill_unmarked_tmux_placeholder(
+    session_id: str,
+    session_name: str,
+    *,
+    tmux_command: Sequence[str] | None = None,
+    timeout: float | None = _TMUX_COMMAND_TIMEOUT_SECONDS,
+) -> bool:
+    """Atomically kill a freshly created placeholder session that was never stamped or marked.
+
+    Only fires when ``session_id`` still belongs to ``session_name`` and both
+    ``@ai_cli_session_generation`` and ``@ai_cli_client`` are empty, preventing a
+    recycled ``$id`` belonging to another session from being killed.
+    """
+    if not _SESSION_ID_RE.fullmatch(session_id) or not _SAFE_SESSION_NAME_RE.fullmatch(session_name):
+        return False
+    expected = f"{session_id}|{session_name}||"
+    predicate = (
+        f"#{{==:#{{session_id}}|#{{session_name}}|#{{@ai_cli_session_generation}}|#{{@ai_cli_client}},{expected}}}"
+    )
+    try:
+        result = subprocess.run(
+            [
+                *tmux_binary.command(tmux_command),
+                "if-shell",
+                "-F",
+                "-t",
+                session_id,
+                predicate,
+                f"kill-session -t {_tmux_quote(session_id)}",
+                f"display-message -p {_FENCE_MISMATCH}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = result.stdout if isinstance(result.stdout, str) else ""
+    if _FENCE_MISMATCH in output:
+        return False
+    return result.returncode == 0
 
 
 def _capture_pane_process_tree(target: str, tmux_command: Sequence[str] | None) -> list[psutil.Process]:

@@ -3546,33 +3546,105 @@ def _is_agy_replay_command(command: list[str]) -> bool:
     return _agy_session.is_agy_replay_command(command)
 
 
+_TMUX_ONCE_SETUP_TIMEOUT_SECONDS = 10.0
+
+
+def _cleanup_failed_agy_once_session(
+    session_name: str,
+    *,
+    created_session_id: str | None,
+    generation: str | None,
+    identity: _tmux_ownership.TmuxSessionIdentity | None,
+) -> None:
+    """Tear down an unstarted one-shot placeholder session without touching unrelated sessions."""
+    if identity is not None:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+        return
+    if created_session_id is not None:
+        if generation is not None:
+            provisional = _tmux_ownership.TmuxSessionIdentity(created_session_id, session_name, generation)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                if _tmux_ownership.kill_owned_tmux_session(provisional):
+                    return
+        _tmux_ownership.kill_unmarked_tmux_placeholder(
+            created_session_id,
+            session_name,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        return
+    # new-session -d -s <session_name> just returned 0 (so the name did not exist before),
+    # but tmux returned an unexpanded or unusable session id.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            tmux_binary.argv("kill-session", "-t", f"={session_name}"),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+
+
+def _recorded_single_run_exit_status(session_name: str) -> int | None:
+    """Return the exit status recorded by ``sessions _run`` for this launch of ``session_name``."""
+    try:
+        doc = _session_registry.load_registry()
+    except Exception:
+        return None
+    for record in doc.get("sessions", ()):
+        if record.get("kind") != "local" or record.get("name") != session_name:
+            continue
+        if record.get("run_state") != "exited":
+            continue
+        exit_info = record.get("supervisor_exit") or record.get("exit")
+        if not isinstance(exit_info, dict):
+            continue
+        launched_at = record.get("launched_at")
+        exit_at = exit_info.get("at")
+        if isinstance(launched_at, str) and launched_at and (not isinstance(exit_at, str) or exit_at < launched_at):
+            continue
+        evidence = exit_info.get("evidence")
+        if isinstance(evidence, dict) and evidence.get("source") == "single-run":
+            status = evidence.get("status")
+            if isinstance(status, int) and not isinstance(status, bool):
+                return status
+    return None
+
+
+def _handle_once_session_exited_before_attach(
+    session_id: str,
+    launch_log_path: str | None,
+    reporter: LaunchReporter,
+) -> None:
+    """Report cleanly when a fast-exiting one-shot tmux session ends before attach-session."""
+    status = _recorded_single_run_exit_status(session_id)
+    log_suffix = f" (see {launch_log_path})" if launch_log_path else ""
+    if status == 0:
+        reporter.phase("session").outcome(f"one-shot session '{session_id}' finished before attach{log_suffix}")
+        return
+    if status is not None:
+        reporter.error(
+            "session",
+            f"one-shot session '{session_id}' exited with status {status} before attach{log_suffix}",
+        )
+        exit_code = status if status > 0 else (128 - status if status < 0 else 1)
+        sys.exit(exit_code)
+    reporter.error(
+        "session",
+        f"one-shot session '{session_id}' exited before attach{log_suffix}",
+    )
+    sys.exit(1)
+
+
 def _create_marked_agy_once_session(
     session_id: str,
     tmux_env_flags: list[str],
     session_shell: str,
     pane_command: str,
+    *,
+    pre_respawn: Callable[[_tmux_ownership.TmuxSessionIdentity], None] | None = None,
 ) -> _tmux_ownership.TmuxSessionIdentity:
     """Create a detached one-shot ``ai g`` tmux session with ownership-fenced ``@ai_cli_client agy`` before startup."""
-    result = subprocess.run(
-        tmux_binary.argv(
-            "new-session",
-            "-d",
-            "-P",
-            "-F",
-            "#{session_id}",
-            "-s",
-            session_id,
-            *tmux_env_flags,
-            "--",
-            session_shell,
-            "-c",
-            "sleep 60",
-        ),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    try:
         result = subprocess.run(
             tmux_binary.argv(
                 "new-session",
@@ -3583,6 +3655,7 @@ def _create_marked_agy_once_session(
                 "-s",
                 session_id,
                 *tmux_env_flags,
+                "--",
                 session_shell,
                 "-c",
                 "sleep 60",
@@ -3590,32 +3663,75 @@ def _create_marked_agy_once_session(
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
         )
+        if result.returncode != 0:
+            result = subprocess.run(
+                tmux_binary.argv(
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{session_id}",
+                    "-s",
+                    session_id,
+                    *tmux_env_flags,
+                    session_shell,
+                    "-c",
+                    "sleep 60",
+                ),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not create one-shot tmux session '{session_id}': {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"could not create one-shot tmux session '{session_id}'")
-    id_status, created_session_id = _tmux_ownership.classify_new_session_output(
-        result.stdout if isinstance(result.stdout, str) else ""
-    )
-    if id_status != "ok":
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    generation = secrets.token_urlsafe(32)
-    gen_marked = subprocess.run(
-        tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
-        capture_output=True,
-        check=False,
-    )
-    if gen_marked.returncode != 0:
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
-    if identity is None:
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    if not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
-        _tmux_ownership.kill_owned_tmux_session(identity)
-        raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-    if not _tmux_ownership.respawn_owned_tmux_pane(identity, (session_shell, "-c", pane_command)):
-        _tmux_ownership.kill_owned_tmux_session(identity)
-        raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
-    return identity
+
+    created_session_id: str | None = None
+    generation: str | None = None
+    identity: _tmux_ownership.TmuxSessionIdentity | None = None
+    started = False
+    try:
+        id_status, candidate_id = _tmux_ownership.classify_new_session_output(
+            result.stdout if isinstance(result.stdout, str) else ""
+        )
+        if id_status != "ok":
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        created_session_id = candidate_id
+        generation = secrets.token_urlsafe(32)
+        gen_marked = subprocess.run(
+            tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        if gen_marked.returncode != 0:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
+        if identity is None:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        if not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+        if pre_respawn is not None:
+            pre_respawn(identity)
+        if not _tmux_ownership.respawn_owned_tmux_pane(identity, (session_shell, "-c", pane_command)):
+            raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
+        started = True
+        return identity
+    except BaseException as exc:
+        if not started:
+            _cleanup_failed_agy_once_session(
+                session_id,
+                created_session_id=created_session_id,
+                generation=generation,
+                identity=identity,
+            )
+        if isinstance(exc, (OSError, subprocess.SubprocessError)):
+            raise RuntimeError(f"failed to initialize one-shot tmux session '{session_id}': {exc}") from exc
+        raise
 
 
 def _do_attach(session_name: str) -> NoReturn:
@@ -6757,9 +6873,19 @@ def _do_session_launch(
         if engine == "g":
             if detached and _session_registry._local_session_alive(session_id) is not False:
                 raise RuntimeError("session already exists or tmux could not be checked")
+            loop = _session_wake_watch_loop(config, ai_name) if not is_remote and not detached else None
+            pre_respawn = (
+                (lambda ident: _start_session_wake_watcher(config, ident.session_id, ai_name, loop=loop))
+                if loop is not None
+                else None
+            )
             try:
                 once_identity = _create_marked_agy_once_session(
-                    session_id, _tmux_env_flags, _session_shell, once_pane_cmd
+                    session_id,
+                    _tmux_env_flags,
+                    _session_shell,
+                    once_pane_cmd,
+                    pre_respawn=pre_respawn,
                 )
             except RuntimeError as exc:
                 if detached:
@@ -6768,11 +6894,16 @@ def _do_session_launch(
                 sys.exit(1)
             if detached:
                 return
-            loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-            if loop is not None:
-                _start_session_wake_watcher(config, once_identity.session_id, ai_name, loop=loop)
             if not attach:
                 _report_detached_launch(session_id, reporter)
+                return
+            if (
+                _tmux_ownership.capture_tmux_session_identity(
+                    once_identity.session_id, expected_generation=once_identity.generation
+                )
+                is None
+            ):
+                _handle_once_session_exited_before_attach(session_id, launch_log_path, reporter)
                 return
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(tmux_binary.argv("attach-session", "-t", once_identity.session_id))
