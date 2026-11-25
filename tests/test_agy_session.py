@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -2708,6 +2709,61 @@ def _write_agy_slot_record(state_dir: Path, slot: str, cwd: Path) -> Path:
         encoding="utf-8",
     )
     return record_path
+
+
+@pytest.mark.skipif(os.name != "posix", reason="The live control bridge requires POSIX")
+@pytest.mark.parametrize("once_args", [[], ["-o"]], ids=["supervised", "one-shot"])
+def test_given_confirmed_agy_slot_when_tmux_launches_then_ready_follows_registration(
+    tmp_path, monkeypatch, capsys, once_args
+):
+    state_dir = _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    _write_agy_slot_record(state_dir, "g-myproject-1", Path.cwd())
+    load_config = main._config.load_config
+    monkeypatch.setattr(
+        main._config,
+        "load_config",
+        lambda *a, **kw: {**load_config(*a, **kw), "session_register": {"command": ["register-session", "{client}"]}},
+    )
+    monkeypatch.setattr(agy_session, "bound_slot_conversation", lambda *_: CONV_1)
+    monkeypatch.setattr(main, "_start_session_wake_watcher", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._iterm2, "_configure_tmux_for_iterm2", lambda *_: None)
+    monkeypatch.setattr(main._iterm2, "_rename_tmux_window", lambda *_: None)
+    identity = main._tmux_ownership.TmuxSessionIdentity("$11", "g-myproject-1", "test-generation")
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", lambda *_a, **_kw: identity)
+    readiness = ""
+    observed = []
+
+    def fake_tmux(argv, **_kwargs):
+        nonlocal readiness
+        code, stdout = 0, ""
+        if "-V" in argv:
+            stdout = "tmux 3.4\n"
+        elif "has-session" in argv:
+            code = 1
+        elif "new-session" in argv:
+            stdout = "$11\n"
+            prefix = agy_session.RESUME_READY_ENV + "="
+            readiness = next((arg.removeprefix(prefix) for arg in argv if arg.startswith(prefix)), "")
+        elif "list-panes" in argv and agy_session.RESUME_READY_OPTION in argv[-1]:
+            assert "handoff: ready" not in capsys.readouterr().err
+            assert readiness
+            observed.append("registration completed")
+            stdout = f"{identity.generation}\t0\t{readiness}\n"
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    def attach(_argv):
+        observed.append("attached")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main.subprocess, "run", fake_tmux)
+    monkeypatch.setattr(main, "_exec_tmux", attach)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", *once_args, "1", "-W"])
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+
+    assert exc.value.code == 0
+    assert observed == ["registration completed", "attached"]
+    assert "handoff: ready" in capsys.readouterr().err
 
 
 def test_given_stopped_no_worktree_agy_slot_when_resuming_without_dash_W_then_reuses_saved_repo_root_without_creating_worktree(

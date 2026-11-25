@@ -4350,6 +4350,33 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
     reporter.phase("session").outcome(f"{session_name} running detached")
 
 
+def _await_agy_resume_registration(
+    identity: _tmux_ownership.TmuxSessionIdentity, readiness: str, timeout: float
+) -> None:
+    """Wait for the new pane to finish its best-effort registration before reporting readiness."""
+    deadline = time.monotonic() + timeout
+    pane_format = "#{@ai_cli_session_generation}\t#{pane_dead}\t" + f"#{{{_agy_session.RESUME_READY_OPTION}}}"
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            result = subprocess.run(
+                tmux_binary.argv("list-panes", "-s", "-t", identity.session_id, "-F", pane_format),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=min(remaining, 5),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        live_prefix = f"{identity.generation}\t0\t"
+        live_panes = [row for row in result.stdout.splitlines() if row.startswith(live_prefix)]
+        if result.returncode != 0 or not live_panes:
+            break
+        if live_prefix + readiness in live_panes:
+            return
+        time.sleep(min(remaining, 0.1))
+    raise RuntimeError(f"Antigravity resume in '{identity.session_name}' did not report readiness")
+
+
 #: The launch override for a partial migration. Per invocation only: never read from
 #: config or the environment, and never written into a boot recipe.
 ALLOW_PARTIAL_MIGRATION_OPTS = ("-P", "--allow-partial-migration")
@@ -7050,6 +7077,19 @@ def _do_session_launch(
     if agy_sign_in_token:
         _tmux_env_flags += ["-e", f"{_agy_session.SIGN_IN_VERIFIED_ENV}={agy_sign_in_token}"]
 
+    agy_resume_ready = ""
+    agy_resume_timeout = 0.0
+    if engine == "g" and os.name == "posix" and not agy_print_mode:
+        record = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+        try:
+            registration = _config.read_session_register_config(config)
+            if registration and _agy_session.bound_slot_conversation(record, worktree_path or Path.cwd(), session_id):
+                agy_resume_ready = secrets.token_urlsafe(16)
+                agy_resume_timeout = registration["timeout_seconds"] + 30
+        except (OSError, ValueError):
+            pass  # The pane diagnoses invalid registration settings or slot state.
+        _tmux_env_flags += ["-e", f"{_agy_session.RESUME_READY_ENV}={agy_resume_ready}"]
+
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
         if (
@@ -7133,6 +7173,8 @@ def _do_session_launch(
                     once_pane_cmd,
                     pre_respawn=pre_respawn,
                 )
+                if agy_resume_ready:
+                    _await_agy_resume_registration(once_identity, agy_resume_ready, agy_resume_timeout)
             except RuntimeError as exc:
                 if detached:
                     raise
@@ -7454,6 +7496,14 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
             sys.exit(1)
+        if agy_resume_ready:
+            try:
+                _await_agy_resume_registration(identity, agy_resume_ready, agy_resume_timeout)
+            except RuntimeError as exc:
+                if detached:
+                    raise
+                reporter.error("session", str(exc))
+                sys.exit(1)
         if detached:
             reporter.phase("session").outcome(f"{session_id} running detached")
             return

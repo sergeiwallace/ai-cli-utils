@@ -52,6 +52,8 @@ SIGN_IN_STEP = "run `agy` once in a terminal and finish the Google sign-in, then
 HOOK_COMMAND = "ai internal agy-session-confirm"
 SLOT_RECORD_ENV = "AI_CLI_AGY_SLOT_RECORD"
 LAUNCH_TOKEN_ENV = "AI_CLI_AGY_LAUNCH_TOKEN"
+RESUME_READY_ENV = "AI_CLI_AGY_RESUME_READY"
+RESUME_READY_OPTION = "@ai_cli_agy_resume_ready"
 SIGN_IN_VERIFIED_ENV = "AI_CLI_AGY_SIGN_IN_VERIFIED"
 EXIT_PRINT_EMPTY = 77
 EXIT_PRINT_AUTO_DENIED = 78
@@ -1296,6 +1298,7 @@ def main(argv: list[str] | None = None) -> int:
             adopt_conversation=adopt_conversation,
         )
         if action == "launch":
+            resume_ready = os.environ.pop(RESUME_READY_ENV, "")
             ensure_confirm_plugin()
             strip_api_keys(os.environ)
             os.environ["AI_SESSION_NAME"] = ai_name
@@ -1306,7 +1309,20 @@ def main(argv: list[str] | None = None) -> int:
             if not print_launch:
                 from .agy_control import start
 
-                start(Path(record))
+                if start(Path(record)) and (route != "bare" or resume_ready):
+                    from .session_register import register
+
+                    os.environ["AI_TMUX_SESSION"] = slot
+                    register("agy")
+                    if resume_ready:
+                        subprocess.run(
+                            tmux_binary.argv(
+                                "set-option", "-p", "-t", os.environ["TMUX_PANE"], RESUME_READY_OPTION, resume_ready
+                            ),
+                            capture_output=True,
+                            check=True,
+                            timeout=5,
+                        )
 
             exec_argv = list(base_argv)
             if sandbox and "--sandbox" not in exec_argv and "--sandbox" not in extra_args:
@@ -1335,6 +1351,7 @@ def main(argv: list[str] | None = None) -> int:
         KeyError,
         RuntimeError,
         portalocker.LockException,
+        subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ):
         output.error(

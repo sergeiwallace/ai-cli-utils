@@ -15,7 +15,7 @@ from legacy_run_state import legacy_state_functions
 from test_session_reload_loop import _pane_history, _start_session, _wait_for_agent_start
 from test_session_reload_loop import tmux_socket as tmux_socket
 
-from ai_cli import agy_session, main
+from ai_cli import agy_session, config, main
 from ai_cli.session_script import get_engine_script
 
 pytestmark = [pytest.mark.real_tmux, pytest.mark.skipif(os.name != "posix", reason="POSIX tmux launcher")]
@@ -46,8 +46,9 @@ def _seed_store(home: Path, worktree: Path, rows: list[tuple[str, str]]) -> None
         conn.close()
 
 
+@pytest.mark.parametrize("register_exit", [0, 3])
 def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_and_list_keep_exact_id(
-    tmux_socket, tmp_path, monkeypatch
+    tmux_socket, tmp_path, monkeypatch, register_exit
 ):
     home = tmp_path / "home"
     worktree = tmp_path / "worktree"
@@ -70,11 +71,25 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     record.write_text(json.dumps(doc), encoding="utf-8")
 
     observed = tmp_path / "observed.json"
+    registered = tmp_path / "registered"
+    readiness = "test-resume-ready"
+    generation = "test-generation"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config_path = config._config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    register_code = (
+        "import json, os, sys; from pathlib import Path; "
+        f"Path({str(registered)!r}).write_text(json.dumps([sys.argv[1], os.environ['AI_TMUX_SESSION']])); "
+        f"sys.exit({register_exit})"
+    )
+    register_argv = [sys.executable, "-c", register_code, "{client}"]
+    config_path.write_text(f"[session_register]\ncommand = {json.dumps(register_argv)}\n", encoding="utf-8")
     state_record = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SLOT}.agy.json"
     fake_ai = (
         "#!/bin/sh\n"
         f'if [ "$1" = internal ] && [ "$2" = agy-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f'if [ "$1" = sessions ] && [ "$2" = _sequence ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        f'if [ "$1" = ps ] && [ "$2" = cron ]; then tmux set-option -t {SLOT} @ai_cli_session_generation {generation}; fi\n'
         f'if [ "$1" = ps ] && [ "$2" = cron ]; then mkdir -p {shlex.quote(str(state_record.parent))} && cp {shlex.quote(str(record))} {shlex.quote(str(state_record))}; fi\n'
         'if [ "$1" = internal ] && [ "$2" = get-version ]; then echo unknown; fi\n'
         "exit 0\n"
@@ -104,6 +119,7 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
             SLOT,
             rewrite_once_during_startup=False,
             extra_fakes={"ai": fake_ai, "agy": fake_agy},
+            session_env={agy_session.RESUME_READY_ENV: readiness},
         )
     assert _wait_for_agent_start(tmux_socket, SLOT, started), _pane_history(tmux_socket, SLOT)
     data = json.loads(observed.read_text(encoding="utf-8"))
@@ -116,6 +132,10 @@ def test_given_two_conversations_in_worktree_when_agy_slot_resumes_then_attach_a
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    identity = main._tmux_ownership.capture_tmux_session_identity(SLOT, expected_generation=generation)
+    assert identity is not None
+    main._await_agy_resume_registration(identity, readiness, timeout=5)
+    assert json.loads(registered.read_text(encoding="utf-8")) == ["agy", SLOT]
     real_which = main.shutil.which
     monkeypatch.setattr(
         main.shutil, "which", lambda name, *a, **kw: None if name == "fzf" else real_which(name, *a, **kw)

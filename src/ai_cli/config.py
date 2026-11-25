@@ -704,10 +704,9 @@ DEFAULT_SESSION_REGISTER_TIMEOUT = 15.0
 
 
 def read_session_register_config(config: dict) -> dict | None:
-    """``[session_register]``: the command a Codex or agy session-start hook runs, or ``None``.
+    """``[session_register]``: the optional command for a confirmed Codex or agy launch.
 
-    Raises ``ValueError`` for a setting that is present but unusable; the hook reports it
-    and starts the session unregistered.
+    Raises ``ValueError`` for a setting that is present but unusable.
     """
     section = config.get("session_register", {})
     if not isinstance(section, dict):
@@ -993,12 +992,14 @@ stale_session_timeout = 15
 # timeout_seconds = 300
 
 [session_register]
-## A command the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks run once the
-## launch is confirmed, for a deployment that keeps a registry of live agent sessions.
-## "{client}" in any argument is replaced by "codex" or "agy". It runs without a shell,
-## inside the client's own process tree, so the command can find the client among its
-## ancestors. Its output is captured. A failure or timeout prints one warning line and the
-## session starts unregistered. Read at every session start. Unset: nothing runs.
+## A command run by the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks
+## after launch confirmation, for deployments with a registry of live agent sessions.
+## Session-start hooks run inside the client's process tree.
+## On an Antigravity tmux resume, the launcher runs it after the control bridge binds
+## the conversation and sets AI_TMUX_SESSION to the tmux slot name.
+## "{client}" in any argument is replaced by "codex" or "agy". The command runs without
+## a shell, and its output is captured. A failure or timeout prints one warning line
+## and the session starts unregistered. Unset: nothing runs.
 # command = ["register-session", "--client", "{client}"]
 ## Seconds the command may run before it is stopped. Default 15.
 # timeout_seconds = 15
