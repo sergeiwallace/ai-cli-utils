@@ -1,0 +1,1 @@
+- Check the agent exit status as well as the failure reason in supervisor lifecycle regression coverage.

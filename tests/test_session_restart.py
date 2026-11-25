@@ -1313,6 +1313,23 @@ def test_given_invalid_receipt_when_read_then_rejects_with_bounded_bytes(payload
     assert stream.tell() <= 8193
 
 
+@pytest.mark.parametrize("delivered", [True, False], ids=["delivered", "silent"])
+def test_given_engine_stalled_past_receipt_deadline_when_read_then_only_a_delivered_receipt_is_accepted(delivered):
+    # A deadline already in the past stands for the engine being descheduled between
+    # computing its receipt cap and reading, as on a loaded CI runner.
+    engine, wrapper = socket.socketpair()
+    with engine, wrapper:
+        if delivered:
+            wrapper.sendall(b'{"request_id": "test-request"}\n')
+        past = time.monotonic() - 1
+        if delivered:
+            assert restart._read_start(engine, past) == {"request_id": "test-request"}
+        else:
+            # Past the deadline the read must not block waiting for the peer.
+            with pytest.raises(OSError):
+                restart._read_start(engine, past)
+
+
 @pytest.mark.parametrize("failure", ["socket", "bind", "listen"])
 def test_given_listener_setup_failure_when_restarting_then_no_fence_and_later_restart_succeeds(
     event_world, monkeypatch, failure
@@ -2462,6 +2479,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     monkeypatch.setattr(
         main._session_script, "resolve_session_shell", lambda: "bash" if sys.platform == "darwin" else "bash.exe"
     )
+    # A macOS launcher renders the POSIX program, whatever host renders it here.
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: False)
     world = request.getfixturevalue("world")
     # Executable discovery stays native while this test simulates macOS provenance.
     monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))

@@ -8,6 +8,8 @@ source: ai-cli-utils
 
 # iTerm2 Tab Title and Color System — Design
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** IMPLEMENTED — 2026-04-04
 
 **Created:** 2026-04-02
@@ -51,7 +53,7 @@ The system operates at two timing layers:
 - **Pre-launch layer** (Python, `_emit_iterm2_profile_setup`): Emits SetProfile, SetColors, and OSC 0 directly to stdout before `os.execvp` hands control to tmux. No DCS wrapping needed because we are not yet inside tmux.
 - **In-session layer** (bash, `_iterm2_fleet_setup` / `_iterm2_status`): Runs inside the tmux session. Tab title is set via `ai internal set-iterm2-name` — AppleScript targeting the specific iTerm pane by GUID. The GUID is read from `tmux show-environment ITERM_SESSION_ID` (not the static shell env) so re-attaching the session to a new pane picks up the correct GUID. The rename is guarded by `tmux list-clients -t $tmux_session`: a detached session skips the rename entirely to avoid clobbering a different session's pane. All `\033]1337;` sequences are DCS-wrapped via the `_it2` helper. OSC 1 is the fallback when no GUID is available (non-iTerm terminals, mosh). Status updates fire on session start, restart, exit (done/error), and resume.
 
-**Scope boundary:** This system is the ambient in-terminal status channel only. Push notifications are owned by ntfy. OSC 9 is eliminated. This design does not expand into notification territory.
+**Scope boundary:** This system is the ambient in-terminal status channel only. Push notifications are owned by the notification system (`notifications.py`). OSC 9 is eliminated. This design does not expand into notification territory.
 
 **What this system does NOT do:**
 - Combined multi-pane tab titles (dropped — each pane owns its own title independently)

@@ -20,6 +20,40 @@ it is not enough to adopt a session: several other pieces of state are keyed by
 the **project slug** or the session's **name** rather than by the session UUID,
 and those are exactly the ones that break. Adoption is the whole job.
 
+## Adopting an Antigravity conversation
+
+Antigravity adoption is explicit and owner-approved. On the host that owns the
+conversation, stop agy and close its tmux session. Preview the binding, confirm
+it, then resume through the launcher.
+
+```sh
+ai adopt-session myrepo-box-ada -e agy -r . -u 11111111-2222-4333-8444-555555555555 -n
+ai adopt-session myrepo-box-ada -e agy -r . -u 11111111-2222-4333-8444-555555555555 -y
+ai g myrepo-box-ada -r -p myrepo
+```
+
+For a session launched from a paired host, add `-R` to both adoption commands on
+the conversation's host. Resume from the paired machine with
+`ai g ada -R -p myrepo`. To preview that slot on the conversation's host, add
+`--is-remote` to the `ai g -d` command there.
+
+`-P PID` and `-M TMUX_SESSION` can identify a conversation while its process is
+still present. A single match appears in the stop message. Use its UUID after
+the process exits. If workspace evidence is ambiguous, supply the original
+directory with `-s/--source`. Where a liveness check is unavailable, use
+`-S/--stopped` after verifying agy has exited.
+
+The worktree uses the same setup as `ai g`. The slot record retains the verified
+source workspace because agy resumes an exact UUID across directories. The native
+conversation, artifacts and indexes stay in place. A successful rerun reports
+the existing binding.
+
+Adoption prints a tmux command that runs the managed agy launcher with
+`--dangerously-skip-permissions`. For a confirmed local slot, add
+`-d -- --dangerously-skip-permissions` to an `ai g` launch to preview the pane
+command with the same permission flag. The managed launcher checks the slot
+identity and subscription settings before it runs agy.
+
 ## What is keyed by what
 
 Per-session state is split across four keying schemes. Only the last is safe to
@@ -479,7 +513,7 @@ A rename that finished but whose completion was never published completes itself
 next `ai reconcile-names` or `ai migrate-session`.
 
 The host sweep inventories, for one repository, every index-named worktree, tmux session
-and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
+and resumable record in each client's session store (Claude Code, Codex, Pi, Antigravity CLI),
 including sessions whose worktree was already retired. Such a transcript-only session is
 named by retitling its client records; no worktree is made for it. A record the sweep
 cannot read stops it with the record named, so a sweep never reports a host as finished
@@ -566,6 +600,19 @@ it with `ai sessions stop OLD` first. A hook that refuses its
 `--dry-run` does not stop it: that hook's part reads `failed: ... NOT run ... pending`, the
 other parts and hooks still run, and the command exits 1 so it is re-run.
 
+When two registered agent worktrees occupy the same slot under `OLD-agents` and
+`NEW-agents`, the finish reports both paths and leaves the migration partial. To
+keep both checkouts and finish the migration, use
+`ai migrate-session OLD NEW --finish --accept-kept-hold SLOT`. The migration ledger
+records the slot, both paths and HEAD commit IDs, fingerprints of the container
+entries and both checkouts, and the time. The acceptance uses format 2 of the existing ledger so older launchers
+refuse to launch a session whose acceptance they cannot check.
+The plan shows `kept (accepted: SLOT)`. Both checkouts and their Git refs stay in place.
+Status and launch recheck the acceptance against current paths, tips and container
+entries. A change requires fresh acknowledgement if the collision still exists.
+Use `--dry-run` to preview, repeat the flag for multiple holds, or use the absolute
+old worktree path when the same slot name appears in multiple repos.
+
 A running NEW does not refuse the finish. NEW counts as running when a Claude Code
 process is named NEW or runs inside its slot, or when a tmux session hosts it. The
 finish then does every step except the ones that write files the running session holds
@@ -644,13 +691,13 @@ migration finished.
 
 Every writing run, a full migration, `--finish` or `--to-name`, ends with a read-only
 re-plan of the pair: the `--finish -n` plan, read part by part. A part is done when
-it reads `done earlier`, or a skip that finds nothing to carry (`no matching
+it reads `done earlier`, `kept (accepted: SLOT)`, or a skip that finds nothing to carry (`no matching
 artifact`, `informational`, `unconfigured`, `missing`, and the `direct rename` of
 the name registry); a hook is done only when its `--dry-run` prints
 `migrate-status: done`. Anything else, an unreadable store, a hook without a status
 line, or a plan that refuses, is a part left. When nothing is left and this host's
 ledger records the pair, the run appends a row with `"finished": true` and
-`"verified": true` for it. Otherwise it appends nothing, marks each part left
+`"verified": true` for it. Otherwise it marks each part left
 `failed` in the table, warns `NOT finished` naming each one and the `--finish`
 command, and exits 1; `--to-name` then marks the name registry entry incomplete. A
 `finished` row written before this rule carries no `verified` and counts as
@@ -661,9 +708,9 @@ remote side of `-R`, and a detached replay of NEW's recorded recipe by
 before the worktree or the session exists, judges every pair migrated to NEW once.
 A pair with no later `finished` row is finished: the same planner, hooks and Beads
 rule as `--finish -y`, verified by that run's own re-plan. A pair whose
-latest row is a verified `finished` is trusted and not re-planned: that row is the
-proof of record, and `--status -a` or `--finish` re-checks it on demand. A pair
-whose `finished` row carries no `verified` is re-planned read-only. Before each pair
+latest row is a verified `finished` is trusted unless it records an accepted kept
+hold, which triggers a read-only re-plan at launch. `--status -a` or `--finish`
+rechecks every pair on demand. Before each pair
 the launch prints a line naming it and what it is about to do, and while the finish
 or re-plan runs it prints a line as each slow step starts and as it ends with its
 elapsed time: each hook's dry run and live run, each Beads store's read, re-key and
@@ -716,8 +763,8 @@ next `--status` still lists the pair as partial. It does not override the
 newer-format refusal. A dry run (`-d`) finishes and re-plans nothing.
 
 `ai migrate-session -s/--status` lists, without writing anything, every pair this
-host's ledger records whose latest row is not a verified `finished`, so every
-migration recorded before the re-plan rule is listed. It re-plans each one as
+host's ledger records whose latest row is not a verified `finished` or whose ledger
+records an accepted kept hold. It re-plans each one as
 `--finish -n` would and prints one row per pair:
 
 ```text

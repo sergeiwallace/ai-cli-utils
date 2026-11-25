@@ -974,7 +974,26 @@ _PREVIOUS_TERMINAL_RESET = (
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
+    def strip_retired_metadata(match: re.Match[str]) -> str:
+        # Match only data emitted by the template, preserving comparison of any
+        # shell syntax outside the canonical quoted JSON argument.
+        quoted = match[2]
+        try:
+            (raw,) = shlex.split(quoted)
+            metadata = json.loads(raw)
+        except ValueError:
+            return match[0]
+        if isinstance(metadata, dict) and "gemini_cmd" in metadata and shlex.quote(json.dumps(metadata)) == quoted:
+            del metadata["gemini_cmd"]
+            return match[1] + shlex.quote(json.dumps(metadata)) + match[3]
+        return match[0]
+
     def normalize(text: str) -> str:
+        text = re.sub(
+            r"""(?m)^(    printf '%s' )(.+)( > "\$_ai_state_dir/session-meta-\$tmux_session\.json")$""",
+            strip_retired_metadata,
+            text,
+        )
         # Teardown moved into EXIT cleanup so abnormal returns fence tmux too.
         # Compare its body at the original location, rather than ignoring it:
         # changing the ownership fence must still make a program uncertifiable.
@@ -991,10 +1010,62 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
+        # Codex launches through the bracketed _run_codex function, which resolves the
+        # exact native thread. Its call site stands for the pre-feature newest-thread
+        # branch, so a program launched before the feature is still certified.
+        text = re.sub(
+            r"(?m)^( *)_run_codex\n",
+            r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
+            text,
+        )
+        # Antigravity launches through the bracketed _run_agy function; for non-g engines
+        # map its definition, call sites, and session-type tag back to the legacy g-engine
+        # form so running Claude Code / Pi / Codex supervisors remain certifiable across the
+        # client switch while edits inside _run_agy on an active g supervisor are still caught.
+        if not re.search(r"(?m)^    engine=g$", text):
+            text = re.sub(r"(?ms)^    # BEGIN AGY THREAD[^\n]*\n.*?^    # END AGY THREAD\n", "", text)
+            sandbox_flag = "-s" if '"sandbox": true' in text else "--no-sandbox"
+            text = re.sub(
+                r'(?m)^          _run_agy --prompt-interactive "\$resume_msg"\n',
+                '          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n'
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = re.sub(
+                r"(?m)^          _run_agy\n",
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = text.replace(
+                '[[ "$stype" == "gemini" || "$stype" == "agy" ]] && type_sym="✦ "',
+                '[[ "$stype" == "gemini" ]] && type_sym="✦ "',
+            ).replace(
+                '[[ "$engine" == "g" ]] && _session_type="agy"',
+                '[[ "$engine" == "g" ]] && _session_type="gemini"',
+            )
+            if 'get-latest-gemini-id "$ai_name"' not in text:
+                text = text.replace(
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    '      if [[ "$engine" == "g" ]]; then\n'
+                    '        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)\n'
+                    '        if [[ -n "$new_uuid" ]]; then\n'
+                    '          uuid="$new_uuid"\n'
+                    '          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null\n'
+                    "        fi\n"
+                    "      fi\n"
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    1,
+                )
         # The background-attach branch is the head of the launch if/elif chain, so it
         # cannot be bracketed; dropping it leaves the pre-feature chain.
         text = re.sub(
@@ -1008,12 +1079,30 @@ def _compatible(source: str, expected: str) -> bool:
     normalized_source = normalize(source)
     if normalized_source == normalize(expected):
         return True
+    # Rebuild the trusted program before startup diagnostics moved the elapsed-time checks.
+    previous_diagnostics = re.sub(
+        r"(?ms)^    # BEGIN LAUNCH DIAGNOSTICS\n.*?^    # END LAUNCH DIAGNOSTICS\n", "", expected
+    )
+    if previous_diagnostics != expected:
+        previous_diagnostics = (
+            previous_diagnostics.replace("agent_elapsed < 3", "$(date +%s) - start_ts < 3")
+            .replace("agent_elapsed >= _healthy_agent_seconds", "$(date +%s) - start_ts >= _healthy_agent_seconds")
+            .replace("${agent_elapsed:-$(( $(date +%s) - start_ts ))}", "$(( $(date +%s) - start_ts ))")
+        )
+        if _compatible(source, previous_diagnostics):
+            return True
     # The terminal restore is printf data with no control flow, so a program that
     # sends the retired bytes is the same program. Rebuilt in our trusted template.
-    from .session_script import rendered_terminal_reset
+    from .session_script import POSIX_AGENT_RUN, WINDOWS_AGENT_RUN, WINDOWS_CHILD_INT, rendered_terminal_reset
 
     previous_reset = expected.replace(rendered_terminal_reset(), _PREVIOUS_TERMINAL_RESET)
     if previous_reset != expected and _compatible(source, previous_reset):
+        return True
+    # A Windows program launched before its agent ran in the foreground backgrounded it
+    # as on POSIX and took the double-press path for every Ctrl+C. Rebuilt in our trusted
+    # template, never ignored in the running source.
+    previous_windows_agent = expected.replace(WINDOWS_AGENT_RUN, POSIX_AGENT_RUN).replace(WINDOWS_CHILD_INT, "")
+    if previous_windows_agent != expected and _compatible(source, previous_windows_agent):
         return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.
@@ -1903,7 +1992,12 @@ def exec_replacement(session: str, argv: list[str]) -> int:
         port = event["port"]
         # Windows starts a new PID rather than replacing this one through exec.
         # Keep its foreground wrapper waiting on the native child-exit event.
-        child = subprocess.Popen(argv) if sys.platform == "win32" else None
+        if sys.platform == "win32":
+            from .foreground import resolve_program
+
+            child = subprocess.Popen(argv, executable=resolve_program(argv[0]))
+        else:
+            child = None
         try:
             pid = child.pid if child is not None else os.getpid()
             birth = psutil.Process(pid).create_time()
@@ -1966,14 +2060,12 @@ def _read_start(connection: socket.socket, deadline: float) -> dict:
     """Read a bounded receipt line before authentication."""
 
     def receive(size: int) -> bytes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        connection.settimeout(remaining)
-        data = connection.recv(size)
-        if time.monotonic() >= deadline:
-            raise TimeoutError
-        return data
+        # The deadline bounds how long the peer may keep this process waiting, not
+        # when this process gets to read: a receipt already delivered is read even
+        # when a host stall pushed the read past the deadline. Past it the read no
+        # longer blocks, so a silent or dripping peer still gets no extra time.
+        connection.settimeout(max(deadline - time.monotonic(), 0.0))
+        return connection.recv(size)
 
     data = bytearray()
     while b"\n" not in data:

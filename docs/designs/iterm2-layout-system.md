@@ -189,8 +189,8 @@ tabs:
               dir: "~/projects/myproject"
               command: null             # shell prompt, no startup command
 
-  - name: "gemini"
-    base_profile: "Gemini Base"
+  - name: "agy"
+    base_profile: "Default"
     colors:
       background: "#0F1A0F"
       tab_color: "#2E7D32"

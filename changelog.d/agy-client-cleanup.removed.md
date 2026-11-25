@@ -1,0 +1,1 @@
+- Remove retired Gemini CLI launch settings and use `agy` as the Antigravity profile and layout key.

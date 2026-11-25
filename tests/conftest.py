@@ -198,7 +198,9 @@ _TMUX_BINARY = shutil.which("tmux")
 # where it happens to exist.
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+_PROTECTED_TEST_BINARIES = (
+    frozenset({"tmux", "claude", "agy", "agy.exe", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+)
 
 # Programs that RUN a command string handed to them, which is what makes a guard on the
 # program name alone insufficient (AI-CLI-013v). Measured: a test drove
@@ -990,33 +992,31 @@ def _refuse_real_windows_registry_reads():
     failure from a blanket refusal. Narrowing to the keys that carry PATH leaves the
     guard total for the hazard and invisible to everything else.
 
-    Installed on every platform, for the reason the plyer guard is: the branch is
-    selected by ``sys.platform`` and tests force that value to exercise it from a Mac or
-    Linux host, so gating the guard on the host OS would leave it off exactly where the
-    branch is live. Tests that want the behaviour inject their own fake over this one
-    (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which still wins.
+    Installed only where a real ``winreg`` exists, because that is the only place a real
+    registry can be read. On a host without one, a forced ``sys.platform == "win32"``
+    already reaches the consumer's own "no winreg" branch, so there is nothing to refuse.
+    A stub there would also lie: dependencies treat "``import winreg`` succeeds" as "this
+    is Windows". ``dateutil.tz.win`` (python-dateutil 4) does ``import winreg`` and then
+    calls ``winreg.ConnectRegistry`` at import time, so a POSIX-side stub turned its
+    documented ImportError into an AttributeError inside any test that first imported
+    ``freezegun`` (AI-CLI-v8pmb). Tests that want the Windows branch inject their own fake
+    (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which wins on every host.
     """
     try:
         import winreg as real
     except ImportError:
-        real = None  # type: ignore[assignment]
+        yield None
+        return
 
     def _open_key(root, subkey, *args, **kwargs):
         if str(subkey).lower() in _WINDOWS_ENVIRONMENT_SUBKEYS:
             raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
-        if real is None:
-            raise OSError("no winreg on this platform")
         return vars(real)["OpenKey"](root, subkey, *args, **kwargs)
 
     stub = types.ModuleType("winreg")
-    if real is None:
-        # Enough surface for the Windows branch to be reachable from a POSIX host.
-        stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
-        stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
-    else:
-        for name in dir(real):
-            if not name.startswith("__"):
-                setattr(stub, name, getattr(real, name))
+    for name in dir(real):
+        if not name.startswith("__"):
+            setattr(stub, name, getattr(real, name))
     stub.OpenKey = _open_key  # type: ignore[attr-defined]
     stub.OpenKeyEx = _open_key  # type: ignore[attr-defined]
     saved = sys.modules.get("winreg", _MISSING)
@@ -1180,6 +1180,22 @@ def _reject_real_agent_processes(request, monkeypatch):
     monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=guarded_run))
     monkeypatch.setattr(subprocess, "Popen", MagicMock(side_effect=guarded_popen))
     monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
+
+
+@pytest.fixture(autouse=True)
+def _windows_handoff_is_an_exec(monkeypatch):
+    """Hand the launcher's Windows run-and-wait handoff to ``os.execvp``.
+
+    ``main._exec_handoff`` runs its program as a waited-for child on Windows, which
+    has no exec. The suite's launch tests intercept the handoff by patching
+    ``os.execvp``, so this routes it there, and every such test intercepts it on
+    Windows, or with ``sys.platform`` faked as Windows, too. Looked up at call time,
+    so a test's own ``os.execvp`` patch applies. Tests of the Windows handoff itself
+    put back the function they imported.
+    """
+    from ai_cli import main
+
+    monkeypatch.setattr(main, "_run_on_this_console", lambda file, args: os.execvp(file, args))
 
 
 @pytest.fixture(autouse=True)
@@ -1614,6 +1630,20 @@ def _strip_inherited_supervisor_vars(monkeypatch):
         name for name in os.environ if name == "AI_CLI_RUN_GENERATION" or name.startswith("AI_CLI_SUPERVISOR_")
     ]:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _strip_inherited_launch_reason(monkeypatch):
+    """Never inherit the runner's own launch reason into test subprocesses.
+
+    A suite launched from inside a relaunched session carries that session's
+    ``AIH_LAUNCH_REASON``. A session script started by a test reads it and treats its first
+    agent start as a restart, so it resumes a transcript or refuses to launch where the test
+    expected a fresh start. A test that needs a reason sets one itself.
+    """
+    from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
+    monkeypatch.delenv(LAUNCH_REASON_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)

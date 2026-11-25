@@ -9,6 +9,8 @@ related_tasks: [AI-CLI-40]
 
 # Implementation Plan — Geo-Aware SSH Reverse SOCKS Proxy for `ai gemini`
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Task:** AI-CLI-40
 
 ## Problem

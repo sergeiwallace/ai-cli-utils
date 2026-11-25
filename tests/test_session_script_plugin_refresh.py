@@ -21,6 +21,8 @@ from test_reload_progress import Session, session_factory  # noqa: F401
 
 from ai_cli import config
 
+pytestmark = pytest.mark.real_pty
+
 PLUGIN = "example-plugin@example-marketplace"
 OTHER = "other-plugin@other-marketplace"
 

@@ -16,12 +16,20 @@ import pytest
 from test_session_registry import state_home  # noqa: F401
 from test_session_wake_watcher import launch  # noqa: F401
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="the tmux --once handoff is POSIX-only")
+pytestmark = [
+    pytest.mark.real_pty,
+    pytest.mark.skipif(os.name == "nt", reason="the tmux --once handoff is POSIX-only"),
+]
 
 _STUB = """#!{python}
 import json, os, sys
 with open(os.environ["STUB_REPORT"], "w") as fh:
     json.dump({{"stdin": os.isatty(0), "stdout": os.isatty(1), "stderr": os.isatty(2), "argv": sys.argv[1:]}}, fh)
+if "STUB_ERROR" in os.environ:
+    from pathlib import Path
+    text = 'Agent could not initialize the workspace'
+    print(text, file=sys.stderr, flush=True)
+    Path(os.environ["STUB_ERROR"]).write_text(text + '\\n')
 sys.exit(int(os.environ.get("STUB_STATUS", "0")))
 """
 
@@ -101,6 +109,10 @@ def test_given_detached_once_launch_when_the_agent_exits_then_the_launch_log_rec
     monkeypatch,
 ):
     _stub_agent(tmp_path, monkeypatch)
+    pane = tmp_path / "pane-stderr"
+    tmux = tmp_path / "stub-bin" / "tmux"
+    tmux.write_text('#!/bin/sh\nif [ "$1" = capture-pane ] && [ "$4" = %21 ]; then cat "$STUB_ERROR"; fi\n')
+    tmux.chmod(0o755)
     log = tmp_path / "launch.log"
     log.write_text("", encoding="utf-8")
     launch.invoke(once=True, detached=True, attach=False, launch_log_path=str(log))
@@ -108,9 +120,12 @@ def test_given_detached_once_launch_when_the_agent_exits_then_the_launch_log_rec
     assert "-d" in creation
     shell, command = creation[creation.index("--") + 1], creation[-1]
 
-    status = _run_on_terminal(shell, command, _env(tmp_path / "report.json", STUB_STATUS="3"))
+    status = _run_on_terminal(
+        shell, command, _env(tmp_path / "report.json", STUB_STATUS="3", STUB_ERROR=str(pane), TMUX_PANE="%21")
+    )
 
     assert status == 3
     text = log.read_text(encoding="utf-8")
     assert "claude exited with status 3" in text
     assert "c-myproject-tst-1" in text
+    assert "Agent could not initialize the workspace" in text

@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## [Unreleased]
+
+### Added
+
+- `[resume_restore] command` in `config.toml` runs a command of your own before every Claude Code
+  resume, with `{session_id}` replaced by the session's id, so a transcript your deployment archived
+  (for example as `<session-id>.jsonl.zst`) is restored first. A failure or timeout stops the resume
+  and prints the command's output and exit status. `ai list-capabilities` prints
+  `transcript-restore` when it is set. Guide: `docs/guides/resume-restore.md`.
 
 ### Changed
 
@@ -13,10 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The statusline script queries the multiplexer named by `[tmux] binary`, which each session now
-  exports as `AI_CLI_TMUX_BINARY`, instead of whatever `tmux` is first on PATH.
-- On Windows, `ai doctor` and the launch no longer say there is no native tmux: psmux is one. A
-  host where tmux runs but `use_tmux = false` is reported as not hosting sessions.
+- `ai c NAME` reattaches to a session this machine holds even when its name-registry row was
+  written under a former host id and host alias. List the former ids under a new
+  `[former_host_ids]` table in `machine-host-aliases.toml` (`my-host = ["my-host-old"]`); every
+  check of whether a recorded machine is this one now folds them, and a malformed table is refused
+  at launch naming the file. A row held by a different machine is still refused.
 - A failed remote session-name allocation (`ai c NAME -R`) now names its exit code and the signal
   that ended it, instead of failing with no detail when the call printed nothing. A call cut off by
   SIGKILL or SIGTERM before it answered is retried once.

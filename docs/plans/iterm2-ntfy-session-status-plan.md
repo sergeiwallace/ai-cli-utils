@@ -44,7 +44,7 @@ related_task: historical-task
 | 1 | Local Mac shell | None (default/transparent) | No SSH, no tmux, no ai-cli |
 | 2 | Dev server shell | Grey (`#666666`) | SSH to Hetzner, no CC session |
 | 3 | CC session (session-1) | Rolling unique color (from 10+ palette) | ai-cli engine=c, assigned by session number |
-| 4 | Gemini CLI session | Rolling unique color (same palette) | ai-cli engine=g |
+| 4 | Antigravity CLI session | Rolling unique color (same palette) | ai-cli engine=g |
 | 5 | SSH tunnel / reverse tunnel | Green (`#2ecc71`) | Launch context |
 | 6 | Chrome debug | Blue (`#4a90d9`) | Launch context |
 | 7 | Caffeinate | Amber (`#f39c12`) | Process detection or launch context |
@@ -81,7 +81,7 @@ Colors set programmatically via `\e]1337;SetColors=tab=RRGGBB\a` — unlimited h
 | # | Icon | Source | Use |
 |---|------|--------|-----|
 | 1 | Claude/Anthropic logo | simpleicons.org or brand assets | CC sessions |
-| 2 | Gemini logo | simpleicons.org or brand assets | Gemini CLI sessions |
+| 2 | Gemini logo | simpleicons.org or brand assets | Antigravity CLI sessions |
 | 3 | Chrome logo | simpleicons.org | Chrome debug |
 | 4 | Terminal/prompt | codicons or custom | Shell sessions |
 | 5 | SSH key / link | codicons or custom | SSH tunnels |

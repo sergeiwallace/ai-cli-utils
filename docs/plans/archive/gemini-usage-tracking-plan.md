@@ -8,6 +8,8 @@ source: internal
 
 # Gemini API Cost and Usage Tracking Overhaul — Implementation Plan
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** COMPLETE — T-01/T-02/T-03 SHIPPED; T-04 OBSOLETE (MEMORY.md ledger approach dropped; replaced by NATS → Postgres pipeline in HW-4)
 
 **Created:** 2026-04-10

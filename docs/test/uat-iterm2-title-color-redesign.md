@@ -10,6 +10,8 @@ related_docs:
 
 # UAT — iTerm2 Tab Title and Color System Redesign
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 > **Date:** TBD
 > **Status:** Pending
 > **Task:** `[AI-CLI-18]`

@@ -17,7 +17,8 @@ import psutil
 import pytest
 from process_ownership import owned_sleeper
 
-from ai_cli import direnv_setup
+from ai_cli import direnv_exec, direnv_setup
+from ai_cli import session_script as _session_script
 from ai_cli.main import (
     _auto_update_if_stale,
     _cmd_tunnel_start,
@@ -134,34 +135,6 @@ def test_given_invalid_utf8_tmux_stderr_when_decoded_then_diagnostic_is_preserve
 
 
 class TestCliDispatch:
-    def test_cli_when_internal_get_latest_gemini_id_then_calls_function(self):
-        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id"]):
-            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="abc123") as mock_fn:
-                with patch("ai_cli.config.load_config", return_value={}):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_fn.assert_called_once_with(None)
-
-    def test_cli_when_internal_get_latest_gemini_id_with_ai_name_then_passes_it(self):
-        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id", "art-1"]):
-            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="uuid") as mock_fn:
-                with patch("ai_cli.config.load_config", return_value={}):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_fn.assert_called_once_with("art-1")
-
-    def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
-        with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "session-1", "uuid123"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.config.get_session_map", return_value={}):
-                    with patch("ai_cli.config.save_session_map") as mock_save:
-                        with pytest.raises(SystemExit) as exc:
-                            cli()
-                        assert exc.value.code == 0
-                        mock_save.assert_called_once()
-
     def test_cli_when_internal_notify_then_calls_notification_manager(self):
         with patch("sys.argv", ["ai", "internal", "notify", "session1", "hello"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -238,13 +211,6 @@ class TestCliDispatch:
 
     def test_cli_when_telemetry_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "telemetry"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
-    def test_cli_when_internal_update_session_map_missing_args_then_exits_1(self):
-        with patch("sys.argv", ["ai", "internal", "update-session-map"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
@@ -516,6 +482,14 @@ class TestCliDispatchBranches:
 
 @pytest.mark.usefixtures("tmux_available")
 class TestCliSessionSetupBranches:
+    @pytest.fixture(autouse=True)
+    def _agy_ready(self, monkeypatch):
+        real_which = shutil.which
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
+        )
+
     def test_given_missing_engine_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
         """A missing *engine* is fatal; a missing direnv is not.
 
@@ -552,7 +526,6 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
             patch("ai_cli.session.create_worktree", return_value=(tmp_path, False)),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._direnv_env_usable", return_value=True),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
@@ -564,13 +537,12 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "direnv"
-        assert command[:3] == ["direnv", "exec", str(tmp_path)]
-        assert command[3] == "claude"
+        prefix = direnv_exec.prefix(tmp_path)
+        assert executable == prefix[0]
+        assert command[: len(prefix)] == prefix
+        assert command[len(prefix)] == "claude"
 
-    def test_given_project_without_envrc_when_bare_gemini_starts_then_execs_engine_directly(
-        self, tmp_path, monkeypatch
-    ):
+    def test_given_project_without_envrc_when_bare_agy_starts_then_execs_engine_directly(self, tmp_path, monkeypatch):
         """With no .envrc there is nothing to load, so don't route through direnv.
 
         Requiring direnv here made the launch depend on a tool that has no work to
@@ -596,11 +568,11 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "gemini"
-        assert command[0] == "gemini"
+        assert executable == sys.executable
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
 
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self, tmp_path, monkeypatch):
-        """Gemini must be launched with --no-sandbox unless -s is passed.
+        """Antigravity must be launched without --sandbox unless -s is passed.
 
         ``create_worktree`` is stubbed out: without it this test created a real
         ``.worktrees/session-tst-1`` worktree (and branch) inside the developer's own
@@ -613,7 +585,6 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
             patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-tst-1")),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
@@ -623,8 +594,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "--no-sandbox" in command
-        assert "-s" not in command
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+        assert "--sandbox" not in command
 
     def test_cli_when_sandbox_flag_then_sandbox_true(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -634,7 +605,6 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
             patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-tst-1")),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
@@ -644,8 +614,8 @@ class TestCliSessionSetupBranches:
                 cli()
 
         _, command = mock_exec.call_args[0]
-        assert "-s" in command
-        assert "--no-sandbox" not in command
+        assert command[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+        assert "--sandbox" in command
 
     def test_given_owned_session_when_sandbox_launch_runs_then_kills_and_recreates(self, tmp_path):
         killed = []
@@ -720,6 +690,8 @@ class TestCliSessionSetupBranches:
         def _run(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "has-session":
                 return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "show-options":
+                return MagicMock(returncode=0, stdout="agy\n", stderr="")
             if cmd[0] == "tmux" and cmd[1] == "kill-session":
                 killed.append(True)
                 return MagicMock(returncode=0)
@@ -1103,20 +1075,19 @@ class TestCliOncePath:
                                     "ai_cli.session.create_worktree",
                                     return_value=_worktree_with_envrc(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("ai_cli.main._is_root", return_value=False):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
-                                                    assert mock_exec.call_args[0][0] == "tmux"
-                                                    bash_cmd = mock_exec.call_args[0][1][-1]
-                                                    assert "direnv exec" in bash_cmd
-                                                    assert "--dangerously-skip-permissions" in bash_cmd
+                                    with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                        with patch(
+                                            "subprocess.run",
+                                            return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                        ):
+                                            with patch("ai_cli.main._is_root", return_value=False):
+                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+                                                assert mock_exec.call_args[0][0] == "tmux"
+                                                bash_cmd = mock_exec.call_args[0][1][-1]
+                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+                                                assert "--dangerously-skip-permissions" in bash_cmd
 
     def test_cli_when_once_and_claude_root_then_execvp_without_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
@@ -1131,75 +1102,110 @@ class TestCliOncePath:
                                     "ai_cli.session.create_worktree",
                                     return_value=_worktree_with_envrc(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("ai_cli.main._is_root", return_value=True):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
-                                                    bash_cmd = mock_exec.call_args[0][1][-1]
-                                                    assert "direnv exec" in bash_cmd
-                                                    assert "--dangerously-skip-permissions" not in bash_cmd
-
-    def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
-        with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch(
-                                "ai_cli.session.build_session_name",
-                                return_value=("g-session-research", "session-research"),
-                            ):
-                                with patch(
-                                    "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
-                                ):
-                                    with patch(
-                                        "ai_cli.config.get_session_map", return_value={"session-research": "uuid123"}
-                                    ):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
+                                    with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                        with patch(
+                                            "subprocess.run",
+                                            return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                        ):
+                                            with patch("ai_cli.main._is_root", return_value=True):
                                                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                     with pytest.raises(SystemExit):
                                                         cli()
                                                 bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert "direnv exec" in bash_cmd
-                                                assert "uuid123" in bash_cmd
+                                                assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+                                                assert "--dangerously-skip-permissions" not in bash_cmd
 
-    def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
-        with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch(
-                                "ai_cli.session.build_session_name",
-                                return_value=("g-session-research", "session-research"),
-                            ):
-                                with patch(
-                                    "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
-                                ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                            with patch(
-                                                "subprocess.run",
-                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
-                                            ):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
-                                                bash_cmd = mock_exec.call_args[0][1][-1]
-                                                assert "direnv exec" in bash_cmd
-                                                assert "resume load" in bash_cmd
+    def test_given_agy_one_shot_when_launched_then_passes_slot_record(self, tmp_path):
+        from ai_cli.tmux_ownership import TmuxSessionIdentity
+
+        real_which = shutil.which
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$7\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "g", "-o", "research"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.agy_session.subscription_refusal", return_value=None),
+            patch(
+                "shutil.which",
+                side_effect=lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw),
+            ),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
+            patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch(
+                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                side_effect=lambda sid, expected_generation=None: TmuxSessionIdentity(
+                    sid, "g-session-research", expected_generation or "gen-test"
+                ),
+            ),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        respawn_cmd = next(
+            c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$7'")
+        )
+        bash_cmd = shlex.split(respawn_cmd[6])[-1]
+        assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+        assert "ai_cli.agy_session" in bash_cmd
+        assert "g-session-research.agy.json" in bash_cmd
+        assert mock_exec.call_args[0][1][-1] == "$7"
+
+    def test_given_agy_one_shot_when_launched_then_uses_default_command(self, tmp_path):
+        from ai_cli.tmux_ownership import TmuxSessionIdentity
+
+        real_which = shutil.which
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$8\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "g", "-o", "research"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.agy_session.subscription_refusal", return_value=None),
+            patch(
+                "shutil.which",
+                side_effect=lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw),
+            ),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("g-session-research", "session-research")),
+            patch("ai_cli.session.create_worktree", return_value=_worktree_with_envrc(tmp_path, "session-research")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch(
+                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                side_effect=lambda sid, expected_generation=None: TmuxSessionIdentity(
+                    sid, "g-session-research", expected_generation or "gen-test"
+                ),
+            ),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        respawn_cmd = next(
+            c for c in run_calls if "if-shell" in c and len(c) > 6 and c[6].startswith("respawn-pane -k -t '$8'")
+        )
+        bash_cmd = shlex.split(respawn_cmd[6])[-1]
+        assert shlex.join(direnv_exec.prefix(Path("x"))[:-1]) in bash_cmd
+        assert "ai_cli.agy_session" in bash_cmd
+        assert "--command agy" in bash_cmd
+        assert mock_exec.call_args[0][1][-1] == "$8"
 
 
 class TestConfigureTmuxForIterm2:
@@ -1238,25 +1244,22 @@ class TestCliSessionExecvp:
                                     "ai_cli.session.create_worktree",
                                     return_value=_successful_worktree(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            existing = MagicMock(returncode=0, stdout="", stderr="")
-                                            # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
-                                            # comment: the blanket subprocess.run mock incidentally
-                                            # answers AI-CLI-99's unrelated detect_repo_root()
-                                            # repair-backstop call too, tripping its worktree-nesting
-                                            # guard when run from a worktree.
-                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                                with patch("subprocess.run", return_value=existing):
-                                                    with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
-                                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                            with pytest.raises(SystemExit):
-                                                                cli()
-                                                    assert "attach-session" in mock_exec.call_args[0][1]
-                                                    assert "-d" in mock_exec.call_args[0][1]
-                                                    mock_rename.assert_called_once_with(
-                                                        "c-session-tst-1", "session-tst-1"
-                                                    )
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        existing = MagicMock(returncode=0, stdout="", stderr="")
+                                        # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
+                                        # comment: the blanket subprocess.run mock incidentally
+                                        # answers AI-CLI-99's unrelated detect_repo_root()
+                                        # repair-backstop call too, tripping its worktree-nesting
+                                        # guard when run from a worktree.
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch("subprocess.run", return_value=existing):
+                                                with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+                                                assert "attach-session" in mock_exec.call_args[0][1]
+                                                assert "-d" in mock_exec.call_args[0][1]
+                                                mock_rename.assert_called_once_with("c-session-tst-1", "session-tst-1")
 
     def test_cli_when_no_existing_session_then_creates_new(self, tmp_path):
         run_calls = []
@@ -1286,23 +1289,22 @@ class TestCliSessionExecvp:
                                     "ai_cli.session.create_worktree",
                                     return_value=_successful_worktree(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            with patch("subprocess.run", side_effect=fake_run):
-                                                with patch(
-                                                    "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                                                    return_value=TmuxSessionIdentity(
-                                                        "$42", "c-session-tst-1", "test-generation"
-                                                    ),
-                                                ):
-                                                    with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
-                                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                            with pytest.raises(SystemExit):
-                                                                cli()
-                                            # New session: detached new-session via subprocess, then attach via execvp
-                                            assert any("new-session" in c for c in run_calls)
-                                            assert "attach-session" in mock_exec.call_args[0][1]
-                                            mock_rename.assert_called_once_with("$42", "session-tst-1")
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        with patch("subprocess.run", side_effect=fake_run):
+                                            with patch(
+                                                "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                return_value=TmuxSessionIdentity(
+                                                    "$42", "c-session-tst-1", "test-generation"
+                                                ),
+                                            ):
+                                                with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+                                        # New session: detached new-session via subprocess, then attach via execvp
+                                        assert any("new-session" in c for c in run_calls)
+                                        assert "attach-session" in mock_exec.call_args[0][1]
+                                        mock_rename.assert_called_once_with("$42", "session-tst-1")
 
     def test_given_new_session_when_created_then_enables_mouse_and_osc52_clipboard(self, tmp_path):
         run_calls = []
@@ -1327,24 +1329,23 @@ class TestCliSessionExecvp:
                                     "ai_cli.session.create_worktree",
                                     return_value=_successful_worktree(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
-                                            # comment: the blanket subprocess.run mock incidentally
-                                            # answers AI-CLI-99's unrelated detect_repo_root()
-                                            # repair-backstop call too, tripping its worktree-nesting
-                                            # guard when run from a worktree.
-                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                                with patch("subprocess.run", side_effect=fake_run):
-                                                    with patch(
-                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                                                        return_value=TmuxSessionIdentity(
-                                                            "$42", "c-session-tst-1", "test-generation"
-                                                        ),
-                                                    ):
-                                                        with patch("os.execvp", side_effect=SystemExit(0)):
-                                                            with pytest.raises(SystemExit):
-                                                                cli()
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
+                                        # comment: the blanket subprocess.run mock incidentally
+                                        # answers AI-CLI-99's unrelated detect_repo_root()
+                                        # repair-backstop call too, tripping its worktree-nesting
+                                        # guard when run from a worktree.
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch("subprocess.run", side_effect=fake_run):
+                                                with patch(
+                                                    "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                    return_value=TmuxSessionIdentity(
+                                                        "$42", "c-session-tst-1", "test-generation"
+                                                    ),
+                                                ):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
 
         assert ["tmux", "set-window-option", "-t", "$42", "remain-on-exit", "on"] in run_calls
         assert ["tmux", "set-option", "-t", "$42", "mouse", "on"] in run_calls
@@ -1377,19 +1378,18 @@ class TestCliSessionExecvp:
                                     "ai_cli.session.create_worktree",
                                     return_value=_successful_worktree(tmp_path, "myapp-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                                with patch("subprocess.run", side_effect=fake_run):
-                                                    with patch(
-                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                                                        return_value=TmuxSessionIdentity(
-                                                            "$43", "p-myapp-1", "test-generation"
-                                                        ),
-                                                    ):
-                                                        with patch("os.execvp", side_effect=SystemExit(0)):
-                                                            with pytest.raises(SystemExit):
-                                                                cli()
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch("subprocess.run", side_effect=fake_run):
+                                                with patch(
+                                                    "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                    return_value=TmuxSessionIdentity(
+                                                        "$43", "p-myapp-1", "test-generation"
+                                                    ),
+                                                ):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
 
         assert ["tmux", "set-window-option", "-t", "$43", "remain-on-exit", "on"] in run_calls
         assert ["tmux", "set-option", "-t", "$43", "mouse", "off"] in run_calls
@@ -1418,17 +1418,16 @@ class TestCliIsRemotePath:
                                                 "ai_cli.session.create_worktree",
                                                 return_value=_successful_worktree(tmp_path, "session-tst-1"),
                                             ):
-                                                with patch("ai_cli.config.get_session_map", return_value={}):
-                                                    with patch(
-                                                        "ai_cli.session_script.get_engine_script", return_value="script"
-                                                    ):
-                                                        not_existing = MagicMock(returncode=1)
-                                                        with patch("subprocess.run", return_value=not_existing):
-                                                            with patch("os.chdir") as mock_chdir:
-                                                                with patch("os.execvp", side_effect=SystemExit(0)):
-                                                                    with pytest.raises(SystemExit):
-                                                                        cli()
-                                                            mock_chdir.assert_called_once_with(project_dir)
+                                                with patch(
+                                                    "ai_cli.session_script.get_engine_script", return_value="script"
+                                                ):
+                                                    not_existing = MagicMock(returncode=1)
+                                                    with patch("subprocess.run", return_value=not_existing):
+                                                        with patch("os.chdir") as mock_chdir:
+                                                            with patch("os.execvp", side_effect=SystemExit(0)):
+                                                                with pytest.raises(SystemExit):
+                                                                    cli()
+                                                        mock_chdir.assert_called_once_with(project_dir)
 
 
 @pytest.mark.usefixtures("tmux_available")
@@ -1454,12 +1453,11 @@ class TestCliWorktreeGitPull:
                                 "ai_cli.session.build_session_name", return_value=("c-session-tst-1", "session-tst-1")
                             ):
                                 with patch("ai_cli.session.create_worktree", return_value=worktree_path):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            with patch("subprocess.run", side_effect=fake_subprocess_run):
-                                                with patch("os.execvp", side_effect=SystemExit(0)):
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        with patch("subprocess.run", side_effect=fake_subprocess_run):
+                                            with patch("os.execvp", side_effect=SystemExit(0)):
+                                                with pytest.raises(SystemExit):
+                                                    cli()
 
         assert any("pull" in cmd for cmd in git_pull_calls)
 
@@ -1477,21 +1475,20 @@ class TestCliWorktreeGitPull:
                                 "ai_cli.session.build_session_name", return_value=("c-session-tst-1", "session-tst-1")
                             ):
                                 with patch("ai_cli.session.create_worktree", return_value=worktree_path):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            # AI-CLI-99's repair backstop calls detect_repo_root() for
-                                            # real (unrelated to this test's own subprocess mock, which
-                                            # only cares about the worktree-index-healing calls below).
-                                            # Left unmocked, the blanket subprocess.run patch's generic
-                                            # "success, empty stdout" default makes detect_repo_root()
-                                            # treat the real process cwd as the git-common-dir, which
-                                            # trips its own worktree-nesting guard whenever the test
-                                            # suite happens to run from inside a git worktree.
-                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                                with patch("subprocess.run", side_effect=subprocess_side_effect):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                        # AI-CLI-99's repair backstop calls detect_repo_root() for
+                                        # real (unrelated to this test's own subprocess mock, which
+                                        # only cares about the worktree-index-healing calls below).
+                                        # Left unmocked, the blanket subprocess.run patch's generic
+                                        # "success, empty stdout" default makes detect_repo_root()
+                                        # treat the real process cwd as the git-common-dir, which
+                                        # trips its own worktree-nesting guard whenever the test
+                                        # suite happens to run from inside a git worktree.
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch("subprocess.run", side_effect=subprocess_side_effect):
+                                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
         return worktree_path
 
     def test_when_worktree_conflict_predates_launch_then_resolution_is_not_discarded(self, tmp_path):
@@ -1549,7 +1546,6 @@ class TestCliWorktreeGitPull:
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.session.build_session_name", return_value=("c-session-tst-1", "session-tst-1")),
             patch("ai_cli.session.create_worktree", return_value=worktree_path),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session_script.get_engine_script", return_value="script"),
             patch("ai_cli.session.detect_repo_root", return_value=None),
             patch("subprocess.run", side_effect=spy_run),
@@ -2103,9 +2099,11 @@ class TestGetEngineScript:
         assert "ai_name=session-tst-1" in script
         assert "CC_TMUX_SESSION" in script
 
-    def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
+    def test_given_agy_engine_when_script_is_generated_then_invokes_agy_launcher(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session")
-        assert "gemini" in script
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--command agy" in script
+        assert '"gemini_cmd"' not in script
         assert "engine=g" in script
         assert "GG_TMUX_SESSION" in script
 
@@ -2150,8 +2148,8 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_no_sandbox_then_explicit_no_sandbox_flag(self):
         script = get_engine_script("g", "session-tst-1", "g-session-tst-1", "g-session-", "session", sandbox=False)
-        assert "--no-sandbox" in script
-        assert "gemini -y --no-sandbox" in script
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--sandbox" not in script
 
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
@@ -2194,7 +2192,11 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows has no process group to hand the terminal to: a foreground child.
+            assert '"$_supervisor_script" --ai-cli-child-body\n' in script
+        else:
+            assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
         assert '"$_supervisor_script" --ai-cli-child-body &' not in script
         assert "exit 78" in script
         assert f'exec "{shell}" "$_script_stable_path"' not in script
@@ -2236,19 +2238,18 @@ class TestCliSessionStablePath:
                                     "ai_cli.session.create_worktree",
                                     return_value=_successful_worktree(tmp_path, "session-tst-1"),
                                 ):
-                                    with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
-                                            with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-                                                with patch("subprocess.run", side_effect=fake_run):
-                                                    with patch(
-                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                                                        return_value=TmuxSessionIdentity(
-                                                            "$42", "c-session-tst-1", "test-generation"
-                                                        ),
-                                                    ):
-                                                        with patch("os.execvp", side_effect=SystemExit(0)):
-                                                            with pytest.raises(SystemExit):
-                                                                cli()
+                                    with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
+                                        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
+                                            with patch("subprocess.run", side_effect=fake_run):
+                                                with patch(
+                                                    "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                    return_value=TmuxSessionIdentity(
+                                                        "$42", "c-session-tst-1", "test-generation"
+                                                    ),
+                                                ):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
 
     def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 1 (no session), new-session → 0 (success)
@@ -3197,6 +3198,14 @@ class TestTunnel:
 
 @pytest.mark.usefixtures("tmux_available")
 class TestLocalProjectChdir:
+    @pytest.fixture(autouse=True)
+    def _agy_ready(self, monkeypatch):
+        real_which = shutil.which
+        monkeypatch.setattr("ai_cli.agy_session.subscription_refusal", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            "shutil.which", lambda name, *a, **kw: "/usr/bin/agy" if name == "agy" else real_which(name, *a, **kw)
+        )
+
     def test_when_local_project_flag_then_chdirs_to_project_dir(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproject"
         project_dir.mkdir(parents=True)
@@ -3214,8 +3223,6 @@ class TestLocalProjectChdir:
                 "ai_cli.session.build_session_name",
                 return_value=("g-pytest-leak-guard-myproject-1", "pytest-leak-guard-myproject-1"),
             ),
-            patch("ai_cli.config.get_session_map", return_value={}),
-            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch(
                 "ai_cli.session.create_worktree",
                 return_value=_successful_worktree(tmp_path, "pytest-leak-guard-myproject-1"),
@@ -3244,8 +3251,6 @@ class TestLocalProjectChdir:
                 "ai_cli.session.build_session_name",
                 return_value=("g-pytest-leak-guard-session-tst-1", "pytest-leak-guard-session-tst-1"),
             ),
-            patch("ai_cli.config.get_session_map", return_value={}),
-            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch(
                 "ai_cli.session.create_worktree",
                 return_value=_successful_worktree(tmp_path, "pytest-leak-guard-session-tst-1"),

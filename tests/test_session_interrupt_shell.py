@@ -18,6 +18,7 @@ from process_wait import scaled
 from ai_cli import config, session, session_commands, session_lifecycle_script, session_migrate
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
+from ai_cli.codex_session import confirm, prepare
 from ai_cli.session_script import get_engine_script
 
 pytestmark = [
@@ -65,12 +66,33 @@ def pane_session(request, tmp_path, monkeypatch):
     binaries.mkdir()
     # All project/engine services are fakes; terminal, signals, wrapper, lifecycle
     # persistence and tmux remain real. No inherited login files or direnv run.
-    (binaries / "ai").write_text('#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\nexit 0\n')
+    (binaries / "ai").write_text(
+        '#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
+        f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        f'if [ "$1" = internal ] && [ "$2" = agy-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
+        "exit 0\n"
+    )
     (binaries / "direnv").write_text("#!/bin/sh\nexit 0\n")
     agent = (
         f"#!{sys.executable}\n"
-        "import os, signal, sys, time, tty\nfrom pathlib import Path\n"
+        "import os, shlex, signal, subprocess, sys, time, tomllib, tty\nfrom pathlib import Path\n"
         "import json\nfrom ai_cli.process_probe import probe_for\n"
+        "if Path(sys.argv[0]).name == 'codex':\n"
+        "    if sys.argv[1:] == ['--version']:\n"
+        "        print('codex-cli 0.169.0'); sys.exit(0)\n"
+        "    args = sys.argv[1:]\n"
+        "    config = tomllib.loads(args[args.index('-c') + 1])\n"
+        "    command = config['hooks']['SessionStart'][0]['hooks'][0]['command']\n"
+        "    event = {'hook_event_name': 'SessionStart', 'session_id': args[args.index('resume') + 1],\n"
+        "             'cwd': os.getcwd(), 'transcript_path': os.environ['TEST_CODEX_ROLLOUT']}\n"
+        "    subprocess.run(shlex.split(command), input=json.dumps(event), text=True, check=True)\n"
+        "if Path(sys.argv[0]).name == 'agy':\n"
+        "    if sys.argv[1:] == ['--version']:\n"
+        "        print('antigravity 1.5.14'); sys.exit(0)\n"
+        "    if os.environ.get('AI_CLI_AGY_CONFIRM_TOKEN'):\n"
+        "        event = {'hookEventName': 'SessionStart', 'conversationId': '11111111-2222-4333-8444-555555555555',\n"
+        "                 'cwd': os.getcwd()}\n"
+        "        subprocess.run(['ai', 'internal', 'agy-session-confirm'], input=json.dumps(event), text=True, check=True)\n"
         "records = Path.home() / '.claude' / 'sessions'\nrecords.mkdir(parents=True, exist_ok=True)\n"
         "pid = os.getpid()\n"
         "(records / f'{pid}.json').write_text(json.dumps({'pid': pid, 'name': 'session-1', "
@@ -90,7 +112,7 @@ def pane_session(request, tmp_path, monkeypatch):
         "if command == 'crash': os.kill(os.getpid(), signal.SIGKILL)\n"
         "sys.exit(int(command))\n"
     )
-    for name in ("claude", "gemini", "codex"):
+    for name in ("claude", "agy", "gemini", "codex"):
         (binaries / name).write_text(agent)
     (binaries / "python3").symlink_to(sys.executable)
     for binary in binaries.iterdir():
@@ -111,8 +133,39 @@ def pane_session(request, tmp_path, monkeypatch):
     class Pane:
         name = "c-session-1"
 
-        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_clean=False):
-            if quick_clean:
+        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_exit=False):
+            if engine == "g":
+                token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+                token.parent.mkdir(parents=True, exist_ok=True)
+                token.write_text('{"access_token": "tok"}', encoding="utf-8")
+            if engine == "cx":
+                # Give prepare real, synthetic confirmation and persistence evidence.
+                # Version queries must not count as an interactive engine launch.
+                native_home = tmp_path / "codex"
+                monkeypatch.setenv("CODEX_HOME", str(native_home))
+                record = config.get_xdg_state_home() / "sessions" / f"{self.name}.codex.json"
+                prepare(record, tmp_path, self.name, fresh=True, route="local-tmux", client_version="0.169.0")
+                thread = "11111111-2222-4333-8444-555555555555"
+                rollout = native_home / "sessions" / "2026" / "11" / "20" / f"rollout-{thread}.jsonl"
+                rollout.parent.mkdir(parents=True)
+                rollout.write_text(
+                    json.dumps({"type": "session_meta", "payload": {"id": thread, "cwd": str(tmp_path)}})
+                )
+                confirm(
+                    record,
+                    json.loads(record.read_text())["in_flight"]["token"],
+                    {
+                        "hook_event_name": "SessionStart",
+                        "session_id": thread,
+                        "cwd": str(tmp_path),
+                        "transcript_path": str(rollout),
+                    },
+                )
+                doc = json.loads(record.read_text())
+                doc["in_flight"]["writer"]["pid"] = 99999999
+                record.write_text(json.dumps(doc))
+                monkeypatch.setenv("TEST_CODEX_ROLLOUT", str(rollout))
+            if quick_exit:
                 date = binaries / "date"
                 date.write_text(
                     '#!/bin/sh\nif [ "$1" = +%s ]; then echo 1000000000; '
@@ -276,7 +329,10 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("send-keys", "-t", target, "C-c").returncode == 0
 
         def exit_agent(self, command):
-            action.write_text(command)
+            # The agent treats the presence of action as a complete command.
+            pending = action.with_suffix(".tmp")
+            pending.write_text(command)
+            pending.replace(action)
 
         def type_line(self, command):
             assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
@@ -286,7 +342,8 @@ def pane_session(request, tmp_path, monkeypatch):
             assert tmux("has-session", "-t", self.name).returncode == 0
             # Execute a command: an alive/dead pane or an echoed keystroke is not a shell.
             proof = tmp_path / "shell-proof"
-            command = f"printf '%s' interactive > {shlex.quote(str(proof))}"
+            pending = shlex.quote(str(proof.with_suffix(".tmp")))
+            command = f"printf '%s' interactive > {pending} && mv {pending} {shlex.quote(str(proof))}"
             assert tmux("send-keys", "-t", self.name, command, "Enter").returncode == 0
             assert _wait(proof.exists), self.capture()
             assert proof.read_text() == "interactive"
@@ -305,6 +362,29 @@ def pane_session(request, tmp_path, monkeypatch):
             tmux("kill-server")
 
 
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_waiting_agent_when_exit_command_is_written_then_only_complete_command_is_visible(
+    pane_session, tmp_path, monkeypatch
+):
+    action = tmp_path / "action"
+    early_commands = []
+    real_open = Path.open
+
+    def observe_open(path, mode="r", *args, **kwargs):
+        stream = real_open(path, mode, *args, **kwargs)
+        # Schedule the reader after the real write-open, before any bytes are written.
+        if mode == "w" and path.parent == action.parent and action.exists():
+            early_commands.append(action.read_text())
+        return stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", observe_open)
+        pane_session.exit_agent("0")
+
+    assert early_commands == []
+    assert action.read_text() == "0"
+
+
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("engine", ["c", "cx"])
 def test_given_attached_launcher_when_interrupted_then_original_shell_survives(pane_session, engine, remote):
@@ -318,7 +398,7 @@ def test_given_attached_launcher_when_interrupted_then_original_shell_survives(p
 def test_given_early_raw_interrupt_when_remote_agent_exits_cleanly_then_original_shell_survives(pane_session, engine):
     # Pin elapsed time below the startup guard even on a busy host. A TUI can
     # consume Ctrl+C and return zero immediately after it starts.
-    pane_session.start(engine=engine, remote=True, mode="raw-clean", caller=True, quick_clean=True)
+    pane_session.start(engine=engine, remote=True, mode="raw-clean", caller=True, quick_exit=True)
     pane_session.interrupt()
     assert _wait(lambda: pane_session.after.exists() or "close this session" in pane_session.capture())
     if pane_session.alive():
@@ -346,9 +426,11 @@ def test_given_unregistered_session_when_interrupted_then_original_shell_survive
 
 @pytest.mark.parametrize("engine", ["c", "cx"])
 def test_given_remote_recovery_shell_when_exited_then_original_shell_survives(pane_session, engine):
-    pane_session.start(engine=engine, remote=True, caller=True)
+    # Exercise the quick-failure path even if launching and attaching the caller takes seconds.
+    pane_session.start(engine=engine, remote=True, caller=True, quick_exit=True)
     pane_session.exit_agent("1")
     assert _wait(lambda: "close this session" in pane_session.capture()), pane_session.capture()
+    assert _wait(lambda: "test-shell>" in pane_session.capture()), pane_session.capture()
     pane_session.type_line("exit")
     pane_session.assert_caller()
     assert pane_session.count() == 1
