@@ -12,9 +12,9 @@ from dataclasses import asdict, dataclass
 import psutil
 from portalocker.exceptions import LockException
 
+from . import session_naming, tmux_binary
 from . import session_registry as registry
 from . import session_run_state as state
-from . import tmux_binary
 
 
 @dataclass(frozen=True)
@@ -205,7 +205,9 @@ def exit_session(
 
         def clean(doc):
             row = state._find(doc, name)
-            if row.get("generation") != generation or row.get("owning_host") != host:
+            if row.get("generation") != generation or not session_naming.machine_identity(host).matches(
+                row.get("owning_host")
+            ):
                 raise ValueError("session host or generation changed before cleanup")
             try:
                 errors.extend(_cleanup(state.exit_teardown(saved)["targets"], timeout))
@@ -244,6 +246,7 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
 
     doc = registry.load_registry()
     host = state.config.load_config(read_only=True).get("machine", {}).get("host_id") or doc["machine"]
+    here = session_naming.machine_identity(host)
     ancestors = {p.pid for p in psutil.Process().parents()}
     sessions = live_sessions()
     probe = probe_for()
@@ -270,7 +273,7 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
         matches = [
             r
             for r in doc["sessions"]
-            if r.get("kind") == "local" and r.get("name") in names and r.get("owning_host") == host
+            if r.get("kind") == "local" and r.get("name") in names and here.matches(r.get("owning_host"))
         ]
         if len(matches) != 1:
             raise ValueError(
@@ -280,7 +283,7 @@ def resolve_exit(name: str | None) -> tuple[dict, dict, bool]:
     else:
         resolved_name = name
     row = state._find(doc, resolved_name)
-    if row.get("owning_host") != host or not row.get("generation"):
+    if not here.matches(row.get("owning_host")) or not row.get("generation"):
         raise ValueError("session host or generation cannot be verified")
     saved = state.exit_teardown(row)
     if saved.get("generation") == row["generation"]:
@@ -343,7 +346,7 @@ def owning_receipt(name: str, generation: str | None = None, timeout: float = 5)
         or registry.load_registry()["machine"]
     )
     row = state._find(registry.load_registry(), name)
-    if row.get("owning_host") != local_host or not row.get("generation"):
+    if not session_naming.machine_identity(local_host).matches(row.get("owning_host")) or not row.get("generation"):
         raise ValueError("owning host or generation cannot be verified")
     if generation:
         if row["generation"] != generation:
@@ -414,7 +417,10 @@ def _remote_receipt(row: dict, *, generation: str | None = None, timeout: float 
         or not receipt.get("owning_host")
         or receipt.get("run_state") not in {"running", "exited", "unknown"}
         or (generation and receipt["generation"] != generation)
-        or (row.get("owning_host") and row["owning_host"] != receipt["owning_host"])
+        or (
+            row.get("owning_host")
+            and not session_naming.machine_identity(row["owning_host"]).matches(receipt["owning_host"])
+        )
     ):
         raise ValueError("invalid owning-host generation receipt")
     return receipt

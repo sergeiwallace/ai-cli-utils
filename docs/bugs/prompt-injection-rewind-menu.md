@@ -9,6 +9,8 @@ task: AI-CLI-35
 
 # [BUG-002] Automatic tmux injection triggers CC rewind conversation TUI
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** fix-deployed — `f4db5bf` (2026-04-06)
 
 **Severity:** P0

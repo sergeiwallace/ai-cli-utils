@@ -122,10 +122,13 @@ def _status_rank(status: str) -> int:
 
 
 def _ordered(rows: list[Row], sort_by: Sequence[str], local_host: str) -> list[Row]:
+    from . import session_naming
+
+    here = session_naming.machine_identity(local_host)
     keys = {
         "status": lambda r: _status_rank(r.status),
         "name": lambda r: r.name,
-        "host": lambda r: (r.host != local_host, r.host),
+        "host": lambda r: (not here.matches(r.host), r.host),
         "relaunch": lambda r: r.relaunch,
         "changed": lambda r: r.changed,
     }
@@ -137,7 +140,9 @@ def _ordered(rows: list[Row], sort_by: Sequence[str], local_host: str) -> list[R
 
 def _group_order(group_by: str, value: str, local_host: str) -> tuple:
     if group_by == "host":
-        return (value != local_host, value)
+        from . import session_naming
+
+        return (not session_naming.machine_identity(local_host).matches(value), value)
     if group_by == "status":
         return (_status_rank(value), value)
     return (value,)

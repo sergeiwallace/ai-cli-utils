@@ -471,7 +471,6 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=fake),
         patch("ai_cli.main._direnv_installed", return_value=True),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -784,7 +783,7 @@ def _stamp_within(line: str, started: datetime, finished: datetime) -> bool:
     return earliest <= match.group(1) <= latest
 
 
-@pytest.mark.parametrize("engine", ["c", "g", "p"])
+@pytest.mark.parametrize("engine", ["c", "p"])
 def test_given_a_fresh_unapproved_worktree_envrc_when_the_child_body_starts_then_the_agent_gets_its_environment(
     session_repo, stub_direnv, child_body, engine
 ):
@@ -900,7 +899,6 @@ def _launch_in(repo_root: Path, tmp_path: Path, monkeypatch, stub_direnv):
         patch("ai_cli.main._direnv_installed", return_value=True),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -939,6 +937,36 @@ def test_given_a_reused_worktree_whose_envrc_changes_on_sync_when_launched_then_
     assert (worktree / ".envrc").read_text() == "export PROJECT_ENV=v2\n", "precondition: the launch synced"
     assert code == 0 and handoffs, "the launch did not reach its handoff"
     assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
+
+
+def test_given_a_checkout_that_converts_line_endings_when_a_synced_envrc_is_launched_then_it_is_approved(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    """Git for Windows checks files out with ``core.autocrlf=true``: the synced worktree file has
+    CRLF line endings while the ``origin/HEAD`` blob has LF, and it is still the reviewed content."""
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    stub_direnv.allow(worktree)
+    _land_on_main(session_repo, "export PROJECT_ENV=v2\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert (worktree / ".envrc").read_bytes() == b"export PROJECT_ENV=v2\r\n", "precondition: CRLF checkout"
+    assert code == 0 and handoffs, "the launch did not reach its handoff"
+    assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
+
+
+def test_given_a_converting_checkout_and_a_session_edit_when_launched_then_the_edit_is_still_refused(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    (worktree / ".envrc").write_bytes(b"export PROJECT_ENV=edited-by-the-session\r\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert handoffs == [], "the agent was handed off with content no reviewed copy carries"
+    assert not stub_direnv.approved(worktree)
 
 
 def test_given_an_untrusted_envrc_when_launched_then_the_launch_fails_before_the_handoff_and_names_the_fix(

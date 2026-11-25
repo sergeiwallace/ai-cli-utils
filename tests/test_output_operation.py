@@ -180,6 +180,7 @@ def test_given_an_operation_outside_the_vocabulary_when_a_producer_emits_then_it
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_per_operation_style_when_rendered_on_a_pty_then_it_applies(tmp_path):
     _write_config('[output.elements.operation.styles]\nreconnect = "bold magenta"\n')
     terminal = Terminal(columns=400)
@@ -203,6 +204,7 @@ def test_given_a_per_operation_style_when_rendered_on_a_pty_then_it_applies(tmp_
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_launch_output_when_rendered_on_a_pty_then_the_launch_lines_carry_their_operations(tmp_path):
     terminal = Terminal(columns=400)
     try:

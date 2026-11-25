@@ -1,0 +1,1 @@
+- Detect ambiguity across both current-prefix and legacy-prefix live Antigravity slots during `ai g -r` resume instead of letting a single current-prefix match silently shadow a legacy-prefix slot.

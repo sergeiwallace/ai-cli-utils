@@ -1,0 +1,1 @@
+- Label manually started `g-` Antigravity tmux panes as `[agy]` in `ai attach` and `ai ls` by inspecting the live tmux pane command when session metadata files are absent.

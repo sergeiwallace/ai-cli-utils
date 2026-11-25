@@ -8,6 +8,8 @@ source: ai-cli-utils
 
 # iTerm2 Tab Title and Color System — Design
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** IMPLEMENTED — 2026-04-04
 
 **Created:** 2026-04-02

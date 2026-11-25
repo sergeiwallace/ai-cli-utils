@@ -21,7 +21,7 @@ from ai_cli import config, main, session_restart
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_lifecycle_script import session_state_functions
-from ai_cli.session_script import get_engine_script
+from ai_cli.session_script import POSIX_AGENT_RUN, WINDOWS_AGENT_RUN, WINDOWS_CHILD_INT, get_engine_script
 
 
 @pytest.fixture
@@ -50,6 +50,18 @@ def test_given_pre_feature_program_when_ac_i_1_compared_then_lifecycle_insertion
     assert session_restart._compatible(legacy, current)
     assert "_ai_mark_running || exit 76" in current
     assert "(( _promotion_status == 2 )) && break" in current
+
+
+def test_given_supervisor_with_retired_command_metadata_when_compared_then_only_the_field_is_ignored(programs):
+    _, current = programs
+    metadata_line = next(line for line in current.splitlines() if "printf '%s'" in line and "session-meta-" in line)
+    raw = shlex.split(metadata_line)[2]
+    old_payload = shlex.quote(json.dumps({**json.loads(raw), "gemini_cmd": "/opt/example's tools/gemini"}))
+    old_line = metadata_line.replace(shlex.quote(raw), old_payload)
+
+    assert session_restart._compatible(current.replace(metadata_line, old_line), current)
+    edited_line = old_line.replace(old_payload, f"{old_payload} extra")
+    assert not session_restart._compatible(current.replace(metadata_line, edited_line), current)
 
 
 def test_given_program_launched_before_host_refresh_when_compared_then_it_is_compatible(programs):
@@ -341,3 +353,27 @@ def test_given_program_started_before_the_upgrade_when_restart_is_refused_then_i
     code, out, err = run_cli(["ai", "-X", world.record["sessionId"]], config=world.settings)
     assert code == 1
     assert "started before" in out + err and relaunch in out + err
+
+
+@pytest.fixture
+def windows_program(programs, monkeypatch):
+    """The current program as a Git Bash launcher renders it, from the same metadata."""
+    legacy, _ = programs
+    metadata_line = next(line for line in legacy.splitlines() if "printf '%s'" in line and "session-meta-" in line)
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: True)
+    return main._engine_script_from_meta(json.loads(shlex.split(metadata_line)[2]))
+
+
+def test_given_windows_program_launched_before_the_foreground_agent_when_compared_then_it_is_compatible(
+    windows_program,
+):
+    assert WINDOWS_AGENT_RUN in windows_program
+    assert WINDOWS_CHILD_INT in windows_program
+    previous = windows_program.replace(WINDOWS_AGENT_RUN, POSIX_AGENT_RUN).replace(WINDOWS_CHILD_INT, "")
+    assert session_restart._compatible(previous, windows_program)
+
+
+def test_given_windows_program_whose_agent_launch_was_edited_when_compared_then_it_is_rejected(windows_program):
+    edited = windows_program.replace(WINDOWS_AGENT_RUN, WINDOWS_AGENT_RUN.replace('"$@"\n', '"$@" &\n'))
+    assert edited != windows_program
+    assert not session_restart._compatible(edited, windows_program)

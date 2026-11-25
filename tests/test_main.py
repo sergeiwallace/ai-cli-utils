@@ -311,11 +311,16 @@ class TestGetEngineScript:
         assert "agent_direnv_initialized=false" in script
         assert 'if _direnv_exports="$(direnv export bash)"; then' in script
         assert 'eval "$_direnv_exports"' in script
-        # A backgrounded TUI must explicitly retain its controlling terminal.
-        # The fallback preserves stdin for non-terminal subprocess launches.
-        assert '"$@" </dev/tty &' in script
-        assert '"$@" <&0 &' in script
-        assert 'wait "$active_agent_pid"' in script
+        if _session_script._native_windows_launcher():
+            # Native Windows runs the agent as the shell's foreground command.
+            assert '      "$@"\n      agent_exit_code=$?' in script
+            assert '"$@" </dev/tty &' not in script
+        else:
+            # A backgrounded TUI must explicitly retain its controlling terminal.
+            # The fallback preserves stdin for non-terminal subprocess launches.
+            assert '"$@" </dev/tty &' in script
+            assert '"$@" <&0 &' in script
+            assert 'wait "$active_agent_pid"' in script
         assert '_ai_emit warning direnv "direnv could not load $direnv_root/.envrc' in script
         assert 'direnv exec "$direnv_root" "$@"' not in script
 
@@ -332,7 +337,7 @@ class TestGetEngineScript:
 
         assert "cd -- /tmp/project-worktree" in script
         assert script.index('direnv_root="$PWD"') > script.index("cd -- /tmp/project-worktree")
-        assert script.count("run_agent gemini") == 4
+        assert "-m ai_cli.agy_session launch" in script
         assert '"$SHELL"' not in script
         assert "exit 79" in script
 
@@ -698,13 +703,13 @@ class TestGetEngineScript:
 
 
 def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
-    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
+    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "--no-sandbox", [])
 
     assert command == ["pi", "--provider", "openai-codex", "--name", "myproject-1"]
 
 
 def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
-    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
+    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "--no-sandbox", [], resume=True)
 
     assert command == ["pi", "--continue", "--provider", "openai-codex", "--name", "myproject-1"]
 
@@ -712,21 +717,19 @@ def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
 def test_given_pi_bare_launch_when_provider_configured_then_uses_configured_provider():
     # AI-CLI-1rk1: pi's own default provider (google) is silently unready almost
     # everywhere -- ai-cli-utils must never launch pi without an explicit --provider.
-    command = _bare_engine_command(
-        "p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], pi_provider="anthropic"
-    )
+    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "--no-sandbox", [], pi_provider="anthropic")
 
     assert command == ["pi", "--provider", "anthropic", "--name", "myproject-1"]
 
 
 def test_given_codex_bare_launch_when_not_resuming_then_starts_interactive_codex():
-    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
+    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "--no-sandbox", [])
 
     assert command == ["codex"]
 
 
 def test_given_codex_bare_launch_when_resuming_then_resumes_last_session_in_worktree():
-    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
+    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "--no-sandbox", [], resume=True)
 
     assert command == ["codex", "resume", "--last"]
 
@@ -738,7 +741,7 @@ def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_s
         patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[transcript]),
         patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
     ):
-        command = _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+        command = _bare_engine_command("c", "session-1", Path("/tmp"), None, "--no-sandbox", [])
 
     assert command[-4:] == ["--resume", transcript.stem, "--name", "session-1"]
 
@@ -746,7 +749,7 @@ def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_s
 def test_given_invalid_claude_transcript_id_when_bare_launching_then_fails_loudly():
     with patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[Path("/tmp/not-a-session-id.jsonl")]):
         with pytest.raises(RuntimeError, match="invalid session UUID"):
-            _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+            _bare_engine_command("c", "session-1", Path("/tmp"), None, "--no-sandbox", [])
 
 
 def test_given_resolve_continue_target_with_lone_mismatch_confirmed_then_prints_it(capsys):

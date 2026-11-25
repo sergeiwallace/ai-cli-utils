@@ -133,9 +133,9 @@ class TestGenerateDynamicProfile:
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
-    def test_inherits_from_default_for_gemini(self, tmp_path):
+    def test_given_agy_when_generating_profile_then_inherits_default(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("gemini-session", "#2ecc71", "gemini")
+            out = generate_dynamic_profile("test-session", "#2ecc71", "agy")
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 

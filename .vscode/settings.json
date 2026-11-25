@@ -11,7 +11,7 @@
       "color": "terminal.ansiMagenta",
       "overrideName": true
     },
-    "gemini": {
+    "agy": {
       "path": "zsh",
       "icon": "material-spark",
       "color": "terminal.ansiBlue",

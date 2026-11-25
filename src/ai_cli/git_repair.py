@@ -122,6 +122,30 @@ def _git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     for var in _GIT_TARGETING_VARS:
         env.pop(var, None)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return with_git_config(env, GIT_LONG_PATHS)
+
+
+# Git for Windows refuses a working-tree path over 260 characters ("Filename too long") unless
+# core.longpaths is on, and git elsewhere ignores the key. A session worktree nests every tracked
+# path under `<repo>/.worktrees/<name>/`, so a file that fits the main checkout can fail the
+# session's checkout with "Could not reset index file to revision 'HEAD'".
+GIT_LONG_PATHS = (("core.longpaths", "true"),)
+
+
+def with_git_config(env: dict[str, str], pairs: tuple[tuple[str, str], ...]) -> dict[str, str]:
+    """Append ``pairs`` to the ``GIT_CONFIG_COUNT`` entries ``env`` already carries, in place."""
+    try:
+        count = max(0, int(env.get("GIT_CONFIG_COUNT") or 0))
+    except ValueError:
+        count = 0
+    present = {(env.get(f"GIT_CONFIG_KEY_{i}"), env.get(f"GIT_CONFIG_VALUE_{i}")) for i in range(count)}
+    for key, value in pairs:
+        if (key, value) in present:
+            continue
+        env[f"GIT_CONFIG_KEY_{count}"] = key
+        env[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
     return env
 
 

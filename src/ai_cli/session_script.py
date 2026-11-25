@@ -129,6 +129,54 @@ while True:
 # Where an MSYS2 or Cygwin shell (Git Bash) publishes the Windows pid of each of its processes.
 MSYS_PROC_ROOT = "/proc"
 
+# The agent launch in the child body. On POSIX the agent is a background job so the
+# INT trap can run while the agent holds the terminal, and the loop collects its exit.
+POSIX_AGENT_RUN = """      if [[ -t 0 && -r /dev/tty ]]; then
+        _agent_tty=$(tty 2>/dev/null)
+        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
+          "$@" <"$_agent_tty" &
+        else
+          "$@" </dev/tty &
+        fi
+      else
+        "$@" <&0 &
+      fi
+      active_agent_pid=$!
+    # BEGIN SHELL RETURN agent-wait
+      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
+      # its actual exit before resetting the terminal or replacing the body.
+      while true; do
+        wait "$active_agent_pid"
+        agent_exit_code=$?
+        kill -0 "$active_agent_pid" 2>/dev/null || break
+      done
+    # END SHELL RETURN
+"""
+# Native Windows: the agent runs as this shell's foreground command, as the
+# child body already does under the supervisor. Under Git Bash, `wait` on a backgrounded
+# native agent did not return once Ctrl+C presses arrived while the agent was exiting: the
+# agent was gone, the INT trap kept running, and the wait never ended, so the recorded stop
+# was never acted on and the pane could only be left by detaching. The console hands
+# Ctrl+C to the agent directly, so nothing needs a pid to forward it to, and a foreground
+# command defers the INT trap until the agent returns.
+WINDOWS_AGENT_RUN = """    # BEGIN SHELL RETURN agent-wait
+      "$@"
+      agent_exit_code=$?
+    # END SHELL RETURN
+"""
+# Native Windows: a Ctrl+C reaches this shell only when the agent is not reading the
+# console raw, which is while it exits after its own double Ctrl+C or once it is gone; a
+# lone Ctrl+C inside a running agent is a key the agent reads. So every press that gets
+# here is a request to stop. The double-press window below cannot work here anyway: the
+# trap waits behind each native helper (each a multi-second process start on a loaded
+# host), so the presses arrive coalesced and seconds apart, and every one counted as a
+# first press again. Builtins only, so a press costs no process start.
+WINDOWS_CHILD_INT = """    # BEGIN SHELL RETURN windows-interrupt
+      printf '%s\\n' "exit" > "$_child_int_exit_file"
+      return
+    # END SHELL RETURN
+"""
+
 
 def _native_windows_launcher() -> bool:
     """Whether the script is generated for native Windows Python under a POSIX-emulating shell.
@@ -261,15 +309,68 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    gemini_cmd: str = "gemini",
+    agy_cmd: str | None = None,
+    agy_args: list[str] | None = None,
+    resume: bool = False,
     pi_provider: str = "openai-codex",
     launch_log_path: str | None = None,
 ) -> str:
+    from . import agy_session as _agy_session
+
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
-    sandbox_flag = "-s" if sandbox else "--no-sandbox"
+    if engine == "g":
+        resolved_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
+        resolved_agy_args = list(agy_args or [])
+        agy_is_print = _agy_session.is_print_mode([*shlex.split(resolved_agy_cmd)[1:], *resolved_agy_args])
+    else:
+        resolved_agy_cmd = "agy"
+        resolved_agy_args = []
+        agy_is_print = False
+    shell_words = {
+        "__agy_record__": '"$_ai_state_dir/sessions/$tmux_session.agy.json"',
+        "__agy_cwd__": '"$PWD"',
+        "__agy_slot__": '"$tmux_session"',
+        "__agy_title__": '"$ai_name"',
+        "__agy_fresh__": '"$first_run"',
+    }
+    agy_argv = _agy_session.launch_command(
+        resolved_agy_cmd,
+        "__agy_record__",
+        "__agy_cwd__",
+        "__agy_slot__",
+        "__agy_title__",
+        fresh=False if resume else "__agy_fresh__",
+        route="paired-host-tmux" if is_remote else "local-tmux",
+        sandbox=sandbox,
+    )
+    agy_pane = " ".join(shell_words.get(word, shlex.quote(word)) for word in agy_argv)
+    agy_post_run = (
+        'exit "${agent_exit_code:-0}"' if agy_is_print else 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi'
+    )
+    agy_supervisor_init = (
+        '      _supervisor_agy_signin_token="${AI_CLI_AGY_SIGN_IN_VERIFIED:-}"\n'
+        "      unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        '      if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '        tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true\n'
+        "      fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_before_child = (
+        '        if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '          export AI_CLI_AGY_SIGN_IN_VERIFIED="$_supervisor_agy_signin_token"\n'
+        '          _supervisor_agy_signin_token=""\n'
+        "        else\n"
+        "          unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        "        fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_after_child = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n" if engine == "g" else ""
+    agy_extra_tokens = " ".join(shlex.quote(arg) for arg in resolved_agy_args)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
     shell = {
@@ -342,26 +443,28 @@ def get_engine_script(
     _it2_show_status = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True) else "0"
 
     # Metadata baked into the template so `ai internal refresh-template` can regenerate it.
-    _meta = json.dumps(
-        {
-            "engine": engine,
-            "ai_name": ai_name,
-            "session": session,
-            "prefix": prefix,
-            "project_prefix": project_prefix,
-            "session_id_uuid": session_id_uuid or "",
-            "sandbox": sandbox,
-            "worktree_dir": worktree_dir or "",
-            "notify": notify,
-            "is_remote": is_remote,
-            "project_name": project_name,
-            "iterm2_slot": iterm2_slot or "",
-            "iterm2_cfg": iterm2_cfg or {},
-            "gemini_cmd": gemini_cmd,
-            "pi_provider": pi_provider,
-            "launch_log_path": launch_log_path or "",
-        }
-    )
+    _meta_dict = {
+        "engine": engine,
+        "ai_name": ai_name,
+        "session": session,
+        "prefix": prefix,
+        "project_prefix": project_prefix,
+        "session_id_uuid": session_id_uuid or "",
+        "sandbox": sandbox,
+        "worktree_dir": worktree_dir or "",
+        "notify": notify,
+        "is_remote": is_remote,
+        "project_name": project_name,
+        "iterm2_slot": iterm2_slot or "",
+        "iterm2_cfg": iterm2_cfg or {},
+        "pi_provider": pi_provider,
+        "launch_log_path": launch_log_path or "",
+    }
+    if engine == "g":
+        _meta_dict["agy_cmd"] = resolved_agy_cmd
+        if resolved_agy_args:
+            _meta_dict["agy_args"] = resolved_agy_args
+    _meta = json.dumps(_meta_dict)
     _generation_meta = json.dumps(
         {
             key: json.loads(_meta)[key]
@@ -449,6 +552,8 @@ def get_engine_script(
         _child_status=$?
         _supervisor_foreground=0"""
     _child_run = _windows_child_run if windows else _posix_child_run
+    _agent_run = WINDOWS_AGENT_RUN if windows else POSIX_AGENT_RUN
+    _child_int_windows = WINDOWS_CHILD_INT if windows else ""
     _windows_prelude = ""
     _signal_model_windows = ""
     _restore_terminal_windows = ""
@@ -933,7 +1038,7 @@ def get_engine_script(
         _heartbeat_pid=$!
         disown "$_heartbeat_pid" 2>/dev/null || true
       fi
-      while true; do
+{agy_supervisor_init}      while true; do
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
@@ -945,8 +1050,8 @@ def get_engine_script(
     # BEGIN RUN STATE promotion-int-baseline
         _supervisor_spawn_int_count=$_supervisor_int_count
     # END RUN STATE
-{_child_run}
-        rm -f "$_supervisor_child_ready_path"
+{agy_supervisor_before_child}{_child_run}
+{agy_supervisor_after_child}        rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
     # BEGIN RUN STATE supervisor-interrupt
           _ai_final_manual_exit
@@ -1142,7 +1247,7 @@ def get_engine_script(
     # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
     # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
     _child_record_int() {{
-      _child_int_now=$(date +%s)
+{_child_int_windows}      _child_int_now=$(date +%s)
       _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
       if [[ "$_child_saved_int_deadline" == "pending" ]] || \
         ( [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && (( _child_int_now <= _child_saved_int_deadline )) ); then
@@ -1268,27 +1373,7 @@ def get_engine_script(
       # background PID used for signal forwarding. Prefer the resolved device:
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
       _reset_agent_terminal
-      if [[ -t 0 && -r /dev/tty ]]; then
-        _agent_tty=$(tty 2>/dev/null)
-        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
-          "$@" <"$_agent_tty" &
-        else
-          "$@" </dev/tty &
-        fi
-      else
-        "$@" <&0 &
-      fi
-      active_agent_pid=$!
-    # BEGIN SHELL RETURN agent-wait
-      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
-      # its actual exit before resetting the terminal or replacing the body.
-      while true; do
-        wait "$active_agent_pid"
-        agent_exit_code=$?
-        kill -0 "$active_agent_pid" 2>/dev/null || break
-      done
-    # END SHELL RETURN
-      active_agent_pid=""
+{_agent_run}      active_agent_pid=""
     # BEGIN LAUNCH LOG agent-exit
       # The agent is gone: this body's own `ai internal` calls after it (the version check,
       # the template refresh) record into the launch log again.
@@ -1520,7 +1605,7 @@ def get_engine_script(
       local type_sym="" sym=""
       [[ "$_iterm2_show_type_sym" == "1" ]] && {{
         [[ "$stype" == "cc" ]]     && type_sym="* "
-        [[ "$stype" == "gemini" ]] && type_sym="✦ "
+        [[ "$stype" == "gemini" || "$stype" == "agy" ]] && type_sym="✦ "
         [[ "$stype" == "pi" ]]     && type_sym="π "
       }}
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
@@ -1554,7 +1639,7 @@ def get_engine_script(
     # END RUN STATE
     _session_num="${{_session_num:-1}}"
     _session_type="cc"
-    [[ "$engine" == "g" ]] && _session_type="gemini"
+    [[ "$engine" == "g" ]] && _session_type="agy"
     [[ "$engine" == "p" ]] && _session_type="pi"
 
     # Export for CC Notification hook to use
@@ -1870,6 +1955,38 @@ with open(path, 'w') as f:
       }}
     # END CODEX THREAD
 
+    # BEGIN AGY THREAD
+      _run_agy() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Antigravity needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
+        local _agy_signin_token="${{AI_CLI_AGY_SIGN_IN_VERIFIED:-}}"
+        unset AI_CLI_AGY_SIGN_IN_VERIFIED
+        if [[ -n "$_agy_signin_token" ]]; then
+          tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true
+          if [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+          else
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane}
+          fi
+        elif [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+          run_agent {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+        else
+          run_agent {agy_pane}
+        fi
+        {agy_post_run}
+      }}
+    # END AGY THREAD
+
     # BEGIN TRANSCRIPT RESTORE session
       # Every resume path below takes $matched_file. Restore the session's transcripts
       # (its sub-agents' included) first; a failed restore stops before claude starts.
@@ -1901,10 +2018,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
         elif [[ "$engine" == "g" ]]; then
-          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          _run_agy --prompt-interactive "$resume_msg"
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -1929,9 +2043,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         elif [[ "$engine" == "g" ]]; then
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          _run_agy
         elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -2035,14 +2147,6 @@ with open(path, 'w') as f:
       fi
 
       {notify_cmd}
-
-      if [[ "$engine" == "g" ]]; then
-        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
-        if [[ -n "$new_uuid" ]]; then
-          uuid="$new_uuid"
-          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
-        fi
-      fi
 
       first_run=false
       # Mark session as started so hot-reload exec skips first-run-only setup blocks.
