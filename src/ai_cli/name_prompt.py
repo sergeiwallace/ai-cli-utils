@@ -71,6 +71,7 @@ def choose_by_hand(
     words: frozenset[str],
     added_by: str,
     rng: random.Random | None = None,
+    reserved_names: frozenset[str] | None = None,
 ) -> reg.Reservation:
     """Run the flow for ``--name value``; return the reservation it ends in, or raise :class:`PromptExit`."""
     try:
@@ -91,7 +92,7 @@ def choose_by_hand(
                     raise PromptExit(EXIT_ABORTED, "end of input; nothing was created")
                 candidate, from_free = answer.strip().lower(), True
             if from_free and candidate == "auto":
-                return _write_picked(registry, slot, io, words, rng)
+                return _write_picked(registry, slot, io, words, rng, reserved_names=reserved_names)
             decision = _decide(registry, slot, candidate, io, words, from_free=from_free)
             if decision is None:
                 candidate = None
@@ -99,7 +100,14 @@ def choose_by_hand(
             name, add = decision
             try:
                 return reg.reserve_hand_chosen(
-                    registry, name, slot, add=add, via="launch-prompt", added_by=added_by, words=words
+                    registry,
+                    name,
+                    slot,
+                    add=add,
+                    via="launch-prompt",
+                    added_by=added_by,
+                    words=words,
+                    reserved_names=reserved_names,
                 )
             except reg.HandChosenRefusedError as exc:
                 if not io.terminal:
@@ -159,15 +167,29 @@ def _refuse(io: PromptIO, reason: str) -> None:
 
 
 def _write_picked(
-    registry: reg.Registry, slot: reg.Slot, io: PromptIO, words: frozenset[str], rng: random.Random | None
+    registry: reg.Registry,
+    slot: reg.Slot,
+    io: PromptIO,
+    words: frozenset[str],
+    rng: random.Random | None,
+    *,
+    reserved_names: frozenset[str] | None = None,
 ) -> reg.Reservation:
+    from . import session_title
+
     try:
-        return reg.reserve_picked(registry, slot, spool=reg.read_spool(), words=words, rng=rng)
+        resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
+    except session_title.TitleError as exc:
+        raise PromptExit(EXIT_REFUSED, str(exc)) from exc
+    try:
+        return reg.reserve_picked(
+            registry, slot, spool=reg.read_spool(), words=words, rng=rng, reserved_names=resolved_reserved
+        )
     except session_naming.NamePoolExhaustedError as exc:
         raise PromptExit(1, str(exc)) from exc
     except (reg.RegistryUnreachableError, reg.RegistryContendedError) as failure:
         try:
-            reservation = reg.take_spare(registry, slot, cause=str(failure))
+            reservation = reg.take_spare(registry, slot, cause=str(failure), reserved_names=resolved_reserved)
         except reg.SparesExhaustedError as exc:
             raise PromptExit(EXIT_UNREACHABLE, str(exc)) from exc
         io.say(f"offline: using reserved spare {reservation.name} ({failure})")

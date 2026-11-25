@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import name_registry as reg
-from . import session_clients
+from . import session_clients, session_naming
 
 ENGINES = ("c", "g", "p", "cx")
 LIVENESS_TOOL = "fleet-liveness"
@@ -130,7 +130,7 @@ def locate(registry: reg.Registry, query: str, host: str, *, projects_root: Path
         return Located(None, local, None, None, notes, stale_tip)
     title, machine = str(row.get("title") or row.get("token")), str(row.get("machine"))
     local = liveness = None
-    if machine == host:
+    if session_naming.machine_identity(host).matches(machine):
         local = local_reading(row, projects_root)
     else:
         liveness = _run_tool(LIVENESS_TOOL, "status", "--session", f"{title}@{machine}", "--json")

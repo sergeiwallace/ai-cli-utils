@@ -342,6 +342,7 @@ def _proc_start(pid: int) -> int | str:
     return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()[19])
 
 
+@pytest.mark.real_pty
 def test_given_session_record_for_a_process_suspended_in_its_terminal_when_liveness_checked_then_resumed_not_ended(
     tmp_path, monkeypatch, suspended_in_terminal
 ):
@@ -370,6 +371,7 @@ def test_given_session_record_for_a_process_suspended_in_its_terminal_when_liven
     assert (sessions / f"{pid}.json").exists(), "a resumed session's record must not be pruned"
 
 
+@pytest.mark.real_pty
 def test_given_suspended_session_continued_after_liveness_classified_it_when_checked_then_not_ended(
     tmp_path, monkeypatch, suspended_in_terminal
 ):
@@ -449,6 +451,7 @@ os.kill(leader, signal.SIGKILL)
 
 
 @pytest.mark.skipif(not _HAS_PROC, reason="the CC session registry records procStart from /proc")
+@pytest.mark.real_pty
 def test_given_stopped_session_in_a_terminal_launchers_own_group_when_checked_then_reclaimed_not_resumed(tmp_path):
     """A launcher run from a terminal shares its foreground group with anything it forked.
 

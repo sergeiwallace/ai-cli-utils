@@ -12,15 +12,23 @@ import sys
 from . import tmux_binary
 from .config import RELAUNCH_DEFAULTS, read_relaunch_config
 
-# Runs the login shell ("$@") and kills its whole process group as soon as the caller is gone.
-# Its stdin is a pipe the caller holds open and never writes, so the background read returns
-# only when the caller exits for any reason, SIGKILL included, which no cleanup code survives.
+# Runs the login shell ("$@") and, as soon as the caller is gone, kills the shell, the process
+# group the shell may have moved into, and the watchdog's own group. Its stdin is a pipe the
+# caller holds open and never writes, so the monitor's read returns only when the caller exits
+# for any reason, SIGKILL included, or closes the pipe on a timeout. An interactive shell can
+# put itself in a group of its own, which a kill of the watchdog's group alone never reaches.
 _LOGIN_PROBE_WATCHDOG = (
     "exec 3<&0 </dev/null; "
-    "(read -r _ <&3; kill -KILL 0) >/dev/null 2>&1 & monitor=$!; "
-    '"$@" 3<&-; code=$?; '
+    '"$@" 3<&- & shell=$!; '
+    "(read -r _ <&3; "
+    'kill -KILL -"$shell" 2>/dev/null; kill -KILL "$shell" 2>/dev/null; kill -KILL 0) '
+    ">/dev/null 2>&1 & monitor=$!; "
+    'wait "$shell"; code=$?; '
     'kill -KILL "$monitor" 2>/dev/null; exit "$code"'
 )
+
+# How long a timed-out probe waits for the monitor to kill the shell before killing the group.
+_MONITOR_GRACE_SECONDS = 2.0
 
 
 def _run_login_probe(command: list[str], env: dict, timeout: float) -> tuple[int, str]:
@@ -46,6 +54,7 @@ def _run_login_probe(command: list[str], env: dict, timeout: float) -> tuple[int
         )
         return completed.returncode, completed.stdout
     caller_gone, caller_alive = os.pipe()
+    alive_open = True
     try:
         try:
             process = subprocess.Popen(
@@ -60,18 +69,28 @@ def _run_login_probe(command: list[str], env: dict, timeout: float) -> tuple[int
             )
         finally:
             os.close(caller_gone)
-        with process:
-            try:
-                stdout, _ = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                # The watchdog leads the session's group and stays unreaped until the with-block
-                # exits, so its pid still names the group.
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                raise
+        try:
+            with process:
+                try:
+                    stdout, _ = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    # Closing the pipe wakes the monitor, which kills the shell wherever its
+                    # group is, before the group kill below.
+                    os.close(caller_alive)
+                    alive_open = False
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=_MONITOR_GRACE_SECONDS)
+                    raise
+        finally:
+            # Whatever ended the call, kill what is left of the probe's group: a child the shell
+            # backgrounded, or the shell itself when the monitor never ran. Linux and macOS do not
+            # hand out a pid still in use as a process group id, so the id cannot name a stranger.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
         return process.returncode, stdout
     finally:
-        os.close(caller_alive)
+        if alive_open:
+            os.close(caller_alive)
 
 
 def resolve_host_env(config: dict) -> tuple[str, str]:

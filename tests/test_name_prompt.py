@@ -475,6 +475,7 @@ pty_only = pytest.mark.skipif(
 
 
 @pty_only
+@pytest.mark.real_pty
 def test_given_a_terminal_when_an_unknown_name_is_added_then_the_y_n_question_reaches_the_terminal(fleet):
     result, _ = _converse(fleet, "zara", [("Add it? [y/n]", "y")])
 
@@ -483,6 +484,7 @@ def test_given_a_terminal_when_an_unknown_name_is_added_then_the_y_n_question_re
 
 
 @pty_only
+@pytest.mark.real_pty
 def test_given_a_terminal_when_no_then_a_value_over_the_limit_then_a_valid_one_then_each_message_is_shown(fleet):
     result, seen = _converse(fleet, "zara", [("Add it? [y/n]", "n"), (QUESTION, "rebecca"), ("3 to 4 letters", "zoe")])
 
@@ -491,6 +493,7 @@ def test_given_a_terminal_when_no_then_a_value_over_the_limit_then_a_valid_one_t
 
 
 @pty_only
+@pytest.mark.real_pty
 def test_given_a_terminal_when_input_ends_at_the_question_then_it_exits_130_writing_nothing(fleet):
     before = fleet.tip()
 

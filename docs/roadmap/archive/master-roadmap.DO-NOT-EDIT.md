@@ -8,6 +8,8 @@
 
 # ai-cli-utils Roadmap
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## Open
 
 - [ ] `[P2]` `[AI-CLI-122]` **Two stale branches carry real unmerged work — review each for merge, finish, or explicit close** — Filed 2026-07-23 (session-1, fleet-wide branch audit), investigation-only (no branch checked out, merged, rebased, or pushed). Freshly re-verified against `origin/main` at commit `f5f88b1`.

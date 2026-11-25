@@ -100,15 +100,16 @@ class TestEmitIterm2ProfileSetup:
         assert "SetProfile=ai-cli:session-3" in out
         assert "SetColors=tab=" in out
 
-    def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_dynamic_profile(self, capsys):
+    def test_given_iterm2_when_agy_profile_setup_runs_then_emits_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
-                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("ai-dojo-1", "g")
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile") as generate_profile:
+                        _emit_iterm2_profile_setup("session-1", "g")
         out = capsys.readouterr().out
-        assert "SetProfile=ai-cli:ai-dojo-1" in out
+        assert "SetProfile=ai-cli:session-1" in out
         assert "SetColors=tab=" in out
+        assert generate_profile.call_args.args[2] == "agy"
 
     def test_when_term_program_is_iterm_app_then_also_activates(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}, clear=False):
@@ -167,10 +168,10 @@ class TestEmitIterm2ProfileSetup:
         assert generate_profile.call_args.kwargs["vscode_authority"] == "framework"
 
 
-class TestEmitIterm2ProfileSetupGeminiWithIterm2Env:
-    """Tests for gemini engine + ITERM_SESSION_ID in _emit_iterm2_profile_setup."""
+class TestEmitIterm2ProfileSetupAgyWithIterm2Env:
+    """Tests for the Antigravity engine + ITERM_SESSION_ID in _emit_iterm2_profile_setup."""
 
-    def test_when_gemini_engine_and_iterm_session_id_set_then_emits_dynamic_profile(self, capsys):
+    def test_given_agy_and_iterm_session_id_when_profile_setup_runs_then_emits_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
@@ -444,7 +445,7 @@ class TestGetEngineScriptIterm2Slot:
     def test_no_static_profile_vars_in_script(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "_iterm2_claude_profile" not in script
-        assert "_iterm2_gemini_profile" not in script
+        assert "_iterm2_agy_profile" not in script
 
     def test_iterm2_status_function_does_not_use_local_status_variable(self):
         # zsh treats `status` as a read-only special variable; using `local status=`
@@ -454,7 +455,7 @@ class TestGetEngineScriptIterm2Slot:
 
     def test_script_calls_fleet_setup_with_prefixed_session_name(self):
         # Display the full engine-prefixed session id (c-session-1 for Claude, g-… for
-        # Gemini) so panes are distinguishable by engine — NOT the stripped ai_name.
+        # Antigravity) so panes are distinguishable by engine — NOT the stripped ai_name.
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert '_iterm2_fleet_setup "$tmux_session"' in script
 
@@ -462,14 +463,15 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert 'ai internal release-color-slot "$ai_name"' in script
 
-    def test_gemini_engine_when_default_cmd_then_uses_gemini(self):
+    def test_given_agy_engine_when_script_uses_default_command_then_invokes_agy(self):
         script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj")
-        assert "gemini -y" in script
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--command agy" in script
 
-    def test_gemini_engine_when_custom_cmd_then_uses_custom_cmd(self):
-        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj", gemini_cmd="npx @google/gemini-cli")
-        assert "npx @google/gemini-cli -y" in script
-        assert "gemini -y" not in script
+    def test_given_agy_engine_when_script_uses_custom_command_then_invokes_configured_path(self):
+        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj", agy_cmd="/opt/bin/agy")
+        assert "-m ai_cli.agy_session launch" in script
+        assert "--command /opt/bin/agy" in script
 
     def test_script_cleanup_session_files_in_exit_trap(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
@@ -505,7 +507,7 @@ class TestGetEngineScriptIterm2Slot:
 
     def test_script_displays_engine_prefixed_session_id(self):
         # The pane label must be the engine-prefixed session id (c-session-1 / g-…),
-        # not the stripped short name — so Claude vs Gemini sessions are
+        # not the stripped short name — so Claude and Antigravity sessions are
         # visually distinguishable. Callers pass "$tmux_session".
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert '_iterm2_fleet_setup "$tmux_session"' in script

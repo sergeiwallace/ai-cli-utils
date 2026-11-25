@@ -26,10 +26,13 @@ leaving a mapping that merely claims coverage.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from process_ownership import owned_process
 
 # Each entry maps one lint-job command to the pre-commit hook id that runs the same
 # check locally. The pattern identifies the command; the id is verified to exist.
@@ -39,6 +42,7 @@ _LOCALLY_ENFORCED: tuple[tuple[str, str], ...] = (
     (r"\bruff\s+format\b", "ruff-format"),
     (r"\bpyright\b", "pyright"),
     (r"\bscripts/lint_doc_alignment\.py\b", "doc-alignment"),
+    (r"\bscripts/fold_changelog\.py\s+-n\b", "changelog-fold"),
 )
 
 # Lint-job commands that intentionally have no local counterpart. A reason is required
@@ -77,6 +81,19 @@ _RUNNER_PROVISIONING_STEPS: dict[str, str] = {
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def test_given_repository_changelog_fragments_when_dry_run_folds_then_it_succeeds() -> None:
+    with owned_process(
+        [sys.executable, "scripts/fold_changelog.py", "-n"],
+        cwd=_repo_root(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    ) as process:
+        _, stderr = process.communicate(timeout=30)
+
+    assert process.returncode == 0, stderr
 
 
 def _lint_job_steps(root: Path) -> list[dict]:

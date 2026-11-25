@@ -224,6 +224,7 @@ def _cells(screen, row_index: int, text: str) -> list:
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_configured_colours_when_ai_c_r_reattaches_on_a_pty_then_each_element_takes_its_colour(tmp_path):
     _write_config(_COLOUR_CONFIG)
     terminal = Terminal(columns=400)

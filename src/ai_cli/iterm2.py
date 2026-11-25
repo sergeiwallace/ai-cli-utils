@@ -32,7 +32,7 @@ _DEFAULT_ITERM2_CONFIG = """\
 enabled = true
 
 [iterm2.tab_title]
-## Include type symbol (* for CC, ✦ for Gemini, π for Pi) in tab and pane titles
+## Include type symbol (* for CC, ✦ for Antigravity, π for Pi) in tab and pane titles
 show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
 show_status_symbol = false
@@ -79,7 +79,7 @@ charcoal    = "#2d2d2d"
 [iterm2.defaults]
 ## Settings applied to all sessions unless overridden by a project or session block.
 ## tab_color: palette color name (e.g. "blue") or omit for auto-rotation
-## icon_color: hex tint for the Claude/Gemini icon; omit to auto-derive from tab_color
+## icon_color: hex tint for the Claude or Antigravity icon; omit to auto-derive from tab_color
 # tab_color  = "blue"
 # icon_color = "#ffffff"
 
@@ -103,7 +103,7 @@ charcoal    = "#2d2d2d"
 ## hand-maintained profiles required. Override with the exact name of a custom
 ## profile only if you deliberately want a session type to inherit from it.
 cc         = "Default"
-gemini     = "Default"
+agy        = "Default"
 pi         = "Default"
 codex      = "Default"
 shell      = "Default"
@@ -437,7 +437,7 @@ def _iterm2_session_type(engine: str) -> str:
     return (
         "cc"
         if engine == "c"
-        else "gemini"
+        else "agy"
         if engine == "g"
         else "pi"
         if engine == "p"
@@ -712,7 +712,7 @@ def _emit_iterm2_profile_setup(
 
     cfg = _load_iterm2_config()
     # Display the full session id WITH its engine prefix (e.g. "c-session-1" for Claude,
-    # "g-session-1" for Gemini/agy) so panes are visually distinguishable by engine.
+    # "g-session-1" for Antigravity) so panes are visually distinguishable by engine.
     # Matches the in-session rename, which uses "$tmux_session".
     session_name = session or ai_name
     session_type = _iterm2_session_type(engine)

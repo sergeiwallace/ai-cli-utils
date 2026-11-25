@@ -1,1 +1,1 @@
-An `ai`-launched Codex TUI slot now runs a small live attestation bridge, so the harness prompt injector can prove the slot (owner, listener, confirmed thread) before it types a single-line prompt into the pane.
+- An `ai`-launched Codex TUI slot now runs a small live attestation bridge, so the harness prompt injector can prove the slot (owner, listener, confirmed thread) before it types a single-line prompt into the pane.

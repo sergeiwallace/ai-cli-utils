@@ -1,0 +1,1 @@
+- Skip CommonMark 4-space- and tab-indented code blocks in plain-text Antigravity headless print auto-denial detection while still failing closed on genuine unindented denials and paragraph-continuation denials.
