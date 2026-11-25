@@ -454,6 +454,26 @@ def _exec_with_direnv(
         sys.exit(1)
 
 
+def _prepare_project_environment(directory: Path, config: dict, *, no_direnv: bool, reporter: LaunchReporter) -> None:
+    """Approve the session worktree's ``.envrc`` before the handoff, or refuse the launch.
+
+    The launcher's half of :func:`ai_cli.session.prepare_project_environment`; the
+    session script's child body runs the same policy before every agent start through
+    ``ai internal prepare-project-env``. A refusal exits before anything is handed off.
+    """
+    if no_direnv:
+        reporter.detail("direnv", f"{directory / '.envrc'}: approval skipped (-D/--no-direnv)")
+        return
+    result = _session.prepare_project_environment(directory, config=config)
+    if result.level is _out.Level.DETAIL:
+        reporter.detail("direnv", result.message)
+    elif result.ready:
+        reporter.phase("direnv").outcome(result.message)
+    else:
+        reporter.error("direnv", result.message)
+        sys.exit(1)
+
+
 def _direnv_prefix(project_root: Path) -> list[str]:
     """The argv prefix that runs a program under direnv at ``project_root``, else ``[]``.
 
@@ -2219,22 +2239,12 @@ def _internal_emit(args: list[str]) -> int:
 def _store_session_records(records: list[_out.Record]) -> None:
     """Send a session-script reply's records to its launch log and to telemetry (AI-CLI-cuwe).
 
-    ``[output.sinks.*]`` decides what each sink keeps. The script names its
-    launch's log in ``AI_CLI_LAUNCH_LOG``; without one the records still reach
-    telemetry.
+    ``[output.sinks.*]`` decides what each sink keeps. The launch log is the one
+    :func:`_handle_internal` attached from ``AI_CLI_LAUNCH_LOG``; without one the
+    records still reach telemetry.
     """
-    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-    path = os.environ.get(LAUNCH_LOG_ENV, "")
-    log = open_launch_log(path) if path else None
-    previous = _out.attach_file_sink(log.write_line if log is not None else None)
-    try:
-        _out.store(records)
-        _out.flush_sinks()
-    finally:
-        _out.attach_file_sink(previous)
-        if log is not None:
-            log.close()
+    _out.store(records)
+    _out.flush_sinks()
 
 
 _RELOAD_REASONS = {
@@ -2310,8 +2320,33 @@ def _handle_internal(argv: list[str]) -> None:
 
     Kept out of Click so sub-millisecond startup is preserved for hot paths.
     Always calls ``sys.exit`` — never returns.
+
+    Every record any action emits also goes to the launch log the session script
+    names in ``AI_CLI_LAUNCH_LOG``, stamped as it is emitted. The script exports that
+    for its child body, whose stderr is the pane, so a relaunch's direnv, resume and
+    restart lines reach the log exactly as the launcher's own do. Attaching it here,
+    once, rather than per action is what stops an action from being added that
+    reports only to the pane.
     """
+    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
     _out.utf8_stdout_on_windows()
+    log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+    if not log_path:
+        _dispatch_internal(argv)
+        return
+    launch_log = open_launch_log(log_path)
+    previous_sink = _out.attach_file_sink(launch_log.write_line)
+    try:
+        _dispatch_internal(argv)
+    finally:
+        _out.flush_sinks()
+        _out.attach_file_sink(previous_sink)
+        launch_log.close()
+
+
+def _dispatch_internal(argv: list[str]) -> None:
+    """The actions of :func:`_handle_internal`; every one ends in ``sys.exit``."""
     if not argv:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
@@ -2359,22 +2394,30 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
+    if action == "prepare-project-env":
+        if len(argv) not in (2, 3):
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal prepare-project-env <directory> [<tmux_session>]", err=True
+            )
+            sys.exit(1)
+        if len(argv) == 3 and _session_launch_state.launched_with(argv[2], "no_direnv"):
+            _out.emit(Tag.SESSION, "direnv", "approval skipped (-D/--no-direnv)", err=True, level=_out.Level.DETAIL)
+            sys.exit(0)
+        prepared = _session.prepare_project_environment(_session.native_path(argv[1]), config=config)
+        _out.emit(
+            Tag.SESSION,
+            "direnv",
+            prepared.message,
+            err=True,
+            level=prepared.level,
+            terminal=prepared.level is not _out.Level.DETAIL,
+        )
+        sys.exit(0 if prepared.ready else _direnv_setup.PROJECT_ENV_REFUSED_EXIT)
     if action == "finish-migrations":
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-        launch_log = open_launch_log(log_path) if log_path else None
-        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-        try:
-            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
-        finally:
-            _out.flush_sinks()
-            _out.attach_file_sink(previous_sink)
-            if launch_log is not None:
-                launch_log.close()
+        _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
         sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
@@ -2384,20 +2427,10 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "resolve-codex-display":
         from .codex_display import resolve_codex_display
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
 
         resolution = resolve_codex_display(os.environ)
         if resolution.reason:
-            log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-            launch_log = open_launch_log(log_path) if log_path else None
-            previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-            try:
-                LaunchReporter().detail("display", resolution.reason)
-            finally:
-                _out.flush_sinks()
-                _out.attach_file_sink(previous_sink)
-                if launch_log is not None:
-                    launch_log.close()
+            LaunchReporter().detail("display", resolution.reason)
         for variable, value in resolution.values.items():
             _out.raw(Untagged.INTERNAL_REPLY, f"{variable}={value}")
         sys.exit(0)
@@ -2440,7 +2473,7 @@ def _handle_internal(argv: list[str]) -> None:
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
-            _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
+            _out.warning(Tag.INTERNAL, "resume", resolution.warning)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
         if resolution.timed_out:
@@ -2975,7 +3008,17 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: before this launch would otherwise hand the pane a stale environment.
 #: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
 #: both are forwarded only when set, so an ordinary launch is unchanged.
-_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
+#: AI_CLI_SKIP_DIRENV reaches the child body's .envrc approval the same way, so the
+#: documented bypass holds on a tmux server started before it was set.
+_TMUX_FORWARDED_VARS = (
+    "PATH",
+    "XDG_STATE_HOME",
+    "LC_TERMINAL",
+    "TERM_PROGRAM",
+    "FM_HOME",
+    "AI_SESSION_ROLE",
+    _direnv_setup.BYPASS_ENV,
+)
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
 
 
@@ -6739,6 +6782,7 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    _attaching_live = False
     saved_agy_no_worktree_cwd = (
         _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
         if engine == "g" and replay_recipe is None and resume_target is not None and resume_target.title
@@ -6957,6 +7001,10 @@ def _do_session_launch(
                         f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     )
                 _sync_phase.outcome("ready")
+
+    if not _attaching_live:
+        # After the sync, which can change the .envrc a direnv approval is keyed on.
+        _prepare_project_environment(worktree_path or Path.cwd(), config, no_direnv=no_direnv, reporter=reporter)
 
     # Antigravity (engine "g") resolves its confirmed conversation ID inside agy_session.
     uuid = None
@@ -7977,7 +8025,9 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
-    func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option(
+        "-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight, auto-install and .envrc approval"
+    )(func)
     func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
     func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
     # MUST be a declared option, not merely handled. SESSION_CONTEXT sets

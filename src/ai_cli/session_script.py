@@ -11,6 +11,7 @@ import sys
 
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
+from .direnv_setup import PROJECT_ENV_REFUSED_EXIT
 from .iterm2_restore import LAUNCH_REASON_VAR
 from .launch_logging import AGENT_DIAGNOSTIC_ENV, LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
@@ -284,6 +285,21 @@ def rendered_terminal_reset() -> str:
     return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
 
 
+def emit_stamp_command() -> str:
+    """The shell command that stamps ``_ai_emit``'s plain fallback line like a rendered one.
+
+    The fallback runs only when ``ai internal emit`` cannot, so it cannot ask the renderer;
+    the configured ``[output.elements.datetime]`` format and zone are baked in instead,
+    read when the script is generated. ``local`` is the host's zone, so it runs ``date``
+    as it is; any other zone (an IANA name or ``UTC``) is passed to ``date`` as ``TZ``.
+    """
+    from . import output as _out
+
+    when = _out.settings().elements.datetime
+    command = f"date {shlex.quote('+' + when.format)}"
+    return command if when.timezone == "local" else f"TZ={shlex.quote(when.timezone)} {command}"
+
+
 def _current_update_commit() -> str:
     """Return the source HEAD recorded by the last ``ai update`` (or "").
 
@@ -420,6 +436,7 @@ def get_engine_script(
     from .tmux_binary import shell_prelude
 
     _terminal_reset = rendered_terminal_reset()
+    _emit_stamp_command = emit_stamp_command()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
@@ -660,7 +677,9 @@ def get_engine_script(
       _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
         # The renderer's default datetime leads the plain line too.
-        _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
+    # BEGIN EMIT STAMP
+        _ai_emit_stamp=$({_emit_stamp_command} 2>/dev/null) || _ai_emit_stamp=""
+    # END EMIT STAMP
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
         if [[ -n "$_ai_launch_log" ]]; then
           printf '%s\n' "$_ai_emit_line" 2>/dev/null >> "$_ai_launch_log"
@@ -1170,6 +1189,17 @@ def get_engine_script(
     if [[ -n "${{_ai_launch_log:-}}" ]]; then
       exec 2>&3
     fi
+    # BEGIN LAUNCH LOG child
+    # This body's stderr is the pane, not the supervisor's log relay, so every `ai internal`
+    # it runs (the resume lookup, the .envrc approval, migrations) records into the launch log
+    # itself, stamped as it emits: `ai internal` attaches the log this variable names. run_agent
+    # removes it again from the agent's environment.
+    if [[ -n "${{_ai_launch_log:-}}" ]]; then
+      export {LAUNCH_LOG_ENV}="$_ai_launch_log"
+    else
+      unset {LAUNCH_LOG_ENV}
+    fi
+    # END LAUNCH LOG
     {cd_cmd}
     direnv_root="$PWD"
     tmux_session={shell["session"]}
@@ -1379,6 +1409,13 @@ def get_engine_script(
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
       fi
     # END PINNED RESTART
+    # BEGIN LAUNCH LOG agent
+      # The launch log variable is for this body's own `ai internal` calls; the agent and the
+      # hooks it runs must not write into the session's launch log. Unset in the shell, not with
+      # `env -u`, so starting the agent needs no program beyond the agent itself; the agent is
+      # forked without it, and it is exported again once the agent has exited (below).
+      unset {LAUNCH_LOG_ENV}
+    # END LAUNCH LOG
     # BEGIN RUN STATE agent-start-clock
       # The quick-exit and healthy-run checks measure the agent's own run time. The setup
       # above (direnv, plugin refresh) can take seconds on a loaded host, so start the
@@ -1392,6 +1429,13 @@ def get_engine_script(
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
       _reset_agent_terminal
 {_agent_run}      active_agent_pid=""
+    # BEGIN LAUNCH LOG agent-exit
+      # The agent is gone: this body's own `ai internal` calls after it (the version check,
+      # the template refresh) record into the launch log again.
+      if [[ -n "${{_ai_launch_log:-}}" ]]; then
+        export {LAUNCH_LOG_ENV}="$_ai_launch_log"
+      fi
+    # END LAUNCH LOG
     # BEGIN LAUNCH DIAGNOSTICS
       # Take the pane tail before the reset or a restart destroys its contents.
       # Measure the runtime before starting diagnostics so they cannot move the restart guard.
@@ -1916,6 +1960,25 @@ with open(path, 'w') as f:
     # BEGIN PINNED RESTART resolver-end
       fi
     # END PINNED RESTART
+
+    # BEGIN PROJECT ENV prepare
+      # Every agent start, first and restart alike, approves this worktree's .envrc with the
+      # launcher's own policy before run_agent loads it: direnv keys an approval on the file's
+      # content, so a sync or merge since the last start leaves it blocked. The helper exits 0
+      # whenever there is nothing to approve (no direnv, no .envrc, a bypass), so any other
+      # status, its own refusal or a helper that could not run at all, ends the session like
+      # any other stop and never starts an agent without its environment.
+      _project_env_status=0
+      ai internal prepare-project-env "$PWD" "$tmux_session" || _project_env_status=$?
+      if (( _project_env_status == {PROJECT_ENV_REFUSED_EXIT} )); then
+        _ai_persist_exit unknown '{{"reason":"project environment not approved"}}'
+        break
+      elif (( _project_env_status != 0 )); then
+        _ai_emit error direnv "could not check the .envrc approval: 'ai internal prepare-project-env' exited $_project_env_status, so no agent was started. Run 'ai internal prepare-project-env $PWD' to see why, then 'ai c $ai_name'; or set AI_CLI_SKIP_DIRENV=1 to start without the check."
+        _ai_persist_exit unknown '{{"reason":"project environment check failed"}}'
+        break
+      fi
+    # END PROJECT ENV
 
     # BEGIN CODEX THREAD
       _run_codex() {{

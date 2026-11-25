@@ -979,29 +979,42 @@ first `git push` stop and ask, which is the safe direction. If the branch exists
 nowhere at all, or the repository has no `origin` remote, worktree creation fails
 loudly instead of guessing.
 
-`direnv` approvals are per-path, so a brand new worktree's `.envrc` is unapproved
-even when the repository root's identical copy is approved. When `direnv` is
-installed, `ai` therefore approves the worktree itself — after creating it and
-before starting the agent — and prints the path it approved.
+`direnv` approves an `.envrc` by its path and its content, so a brand new
+worktree's `.envrc` is unapproved even when the repository root's identical copy is
+approved, and an approved one is blocked again as soon as a sync or a merge changes
+it. When `direnv` is installed, `ai` therefore approves the worktree's `.envrc`
+before every agent start: in the launcher once the worktree has been created or
+reused and synchronized, and in the session script before the first agent start and
+before every restart. Each outcome is written to the launch log, and an approval it
+made is also printed.
 
-The scope is exactly the worktrees `ai` creates under `.worktrees/`, only their
-own `.envrc`, and only when that file is **byte-identical to the repository
-root's**. The repository root, an `.envrc` inherited from a parent directory, and
-worktrees registered anywhere else are never approved automatically: `ai` vouches
-for a directory because it created it, which is not something it can claim about a
-directory it merely launched in. It does not vouch for the file's *contents* at
-all — git writes whatever the checked-out branch carries — so an `.envrc` that
-differs from the root's keeps `direnv`'s normal prompt, including one a branch
-legitimately edits and one the session itself rewrote. Automatic approval
-therefore only ever spares you re-approving content you already have at the
-repository root.
+The scope is exactly the worktrees `ai` creates under `.worktrees/` (and probe
+worktrees), only their own `.envrc`, and only when that file is **byte-identical to
+the repository root's working copy or to the `.envrc` on the upstream default branch
+(`origin/HEAD`)**. The repository root, an `.envrc` inherited from a parent
+directory, and worktrees registered anywhere else are never approved automatically:
+`ai` vouches for a directory because it created it, which is not something it can
+claim about a directory it merely launched in. It does not vouch for content that
+exists only in the worktree, such as an edit the session itself made.
 
-Note that this requires the root's `.envrc` to *exist and match*, not to be
-approved. Requiring an approved root would make the feature do nothing on a host
-where nothing is approved yet, which is exactly the host that needs it. A
-worktree `direnv` has already approved is left alone, and a host with no `direnv`
-skips the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval
-off.
+Both witnesses are files and refs on this machine, so a session that sets out to
+forge one can: it can write the repository root's `.envrc`, or point
+`origin/HEAD`'s branch at a commit of its choosing in the `.git` every worktree
+shares. The check stops a session or a branch editing its own `.envrc`, not that
+deliberate forgery; asking the remote on every agent start would close it at the
+cost of a network call that fails offline, so it is left documented.
+
+When `ai` is responsible for the worktree's `.envrc` and cannot approve it, because
+its content matches neither copy or `direnv allow` fails, no agent starts without
+its environment. The launch stops with an error naming the file and the command to
+run after reviewing it (`direnv allow <worktree>`), and a running session stops the
+way any other stop ends it, instead of restarting its agent. A check that cannot run
+at all (a missing or crashed `ai`) stops a restart the same way, naming its exit status. Note that this requires
+a matching copy to *exist*, not to be approved: requiring an approved root would make
+the feature do nothing on a host where nothing is approved yet. A worktree `direnv`
+has already approved is left alone, and a host with no `direnv`, or a worktree with
+no `.envrc`, starts as before. Set `AI_CLI_SKIP_DIRENV=1`, `[direnv] enabled = false`,
+or launch with `-D/--no-direnv` to turn approval, and the refusal, off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 
@@ -1472,8 +1485,10 @@ Each phase is the line's operation (see
   operation, level and text (see [Output configuration](#output-configuration)). A log
   directory that cannot be written is skipped; the launch carries on. Once the session
   is running, the lines its session script prints join the same launch's log, and
-  its warnings and errors, such as a failed direnv load, also reach telemetry. A reload
-  row is stored only once it has escalated.
+  its warnings and errors, such as a failed direnv load, also reach telemetry. That
+  includes every restart: its `.envrc` approval, resume lookup and restart lines are
+  logged with the time each was printed, as the launcher's own are. A reload row is
+  stored only once it has escalated.
 - When an agent exits during its first 15 seconds, the launch log records its exit
   status and up to 12 recent terminal lines. This applies to managed and one-shot
   tmux panes and bare sessions with a launcher-owned PTY. On a remote launch, SSH
@@ -1723,7 +1738,8 @@ min_level = "warning"
   %S %U %w %W %x %X %y %Y %z %Z %%`). `timezone` is `UTC`, `local` or an IANA zone
   name such as `Europe/Berlin`. The default is `America/New_York`; set
   `timezone = "local"` for the host's own zone. `%Z` shows the zone's abbreviation, so
-  a line always says which zone its time is in. For a shorter line, set
+  a line always says which zone its time is in. The session script's own plain lines,
+  printed when the renderer cannot run, use the same format and zone. For a shorter line, set
   `format = "%H:%M:%S"` together with `pattern = '^\d{2}:\d{2}:\d{2}$'`, or turn the
   element off with `enabled = false`. A `format` that renders empty or fails the
   `pattern`, or a `timezone` that names no known zone, is refused when the table is read.

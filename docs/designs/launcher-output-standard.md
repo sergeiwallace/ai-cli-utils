@@ -482,6 +482,13 @@ Phase 3, T-5, as built:
   `refresh`, each at the level it printed before. `ai internal emit` refuses an
   operation outside the configured vocabulary, so one a user adds to `[output]` works
   there.
+- **The session script's other `ai internal` calls.** The child body's stderr is the
+  pane, not the supervisor's log relay, so the child exports `AI_CLI_LAUNCH_LOG` (its
+  bracketed `LAUNCH LOG` insertion) and `_handle_internal` attaches that log as the file
+  sink once, for every action. A restart's `.envrc` approval, resume lookup and
+  migration lines therefore reach the launch log, stamped when they are emitted, the
+  same way the launcher's own lines do. run_agent unsets the variable just before the
+  agent starts, so the agent and the hooks it runs never write into that log.
 - **Enforcement.** `test_given_the_package_source_when_scanned_then_every_output_call_passes_a_vocabulary_operation`
   scans every `ai_cli.output` call and every launch-reporter call. The operation must be
   a string literal in the shipped vocabulary. Three named adapters may pass a variable:
@@ -522,7 +529,10 @@ Phase 3, T-4, as built:
   0.45–0.80 s (median 0.55 s) against the base's 0.45–0.90 s (median 0.59 s): no
   measurable change.
 - **Session script.** When `ai internal emit` cannot render, `_ai_emit`'s plain line now
-  leads with `TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z'`, the default format. The
+  leads with a `date` stamp in the configured `[output.elements.datetime]` format and zone,
+  baked into the script when it is generated (`session_script.emit_stamp_command`; a
+  `local` zone runs plain `date`, any other is passed as `TZ`). It once hard-coded
+  `TZ=America/New_York`, which ignored a configured zone. The
   supervisor's stderr relay, which prefixes `[session]` to a line with no tag, also
   passes through a line that starts with a date and carries a `[tag]`, so a rendered
   record is not tagged twice.

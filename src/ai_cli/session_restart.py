@@ -1010,7 +1010,7 @@ def _compatible(source: str, expected: str) -> bool:
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE|PROJECT ENV|LAUNCH LOG|EMIT STAMP)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
@@ -1074,6 +1074,9 @@ def _compatible(source: str, expected: str) -> bool:
             text,
         )
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
+        # The fallback stamp is data for `date` with no control flow; before the EMIT STAMP
+        # insertion it was this fixed line, which certifies as the same program.
+        text = re.sub(r"(?m)^        _ai_emit_stamp=\$\(TZ=America/New_York date .*$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
     normalized_source = normalize(source)
