@@ -239,6 +239,7 @@ def _reap(result: dict) -> None:
 
 
 @pytest.mark.parametrize("spawn_layer", [False, True], ids=["exec-through", "spawn-layer"])
+@pytest.mark.real_pty
 def test_the_child_reports_the_process_group_it_actually_created(spawn_layer):
     """The ready file must carry a pgid, not a fixed word the supervisor cannot act on.
 
@@ -254,6 +255,7 @@ def test_the_child_reports_the_process_group_it_actually_created(spawn_layer):
     assert result["reported_group_members"], "the reported group had no members, so it was never real"
 
 
+@pytest.mark.real_pty
 def test_a_spawning_wrapper_makes_the_backgrounded_pid_the_wrong_group():
     """The mechanism as a test: behind a spawn layer, `$!` is not the new group's id.
 
@@ -273,6 +275,7 @@ def test_a_spawning_wrapper_makes_the_backgrounded_pid_the_wrong_group():
     )
 
 
+@pytest.mark.real_pty
 def test_promoting_the_reported_group_puts_a_live_group_in_the_foreground():
     """The fix's contract: the terminal ends up owned by a group that has members."""
     result = _run_handoff(spawn_layer=True, promote="reported")
@@ -286,6 +289,7 @@ def test_promoting_the_reported_group_puts_a_live_group_in_the_foreground():
     assert result["reported_group_members"], "the promoted group is empty"
 
 
+@pytest.mark.real_pty
 def test_promoting_the_backgrounded_pid_leaves_an_empty_foreground_group():
     """The old behaviour, pinned so a regression is visible rather than merely slow.
 

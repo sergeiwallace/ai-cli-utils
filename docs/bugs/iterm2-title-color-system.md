@@ -12,6 +12,8 @@ related_docs:
 
 # [BUG-001] iTerm2 Tab Title and Color System — Multiple Bugs
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** UAT in progress — Bugs 8/9 and UX feedback added 2026-04-03. Bugs 1–7 fix shipped; awaiting full UAT (`[AI-CLI-18]`, `docs/test/uat-iterm2-title-color-redesign.md`)
 
 **Severity:** P1

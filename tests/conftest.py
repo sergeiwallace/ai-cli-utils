@@ -198,7 +198,9 @@ _TMUX_BINARY = shutil.which("tmux")
 # where it happens to exist.
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+_PROTECTED_TEST_BINARIES = (
+    frozenset({"tmux", "claude", "agy", "agy.exe", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+)
 
 # Programs that RUN a command string handed to them, which is what makes a guard on the
 # program name alone insufficient (AI-CLI-013v). Measured: a test drove
@@ -1178,6 +1180,22 @@ def _reject_real_agent_processes(request, monkeypatch):
     monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=guarded_run))
     monkeypatch.setattr(subprocess, "Popen", MagicMock(side_effect=guarded_popen))
     monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
+
+
+@pytest.fixture(autouse=True)
+def _windows_handoff_is_an_exec(monkeypatch):
+    """Hand the launcher's Windows run-and-wait handoff to ``os.execvp``.
+
+    ``main._exec_handoff`` runs its program as a waited-for child on Windows, which
+    has no exec. The suite's launch tests intercept the handoff by patching
+    ``os.execvp``, so this routes it there, and every such test intercepts it on
+    Windows, or with ``sys.platform`` faked as Windows, too. Looked up at call time,
+    so a test's own ``os.execvp`` patch applies. Tests of the Windows handoff itself
+    put back the function they imported.
+    """
+    from ai_cli import main
+
+    monkeypatch.setattr(main, "_run_on_this_console", lambda file, args: os.execvp(file, args))
 
 
 @pytest.fixture(autouse=True)

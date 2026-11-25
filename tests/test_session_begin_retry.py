@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+from legacy_run_state import legacy_child_generation
 
 from ai_cli.session_script import get_engine_script
 
@@ -17,7 +18,7 @@ def legacy_begin(tmp_path):
     if shell is None or sys.platform == "win32":
         pytest.skip("POSIX shell signals are required")
     generated = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
-    fragment = generated.split("# BEGIN RUN STATE legacy-child-generation\n", 1)[1].split("# END RUN STATE", 1)[0]
+    fragment = legacy_child_generation(generated)
     counter = tmp_path / "session-begin-failures-c-session-1"
     delays = tmp_path / "delays"
     parked = tmp_path / "parked"
@@ -42,7 +43,12 @@ sleep() {{
 }}
 """
     environment = {key: value for key, value in os.environ.items() if key != "AI_CLI_RUN_GENERATION"}
-    return shell, prefix + fragment + '\nprintf "agent-started:%s" "$AI_CLI_RUN_GENERATION"\n', environment, tmp_path
+    return (
+        shell,
+        prefix + fragment + '\nprintf "agent-started:%s" "$AI_CLI_RUN_GENERATION"\n',
+        environment,
+        tmp_path,
+    )
 
 
 def test_given_legacy_begin_failures_when_repeated_then_delay_doubles_caps_and_success_resets(legacy_begin):

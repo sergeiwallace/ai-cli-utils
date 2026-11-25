@@ -1,0 +1,1 @@
+- Codex (`ai cx`) and Antigravity (`ai g`) sessions now run an optional `[session_register] command` from their session-start hook once the launch is confirmed, with `{client}` replaced by `codex` or `agy`, so a deployment's session registry learns each new session without a manual step. A failing command prints one warning and the session still starts; unset, nothing runs.

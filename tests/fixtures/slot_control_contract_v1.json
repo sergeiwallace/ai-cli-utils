@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "directory": "ai-cli-utils/sessions",
+  "transport": "unix-json-line",
+  "methods": [
+    "get",
+    "confirm"
+  ],
+  "max_bytes": 65536,
+  "delivery": "tmux-pane",
+  "clients": {
+    "codex": {
+      "record_glob": "*.codex.*.control-v1.json",
+      "slot_schema_version": 2
+    },
+    "agy": {
+      "record_glob": "*.agy.*.control-v1.json",
+      "slot_schema_version": 1
+    }
+  }
+}

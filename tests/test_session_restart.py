@@ -2479,6 +2479,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     monkeypatch.setattr(
         main._session_script, "resolve_session_shell", lambda: "bash" if sys.platform == "darwin" else "bash.exe"
     )
+    # A macOS launcher renders the POSIX program, whatever host renders it here.
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: False)
     world = request.getfixturevalue("world")
     # Executable discovery stays native while this test simulates macOS provenance.
     monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))

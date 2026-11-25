@@ -1,4 +1,4 @@
-"""Session naming, index management, worktree operations, and Gemini UUID lookup.
+"""Session naming, index management, and worktree operations.
 
 Depends on: config.py
 """
@@ -15,14 +15,12 @@ import sys
 import time
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
 
 from . import launch_reporter, tmux_binary
 from .config import (
     WORKTREE_DIR,
-    _get_main_project_name,
     _get_projects_dir,
     get_current_project_name,
     get_worktree_upstream_branches,
@@ -38,197 +36,6 @@ from .output import Level
 from .process_probe import ProcessProbe, ProcfsProbe, normalize_proc_start, probe_for
 from .session_naming import compose_session_name
 from .worktree_move import purge_moved_bytecode
-
-
-def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
-    """Derive a stable UUID from checkpoint content (SHA-256 of first 64KB).
-
-    Using a content-derived UUID ensures the same checkpoint always produces
-    the same chat file — re-running conversion is idempotent.
-    """
-    h = hashlib.sha256(checkpoint_bytes[:65536]).hexdigest()
-    return f"{h[0:8]}-{h[8:12]}-4{h[13:16]}-{h[16:20]}-{h[20:32]}"
-
-
-def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
-    """Convert a Gemini checkpoint JSON to a chat session file.
-
-    Reads ``checkpoint-{ai_name}.json``, converts from the checkpoint
-    ``history`` format (role/parts) to the chat file format (type/content),
-    and writes a ``chats/session-*.json`` file with a stable content-derived
-    UUID.  Idempotent: if a file with the same UUID already exists and is at
-    least as recent as the checkpoint, it is left unchanged.
-
-    Returns the sessionId UUID on success, or None on any error.
-    """
-    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
-    if not checkpoint_path.exists():
-        return None
-
-    try:
-        raw = checkpoint_path.read_bytes()
-        checkpoint = json.loads(raw)
-        history = checkpoint.get("history", [])
-        if not history:
-            return None
-
-        session_uuid = _checkpoint_to_chat_uuid(raw)
-        chats_dir = gemini_tmp / "chats"
-        chats_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build filename from checkpoint mtime so file sorts correctly vs. native sessions
-        chk_mtime = checkpoint_path.stat().st_mtime
-        chk_dt = datetime.fromtimestamp(chk_mtime, tz=UTC)
-        ts_str = chk_dt.strftime("%Y-%m-%dT%H-%M")
-        chat_path = chats_dir / f"session-{ts_str}-{session_uuid[:8]}.json"
-
-        # Skip if already converted and up to date
-        if chat_path.exists() and chat_path.stat().st_mtime >= chk_mtime:
-            return session_uuid
-
-        # Compute projectHash = sha256(projectRoot)
-        project_root_file = gemini_tmp / ".project_root"
-        project_root = project_root_file.read_text().strip() if project_root_file.exists() else str(Path.cwd())
-        project_hash = hashlib.sha256(project_root.encode()).hexdigest()
-
-        # Convert history entries to chat messages
-        base_time = chk_dt - timedelta(seconds=len(history))
-        messages = []
-        for i, entry in enumerate(history):
-            role = entry.get("role", "user")
-            parts = entry.get("parts", [])
-            text = next((p.get("text", "") for p in parts if "text" in p), "")
-            msg_time = base_time + timedelta(seconds=i)
-            msg_uuid_raw = hashlib.sha256(f"{session_uuid}:{i}".encode()).hexdigest()
-            msg_uuid = f"{msg_uuid_raw[0:8]}-{msg_uuid_raw[8:12]}-4{msg_uuid_raw[13:16]}-{msg_uuid_raw[16:20]}-{msg_uuid_raw[20:32]}"
-            messages.append(
-                {
-                    "id": msg_uuid,
-                    "timestamp": msg_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "type": "gemini" if role == "model" else role,
-                    "content": [{"text": text}],
-                }
-            )
-
-        chat_data = {
-            "sessionId": session_uuid,
-            "projectHash": project_hash,
-            "startTime": messages[0]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "lastUpdated": messages[-1]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "messages": messages,
-            "kind": "main",
-        }
-        chat_path.write_text(json.dumps(chat_data, ensure_ascii=False))
-        # Set mtime to match checkpoint so ordering vs. native chat files is correct
-        os.utime(chat_path, (chk_mtime, chk_mtime))
-        return session_uuid
-
-    except Exception:
-        return None
-
-
-def _get_chat_last_message_timestamp(chat_path: Path) -> float:
-    """Return the timestamp of the last message in a chat file as a Unix timestamp.
-
-    Falls back to 0.0 on any error so callers can compare safely.
-    """
-    try:
-        data = json.loads(chat_path.read_bytes())
-        messages = data.get("messages", [])
-        if not messages:
-            return 0.0
-        last_ts = messages[-1].get("timestamp", "")
-        return datetime.fromisoformat(last_ts.replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return 0.0
-
-
-def _find_latest_gemini_uuid(ai_name: str) -> str | None:
-    """Return the sessionId from the most recently modified chat file for ai_name.
-
-    Gemini stores sessions in ~/.gemini/tmp/{ai_name}/chats/*.json.  Each file
-    contains a top-level ``sessionId`` field with the full UUID needed for
-    ``--resume``.
-
-    If a checkpoint exists and its mtime is newer than the last message timestamp
-    in the latest chat file (or no chat files exist), the checkpoint is
-    automatically converted to a chat file so the session can be resumed via
-    ``gemini -r`` without any ``/resume load`` injection.
-
-    Comparing checkpoint mtime against the chat file's last message timestamp
-    (rather than the chat file's mtime) correctly handles the case where
-    ``/resume save`` is run mid-session: the chat file may have a stale mtime
-    even though auto-save has written more recent messages to it.
-    """
-    gemini_tmp = Path.home() / ".gemini" / "tmp" / ai_name
-    chats_dir = gemini_tmp / "chats"
-    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
-
-    # Find newest existing chat file (by mtime — for initial ordering only)
-    latest_chat: Path | None = None
-    if chats_dir.exists():
-        candidates = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        latest_chat = candidates[0] if candidates else None
-
-    # Convert checkpoint if it exists and its save time is newer than the last
-    # message in the chat file.  This correctly selects the chat file when
-    # auto-save has written messages after a mid-session /resume save.
-    if checkpoint_path.exists():
-        chk_mtime = checkpoint_path.stat().st_mtime
-        chat_last_ts = _get_chat_last_message_timestamp(latest_chat) if latest_chat else 0.0
-        if chk_mtime > chat_last_ts:
-            converted_uuid = _convert_checkpoint_to_chat(ai_name, gemini_tmp)
-            if converted_uuid:
-                return converted_uuid
-
-    # Use latest native chat file
-    if latest_chat:
-        try:
-            session_id = json.loads(latest_chat.read_text()).get("sessionId")
-            if session_id:
-                return session_id
-        except Exception:
-            pass
-
-    return None
-
-
-def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
-    """Return the most recent Gemini session ID.
-
-    If ai_name is provided, scans ~/.gemini/tmp/{ai_name}/chats/ directly —
-    the authoritative source regardless of current working directory.  Only
-    sessions with a chat file on disk can be resumed with ``-r``; sessions
-    started via ``/resume load`` (checkpoint restore) do not write a chat file,
-    so their UUID in logs.json cannot be used for ``-r``.  Returning None in
-    that case causes the caller to fall back to ``/resume load``, which is the
-    correct recovery path.  Never fall back to logs.json when ai_name is known.
-    """
-    if ai_name:
-        return _find_latest_gemini_uuid(ai_name)
-
-    cwd = Path.cwd()
-    project_name = cwd.name
-    paths = [
-        Path.home() / ".gemini" / "tmp" / project_name / "logs.json",
-    ]
-    main_name = _get_main_project_name()
-    if main_name is not None:
-        paths.append(Path.home() / ".gemini" / "tmp" / main_name / "logs.json")
-    for p in paths:
-        if p.exists():
-            try:
-                with p.open("rb") as f:
-                    size = p.stat().st_size
-                    if size > 4096:
-                        f.seek(-4096, 2)
-                    data = f.read().decode("utf-8", errors="ignore")
-                    matches = re.findall(r'"sessionId":\s*"([^"]+)"', data)
-                    if matches:
-                        return matches[-1]
-            except Exception:
-                pass
-    return None
 
 
 def _prefix_from_session_name(session_name: str) -> str:
@@ -416,9 +223,9 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
-            if "claude" not in name and "gemini" not in name and "node" not in name:
+            if not any(tok in name for tok in ("claude", "agy", "codex", "gemini", "pi", "node")):
                 cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                if "claude" not in cmdline and "gemini" not in cmdline:
+                if not any(tok in cmdline for tok in ("claude", "agy", "codex", "gemini")):
                     continue
             if proc.cwd() == target:
                 return True
@@ -589,13 +396,27 @@ def session_name_for(prefix: str, name: str) -> str:
 
 
 def resolve_session(prefix: str, name: str) -> str:
+    is_agy_prefix = prefix.casefold().startswith(("g-", "g-r-"))
     if not name:
-        res = subprocess.run(
-            tmux_binary.argv("display-message", "-p", "#{session_name}"), capture_output=True, text=True, check=False
-        )
-        current_session = res.stdout.strip() if res.returncode == 0 else ""
+        current_session = ""
+        if not is_agy_prefix or os.environ.get("TMUX"):
+            display_cmd = tmux_binary.argv("display-message", "-p", "#{session_name}")
+            if is_agy_prefix and os.environ.get("TMUX_PANE"):
+                display_cmd = tmux_binary.argv(
+                    "display-message", "-t", os.environ["TMUX_PANE"], "-p", "#{session_name}"
+                )
+            res = subprocess.run(display_cmd, capture_output=True, text=True, check=False)
+            current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.casefold().startswith(prefix.casefold()):
             return current_session
+        if is_agy_prefix:
+            matches = sorted(s for s in _tmux_session_names() if s.casefold().startswith(prefix.casefold()))
+            if len(matches) > 1:
+                raise SessionSlotAmbiguityError(
+                    f"ambiguous Antigravity resume: {len(matches)} live slots match ({', '.join(matches)}); "
+                    "specify a session name explicitly"
+                )
+            return matches[0] if len(matches) == 1 else ""
         return find_recent_session(prefix)
     target = session_name_for(prefix, name)
     if target == name:
@@ -620,6 +441,20 @@ def resolve_session(prefix: str, name: str) -> str:
         ]
         if len(candidates) == 1:
             return candidates[0]
+        if is_agy_prefix and len(candidates) > 1:
+            raise SessionSlotAmbiguityError(
+                f"ambiguous Antigravity resume for {name!r}: {len(candidates)} live slots match "
+                f"({', '.join(sorted(candidates))}); specify an exact session name"
+            )
+    if is_agy_prefix:
+        label_prefix = f"{prefix}{name}-".casefold()
+        label_matches = sorted(s for s in _tmux_session_names() if s.casefold().startswith(label_prefix))
+        if len(label_matches) > 1:
+            raise SessionSlotAmbiguityError(
+                f"ambiguous Antigravity resume for {name!r}: {len(label_matches)} live slots match "
+                f"({', '.join(label_matches)}); specify an exact session name"
+            )
+        return label_matches[0] if len(label_matches) == 1 else ""
     return find_recent_session(f"{prefix}{name}-")
 
 
@@ -1386,6 +1221,34 @@ def _provision_private_venv(repo_root: Path, worktree_path: Path) -> bool:
     return True
 
 
+def _enable_repo_long_paths_on_windows(repo_root: Path) -> None:
+    """On Windows, set ``core.longpaths=true`` in the repository's config when no config file sets it.
+
+    The launcher's own git calls carry the key in their environment (``_git_env``), but the
+    session's git commands do not, and a plain ``git status`` in the worktree cannot stat the
+    over-limit paths the add just wrote. A value any config file already sets, ``false``
+    included, is the operator's choice and stays; only the ``command`` scope, which is this
+    process's own environment, is ignored.
+    """
+    if sys.platform != "win32":
+        return
+    probe = subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--show-scope", "--get-all", "core.longpaths"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    if any(line.split("\t", 1)[0] != "command" for line in (probe.stdout or "").splitlines() if line.strip()):
+        return
+    subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--local", "core.longpaths", "true"],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1395,6 +1258,7 @@ def _initialize_worktree(
     reused: bool,
 ) -> None:
     """Finish the idempotent setup required before returning a worktree."""
+    _enable_repo_long_paths_on_windows(repo_root)
     if branch is not None:
         if reused:
             configured_upstream = _branch_upstream(worktree_path, branch)

@@ -40,7 +40,6 @@ with ExitStack() as stack:
     for target, value in {
         "ai_cli.config.load_config": cfg,
         "ai_cli.config.get_current_project_name": "myproject",
-        "ai_cli.config.get_session_map": {},
         "ai_cli.config.detect_machine_profile": {"host_id": "host-a"},
         "ai_cli.session._resolve_is_remote": False,
         "ai_cli.session_script.get_engine_script": "exec sleep 60\n",

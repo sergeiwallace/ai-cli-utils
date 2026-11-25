@@ -32,6 +32,14 @@ __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
 
 
 _STATUSLINE_RESET = "\033[0m"
+_STATUSLINE_DIM = "\033[2m"
+_STATUSLINE_BOLD = "\033[1m"
+_STATUSLINE_GREEN = "\033[32m"
+_STATUSLINE_YELLOW = "\033[33m"
+_STATUSLINE_RED = "\033[31m"
+_STATUSLINE_CYAN = "\033[36m"
+_STATUSLINE_MAGENTA = "\033[35m"
+_STATUSLINE_GOOGLE_BLUE = "\033[1;38;2;66;133;244m"
 
 EX_CONFIG = 78
 EX_TEMPFAIL = 75
@@ -65,9 +73,18 @@ class CodexQuotaAdapter(QuotaProviderAdapter):
         super().__init__(label, (16, 163, 127), window_seconds)
 
 
+class AntigravityQuotaAdapter(QuotaProviderAdapter):
+    """Antigravity (agy) quota windows use Google blue (#4285F4) as statusline identity."""
+
+    def __init__(self, label: str, window_seconds: int) -> None:
+        super().__init__(label, (66, 133, 244), window_seconds)
+
+
 CLAUDE_FIVE_HOUR_QUOTA = ClaudeQuotaAdapter("cc5h", 5 * 60 * 60)
 CLAUDE_WEEKLY_QUOTA = ClaudeQuotaAdapter("ccWk", 7 * 24 * 60 * 60)
 CODEX_WEEKLY_QUOTA = CodexQuotaAdapter("cxWk", 7 * 24 * 60 * 60)
+AGY_FIVE_HOUR_QUOTA = AntigravityQuotaAdapter("agy5h", 5 * 60 * 60)
+AGY_WEEKLY_QUOTA = AntigravityQuotaAdapter("agyWk", 7 * 24 * 60 * 60)
 
 
 class QuotaStatuslineSegment:
@@ -176,11 +193,17 @@ def read_latest_snapshot() -> QuotaSnapshot | None:
     )
 
 
-def quota_status() -> int:
-    """Print current quota status from local SQLite."""
+def quota_status(*, as_json: bool = False) -> int:
+    """Print current quota status from local SQLite and Antigravity quota state."""
+    from .agy_quota import read_agy_quota_status
     from .quota_db import get_current_status
 
     data = get_current_status()
+    agy = read_agy_quota_status()
+    if as_json:
+        _out.raw(Untagged.JSON, json.dumps({"claude": data, "agy": agy}, sort_keys=True, default=str))
+        return 0
+
     snap = data.get("latest_snapshot")
     if snap:
         pct = snap.get("usage_percent", 0)
@@ -205,6 +228,22 @@ def quota_status() -> int:
     alerts = data.get("alerts", [])
     for alert in alerts:
         _out.emit(Tag.QUOTA, "status", f"  {alert}")
+
+    if agy["buckets"]:
+        if agy["used_percent"] is not None and agy["remaining_fraction"] is not None:
+            rem_pct = agy["remaining_fraction"] * 100.0
+            details = [f"status: {agy['status']}"]
+            if agy.get("plan_tier"):
+                details.append(f"plan: {agy['plan_tier']}")
+            if agy.get("reset_at"):
+                details.append(f"resets: {agy['reset_at']}")
+            _out.emit(
+                Tag.QUOTA,
+                "status",
+                f"Antigravity (agy): {agy['used_percent']:.1f}% used ({rem_pct:.1f}% remaining; {', '.join(details)})",
+            )
+        else:
+            _out.emit(Tag.QUOTA, "status", f"Antigravity (agy): unknown (status: {agy['status']})")
 
     return 0
 
@@ -482,28 +521,34 @@ def _current_window(state: dict, window: str, now: float, max_age: float) -> tup
 
 
 def quota_publish() -> int:
-    """Publish the statusline's native seven-day quota reading when it is current.
+    """Publish current Claude and Antigravity quota readings to NATS when fresh.
 
-    Reads the state file the statusline writes from Claude Code's ``rate_limits`` payload. When
-    the seven-day window is current it publishes the same three items a quota snapshot always
-    has (``quota.snapshot``, ``hw.events.usage.claude.snapshot`` and the ``hw_state`` KV key
-    ``quota.claude.current.<host>``). A missing, unreadable, stale or reset state file publishes
-    nothing and still exits 0: an idle host has no fresh reading, which is not a failure.
+    Reads the state files written from Claude Code's ``rate_limits`` payload and
+    Antigravity's ``statusLine`` ``quota`` payload. Missing, unreadable, stale, or
+    reset state files publish nothing and still exit 0.
     """
+    from .agy_quota import publish_agy_quota
+
     path, max_age = _quota_state_settings()
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         _out.emit(Tag.QUOTA, "publish", f"quota publish: no readable state file at {path} ({type(exc).__name__})")
+        if publish_agy_quota():
+            _out.emit(Tag.QUOTA, "publish", "quota publish: agy snapshot sent")
         return 0
     if not isinstance(state, dict):
         _out.emit(Tag.QUOTA, "publish", f"quota publish: state file {path} is not a JSON object")
+        if publish_agy_quota():
+            _out.emit(Tag.QUOTA, "publish", "quota publish: agy snapshot sent")
         return 0
 
     now = time.time()
     seven_day = _current_window(state, "seven_day", now, max_age)
     if seven_day is None:
         _out.emit(Tag.QUOTA, "publish", "quota publish: no current seven-day reading; nothing published")
+        if publish_agy_quota():
+            _out.emit(Tag.QUOTA, "publish", "quota publish: agy snapshot sent")
         return 0
     five_hour = _current_window(state, "five_hour", now, max_age)
 
@@ -515,6 +560,8 @@ def quota_publish() -> int:
     )
     _publish_quota_snapshot(snapshot)
     _out.emit(Tag.QUOTA, "publish", f"quota publish: seven-day {pct:.1f}% sent")
+    if publish_agy_quota():
+        _out.emit(Tag.QUOTA, "publish", "quota publish: agy snapshot sent")
     return 0
 
 
@@ -665,6 +712,10 @@ def _render_env_statusline_segment(segment_name: str) -> str:
         adapter = CodexQuotaAdapter("cxWk", window_seconds)
         pct_name = "AI_CLI_QUOTA_STATUSLINE_PCT"
         reset_name = "AI_CLI_QUOTA_STATUSLINE_RESET"
+    elif segment_name in {"agy-five-hour", "agy-weekly"}:
+        adapter = AGY_FIVE_HOUR_QUOTA if segment_name == "agy-five-hour" else AGY_WEEKLY_QUOTA
+        pct_name = "AI_CLI_QUOTA_STATUSLINE_PCT"
+        reset_name = "AI_CLI_QUOTA_STATUSLINE_RESET"
     else:
         return ""
 
@@ -676,20 +727,30 @@ def _render_env_statusline_segment(segment_name: str) -> str:
     try:
         reset_epoch = float(os.environ[reset_name])
     except (KeyError, ValueError):
-        return renderer.render_without_pace(usage_pct) if segment_name == "claude-five-hour" else ""
+        return (
+            renderer.render_without_pace(usage_pct)
+            if segment_name in {"claude-five-hour", "agy-five-hour", "agy-weekly"}
+            else ""
+        )
     arrow = os.environ.get("AI_CLI_QUOTA_STATUSLINE_ARROW", "→")
     return renderer.render(usage_pct, reset_epoch, time.time(), arrow)
 
 
-def quota_statusline_part() -> int:
+def quota_statusline_part(*, provider: str = "claude") -> int:
     """Print a compact quota indicator for use in the statusline.
 
-    Authoritative source: CC's official ``rate_limits`` stdin, exported by the
-    statusline as ``AI_CLI_QUOTA_*`` env vars and persisted here as a throttled snapshot.
-    Then: NATS KV (shared across machines) when local data is stale; local SQLite fast path
-    when fresh. The three provider windows share ``QuotaStatuslineSegment`` for their
-    pace calculation, signed display, and truecolor gradient.
+    Authoritative source: CC's official ``rate_limits`` stdin (for ``provider="claude"``)
+    or Antigravity's ``statusLine`` ``quota`` state file / NATS KV (for ``provider="agy"``).
+    The provider windows share ``QuotaStatuslineSegment`` for their pace calculation,
+    signed display, and truecolor gradient.
     """
+    if provider == "agy":
+        from .agy_quota import render_agy_statusline_segment
+
+        rendered = render_agy_statusline_segment()
+        if rendered:
+            _out.raw(Untagged.STATUSLINE, rendered)
+        return 0
     import sqlite3
 
     from .quota_db import (

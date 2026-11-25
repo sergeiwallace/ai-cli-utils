@@ -1,1 +1,1 @@
-Keep the agent exit status and recent terminal output in the launch log after a quick exit, including remote sessions over SSH and mosh.
+- Keep the agent exit status and recent terminal output in the launch log after a quick exit, including remote sessions over SSH and mosh.

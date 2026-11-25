@@ -112,16 +112,10 @@
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"
 
-[gemini]
-## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["session"]
-## Set true only after AI-CLI-43 confirms billing credit status.
-## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
-# paid_fallback_enabled = false
-## Command used to launch gemini-cli. Override if the binary is not on PATH
-## (e.g. "npx @google/gemini-cli" for npx-only installs).
-# command = "gemini"
+[agy]
+## Command used to launch Antigravity (`ai g`). Override if the binary is not on PATH.
+## Quote paths containing spaces.
+# command = "agy"
 
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
@@ -153,6 +147,9 @@ notify_on_exit = true
 ## reads it on every call. A window counts as current while its newest reading is at most
 ## max_age_seconds old and its reset time has not passed.
 # state_file = "~/.claude/state/quota.json"
+## State file written by `ai quota render-statusline` from Antigravity's statusLine quota payload.
+## Defaults to $XDG_STATE_HOME/ai-cli-utils/agy-quota.json (e.g. ~/.local/state/ai-cli-utils/agy-quota.json).
+# agy_state_file = "~/.local/state/ai-cli-utils/agy-quota.json"
 # max_age_seconds = 1800
 ## Fallback weekly reset anchor, used until a reading carries its own reset time.
 # reset_anchor_utc = "2026-04-04T06:00:00Z"
@@ -243,6 +240,19 @@ stale_session_timeout = 15
 ## Seconds the command may run before it is stopped and the resume refused. Default 300.
 # timeout_seconds = 300
 
+[session_register]
+## A command run by the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks
+## after launch confirmation, for deployments with a registry of live agent sessions.
+## Session-start hooks run inside the client's process tree.
+## On an Antigravity tmux resume, the launcher runs it after the control bridge binds
+## the conversation and sets AI_TMUX_SESSION to the tmux slot name.
+## "{client}" in any argument is replaced by "codex" or "agy". The command runs without
+## a shell, and its output is captured. A failure or timeout prints one warning line
+## and the session starts unregistered. Unset: nothing runs.
+# command = ["register-session", "--client", "{client}"]
+## Seconds the command may run before it is stopped. Default 15.
+# timeout_seconds = 15
+
 [tmux]
 ## The multiplexer executable every tmux call runs: the launch, attach, ls and every
 ## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more
@@ -273,6 +283,10 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
+## Session names skipped by automatic launch pickers (ai c, ai cx, ai p, ai g),
+## even when no live session currently holds them. Read on every call and matched
+## case-insensitively; explicit -N/--name still allows launching one directly.
+# reserved = ["ada", "max"]
 ## Seconds one fetch, and one push, of a shared name registry may take before the
 ## registry counts as unreachable, each read on every call. Separate from the
 ## registry's publish timeout.
@@ -491,16 +505,6 @@ boot = false
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
 ## Port `ai cdp start` opens when -p/--port is not given.
-# port = 9222
-
-[gemini_billing]
-## GCP project that holds the BigQuery billing export dataset.
-## Required for `ai spend gemini` to show actual billed amounts.
-# gcp_project_id = "my-gcp-project"
-## Fully-qualified BigQuery table ID for the GCP detailed billing export.
-## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
-# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
-## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 
 [workspace]

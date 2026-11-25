@@ -1,5 +1,7 @@
 # Human-name session identifiers: implementation notes
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 These notes record the measurements the human-name session identifier work takes before
 it writes code that depends on them: each AI client's session store, and the size of the
 generated name list. The design that asks for them is kept in the environment
@@ -339,7 +341,15 @@ The bridge is a child of the exec-preserving writer and lives only while that
 owner's process identity and parent relationship still match. It starts unconfirmed.
 The existing callback notifies it after validating the native event. Confirmation
 requires the current token and a kernel peer PID whose ancestry includes the owner,
-with the same effective UID. A `get` request returns a live `waiting` snapshot only
+with the same effective UID. The callback holds the slot lock while writing the
+confirmed record, notifying the bridge and, on failure, restoring the prior record.
+The original bytes are staged on the same filesystem before the confirmed write;
+rollback uses an atomic rename rather than another file write after rejection.
+This ordering lets the bridge validate the confirmed phase during its handshake
+without retaining a rejected identity. The prior in-flight token is preserved on
+rollback, so an unconfirmed launch still follows the existing recovery rules.
+A missing bridge keeps the diagnostic confirmation behavior unchanged.
+A `get` request returns a live `waiting` snapshot only
 after this confirmation, including the thread, cwd and nullable rollout path. A
 changed committed binding invalidates that snapshot until another valid callback.
 Requests and replies are bounded JSON lines on a private Unix socket; the bridge

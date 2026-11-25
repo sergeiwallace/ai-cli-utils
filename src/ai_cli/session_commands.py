@@ -22,6 +22,7 @@ from . import (
     output,
     session_boot_unit,
     session_list_view,
+    session_naming,
     session_publish_timer,
     session_reconcile,
     session_state_publish,
@@ -488,7 +489,7 @@ class StopReport:
 def _pane_pids(tmux_session: str) -> list[int]:
     try:
         listed = subprocess.run(
-            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"),
+            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}:", "-F", "#{pane_pid}"),
             capture_output=True,
             text=True,
             check=False,
@@ -636,8 +637,9 @@ def _owned_record(doc: dict, slug: str) -> dict:
     if not matches:
         raise click.ClickException(f"unknown session: {slug}")
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
+    here = session_naming.machine_identity(host)
     for record in matches:
-        if record.get("kind") == "local" and record.get("owning_host") == host:
+        if record.get("kind") == "local" and here.matches(record.get("owning_host")):
             return record
     owners = sorted({str(r.get("owning_host")) for r in matches if r.get("kind") == "local"})
     detail = f"; its owning_host is {', '.join(map(repr, owners))} and this host is {host!r}" if owners else ""
@@ -730,11 +732,11 @@ def repair_policy(dry_run):
     found = []
 
     def change(doc):
-        host = _local_host(doc)
+        here = session_naming.machine_identity(_local_host(doc))
         for record in doc["sessions"]:
             if (
                 record.get("kind") == "local"
-                and record.get("owning_host") == host
+                and here.matches(record.get("owning_host"))
                 and not record.get("probe")
                 and record.get("relaunch") == "never"
                 and "relaunch_set_by" not in record
@@ -817,7 +819,7 @@ def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None, booted:
     if (
         cfg["on_boot"]
         and record.get("kind") == "local"
-        and record.get("owning_host") == host
+        and session_naming.machine_identity(host).matches(record.get("owning_host"))
         and not state.tombstone_path(record["name"], host).exists()
     ):
         alive = registry._local_session_alive(record["name"])
@@ -826,7 +828,9 @@ def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None, booted:
 
 def _earlier_boot_run(record: dict, host: str, boot: str | None) -> bool:
     """Whether ``record`` still claims a run of this host that an earlier boot started."""
-    if record.get("kind") != "local" or record.get("owning_host") != host or not boot:
+    if record.get("kind") != "local" or not session_naming.machine_identity(host).matches(record.get("owning_host")):
+        return False
+    if not boot:
         return False
     if state.tombstone_path(record["name"], host).exists():
         return False
@@ -1056,7 +1060,7 @@ def relaunch(slug, boot, dry_run, allow_partial_migration):
                     if (
                         item.get("kind") == "local"
                         and item.get("name") == record["name"]
-                        and item.get("owning_host") == host
+                        and session_naming.machine_identity(host).matches(item.get("owning_host"))
                         and item.get("relaunched_boot_id") == boot_id
                     ):
                         item.setdefault("boot_decision", record["boot_decision"])["reason"] = reason
@@ -1147,18 +1151,12 @@ def _run_on_this_terminal(command: list[str]) -> int:
     The agent inherits stdin, stdout and stderr untouched. An interactive agent decides
     from them whether it is interactive: with stdout captured, Claude Code took the
     launch as ``--print``, refused for want of a prompt and exited at once, so every
-    tmux --once session ended as a bare ``[exited]``.
-
-    Ctrl+C reaches the whole foreground process group, so this process ignores it
-    while the agent runs: the agent decides what an interrupt means, and this owner
-    stays alive to record the exit.
+    tmux --once session ended as a bare ``[exited]``. This process ignores Ctrl+C while
+    the agent runs, so it stays alive to record the exit.
     """
-    proc = subprocess.Popen(command)
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    try:
-        return proc.wait()
-    finally:
-        signal.signal(signal.SIGINT, previous)
+    from .foreground import run_in_foreground
+
+    return run_in_foreground(command)
 
 
 @sessions.command("_run", hidden=True, context_settings={"ignore_unknown_options": True})
@@ -1197,3 +1195,13 @@ def run_once(launch_log, name, command):
         output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
     sys.exit(status)
+
+
+@sessions.command(
+    "render-title",
+    help="Render a plain-text terminal window title from Antigravity stdin JSON",
+)
+def render_title():
+    from .agy_quota import cmd_render_agy_title
+
+    sys.exit(cmd_render_agy_title())
