@@ -1,0 +1,1 @@
+- Fix changelog fragments that blocked release folding and check fragments in CI and pre-commit.

@@ -15,7 +15,7 @@ from process_wait import scaled
 from ai_cli import session_registry as registry
 from ai_cli import session_run_state as state
 from ai_cli.session_lifecycle_script import lifecycle_command, session_state_functions
-from ai_cli.session_script import get_engine_script
+from ai_cli.session_script import WINDOWS_AGENT_RUN, get_engine_script
 
 
 @pytest.fixture
@@ -314,14 +314,20 @@ def test_given_a_heartbeat_write_in_flight_when_cleanup_runs_then_it_is_stopped_
             reap(process)
 
 
-def test_given_agent_setup_before_launch_when_script_generated_then_run_time_clock_starts_at_launch():
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+def test_given_agent_setup_before_launch_when_script_generated_then_run_time_clock_starts_at_launch(
+    windows, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.session_script._native_windows_launcher", lambda: windows)
     script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
-    run_agent = script.split("    run_agent() {", 1)[1].split("    # BEGIN SHELL RETURN agent-wait", 1)[0]
+    run_agent = script.split("    run_agent() {", 1)[1]
     clock = run_agent.index("start_ts=$(date +%s)")
     # Setup that can take seconds on a loaded host must come before the clock starts.
     assert run_agent.index("direnv export bash") < clock
     assert run_agent.index("refresh_plugins()") < clock
-    assert clock < run_agent.index('"$@" <&0 &')
+    # POSIX backgrounds the agent; native Windows runs it in the foreground.
+    launch = WINDOWS_AGENT_RUN if windows else '"$@" <&0 &'
+    assert clock < run_agent.index(launch)
 
 
 def _counting_agent(tmp_path, name, config_file, *, flip_on_run=None):

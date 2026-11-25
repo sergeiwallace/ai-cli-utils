@@ -931,7 +931,9 @@ def words_cache_dir() -> Path:
     return _config.get_xdg_cache_home() / "session-names"
 
 
-def common_words(policy: dict, *, fetch: Callable[[str], bytes] | None = None) -> frozenset[str]:
+def common_words(
+    policy: dict, *, fetch: Callable[[str], bytes] | None = None, read_only: bool = False
+) -> frozenset[str]:
     """The lowercase entries of the policy's pinned dictionary, downloaded once and cached by digest.
 
     The cached archive is checked against the pinned digest on every read, so a
@@ -949,8 +951,9 @@ def common_words(policy: dict, *, fetch: Callable[[str], bytes] | None = None) -
             name_list.verify(data, digest, confusable["words_url"])
         except name_list.NameListError as exc:
             raise RegistryError(f"cannot check common words: {exc}") from exc
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
+        if not read_only:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(data)
     member = name_list.read_member(data, confusable["words_member"], confusable["words_url"])
     words = frozenset(name_list.parse_common_words(member.decode("utf-8")))
     _WORDS_CACHE[digest] = words
@@ -1053,19 +1056,21 @@ def pick_request(
     words: frozenset[str] | None = None,
     extra_held: frozenset[str] = frozenset(),
     session: str | None = None,
+    reserved_names: frozenset[str] | None = None,
 ):
     """The picker's request for ``slot`` under the published policy, and any warning it raised.
 
     Only approved names are candidates, and none a verdict rejects for this launch;
     ``session`` is the session a migration renames. Unusable status data refuses.
     """
-    from . import session_naming
+    from . import session_naming, session_title
 
     policy = snapshot.policy
     low, high = name_list.limits(policy)
     include = policy.get("repos", {}).get(slot.repo_alias, {}).get("letters")
     letters, warning = session_naming.resolve_letters(slot.repo_alias, include, policy_source(registry))
     confusable = policy.get("confusable", {})
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
     request = session_naming.PickRequest(
         generated=snapshot.generated(),
         held=held_tokens(snapshot, spool) | extra_held,
@@ -1078,6 +1083,7 @@ def pick_request(
         letters=letters,
         pick_floor=int(policy.get("pick_floor", 10)),
         reserved_words=alias_words() | {slot.repo_alias, slot.host_alias},
+        reserved_names=resolved_reserved,
         denylist=frozenset(policy.get("denylist", [])),
         manual=frozenset(snapshot.manual),
         passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
@@ -1089,19 +1095,27 @@ def pick_request(
 
 
 def _spare_writes(
-    snapshot: Snapshot, slot: Slot, held: frozenset[str], words: frozenset[str] | None, rng
+    snapshot: Snapshot,
+    slot: Slot,
+    held: frozenset[str],
+    words: frozenset[str] | None,
+    rng,
+    *,
+    reserved_names: frozenset[str] | None = None,
 ) -> tuple[dict[str, bytes | None], list[str]]:
     """Rows that bring this machine's spares up to ``offline_spares``, each passing the picker's guard."""
-    from . import session_naming
+    from . import session_naming, session_title
 
     policy = snapshot.policy
     approved = snapshot.approved()
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
     here = session_naming.machine_identity(slot.machine)
     host_rejected = frozenset(
         held for (held, kind, value), row in (snapshot.verdicts or {}).items()
         if kind == "host" and here.matches(value) and row.get("verdict") == "rejected"
     )  # fmt: skip
-    shortfall = int(policy.get("offline_spares", 3)) - len(snapshot.rows_of(slot.machine, "spare"))
+    usable_spares = [row for row in snapshot.rows_of(slot.machine, "spare") if row["token"] not in resolved_reserved]
+    shortfall = int(policy.get("offline_spares", 3)) - len(usable_spares)
     writes: dict[str, bytes | None] = {}
     added: list[str] = []
     low, high = name_list.limits(policy)
@@ -1118,6 +1132,7 @@ def _spare_writes(
             letters=frozenset(),
             pick_floor=1,
             reserved_words=alias_words() | {slot.repo_alias, slot.host_alias},
+            reserved_names=resolved_reserved,
             denylist=frozenset(policy.get("denylist", [])),
             manual=frozenset(snapshot.manual),
             passes_static=(lambda name: passes_static(name, policy, words)) if words is not None else None,
@@ -1142,12 +1157,23 @@ def reserve_picked(
     max_length: int | None = None,
     rng=None,
     words: frozenset[str] | None = None,
+    reserved_names: frozenset[str] | None = None,
 ) -> Reservation:
     """Pick a name for ``slot`` and reserve it, topping up this machine's spares in the same commit."""
-    from . import session_naming
+    from . import session_naming, session_title
+
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
 
     def build(snapshot: Snapshot) -> Change:
-        request, warnings = pick_request(registry, snapshot, slot, spool=spool, max_length=max_length, words=words)
+        request, warnings = pick_request(
+            registry,
+            snapshot,
+            slot,
+            spool=spool,
+            max_length=max_length,
+            words=words,
+            reserved_names=resolved_reserved,
+        )
         pick = session_naming.pick_name(request, rng)
         title = slot.title_for(pick.name)
         row = session_row(
@@ -1164,7 +1190,9 @@ def reserve_picked(
             worktree=slot.worktree_for(title),
         )
         writes: dict[str, bytes | None] = {row_path(pick.name): checked_row(row)}
-        spares, added = _spare_writes(snapshot, slot, request.held | {pick.name}, words, rng)
+        spares, added = _spare_writes(
+            snapshot, slot, request.held | {pick.name}, words, rng, reserved_names=resolved_reserved
+        )
         writes.update(spares)
         reservation = Reservation(pick.name, title, row, pick=pick, spares_added=added, warnings=warnings)
         return Change(writes, f"session-names: reserve {pick.name} ({title}@{slot.machine})", result=reservation)
@@ -1247,7 +1275,13 @@ def _is_own_spare(snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, di
 
 
 def _take_own_spare(
-    snapshot: Snapshot, name: str, slot: Slot, spool: dict[str, dict], words: frozenset[str] | None
+    snapshot: Snapshot,
+    name: str,
+    slot: Slot,
+    spool: dict[str, dict],
+    words: frozenset[str] | None,
+    *,
+    reserved_names: frozenset[str] | None = None,
 ) -> tuple[dict, dict[str, bytes | None], list[str]]:
     """The session row this machine's spare ``name`` becomes, the writes that activate it and
     refill the pool to ``offline_spares``, and the spares added."""
@@ -1263,7 +1297,9 @@ def _take_own_spare(
     )
     writes: dict[str, bytes | None] = {row_path(name): checked_row(row)}
     remaining = replace(snapshot, rows={token: r for token, r in snapshot.rows.items() if token != name})
-    spares, added = _spare_writes(remaining, slot, held_tokens(snapshot, spool), words, None)
+    spares, added = _spare_writes(
+        remaining, slot, held_tokens(snapshot, spool), words, None, reserved_names=reserved_names
+    )
     writes.update(spares)
     return row, writes, added
 
@@ -1305,7 +1341,15 @@ def limits_reason(name: str, policy: dict) -> str | None:
 
 
 def reserve_hand_chosen(
-    registry: Registry, name: str, slot: Slot, *, add: bool, via: str, added_by: str, words: frozenset[str]
+    registry: Registry,
+    name: str,
+    slot: Slot,
+    *,
+    add: bool,
+    via: str,
+    added_by: str,
+    words: frozenset[str],
+    reserved_names: frozenset[str] | None = None,
 ) -> Reservation:
     """Reserve a name chosen by hand, adding it to the database in the same commit when ``add``.
 
@@ -1324,7 +1368,7 @@ def reserve_hand_chosen(
         if verdict == "spare":
             if not locked:
                 raise _SpoolLockNeeded
-            row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+            row, writes, added = _take_own_spare(snapshot, name, slot, spool, words, reserved_names=reserved_names)
             reservation = Reservation(name, row["title"], row, spares_added=added)
             return Change(writes, f"session-names: activate {name} ({row['title']}@{slot.machine})", result=reservation)
         if verdict not in ("ok", "unknown") or (verdict == "unknown" and not add):
@@ -1641,7 +1685,13 @@ def lock_wait(registry: Registry) -> float:
     return registry.timeout_s * registry.attempts
 
 
-def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> Reservation:
+def take_spare(
+    registry: Registry,
+    slot: Slot,
+    *,
+    cause: str | None = None,
+    reserved_names: frozenset[str] | None = None,
+) -> Reservation:
     """Activate this machine's shortest unactivated spare for ``slot`` while the registry is unreachable.
 
     Reads the last fetched tip, never the network. Holds ``spool.lock`` from reading the
@@ -1649,6 +1699,9 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
     machine can never take the same spare. ``cause`` is the failure that sent the caller
     here; a refusal for want of a spare quotes it.
     """
+    from . import session_title
+
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
     with spool_lock(lock_wait(registry)):
         snapshot = registry.snapshot(fetch=False)
         approved = snapshot.approved()
@@ -1658,6 +1711,7 @@ def take_spare(registry: Registry, slot: Slot, *, cause: str | None = None) -> R
                 row
                 for row in snapshot.rows_of(slot.machine, "spare")
                 if row["token"] not in spool
+                and row["token"] not in resolved_reserved
                 and (approved is None or row["token"] in approved)
                 and not rejecting_scope(snapshot, row["token"], slot)
             ),
@@ -2086,9 +2140,11 @@ def reconcile(
                 tip, rows={t: r for t, r in tip.rows.items() if t not in released and t not in spares_out}
             )
             slot = Slot(repo="", repo_alias="", host_alias=host_alias, label=None, machine=machine, client="")
+            from . import session_title
+
             try:
                 top_up, added = _spare_writes(remaining, slot, frozenset(held), None, None)
-            except NameStatusError as exc:
+            except (NameStatusError, session_title.TitleError) as exc:
                 top_up, added = {}, []
                 report.top_up_skipped = f"{exc}; no unverified spare was created"
             writes.update(top_up)
@@ -2267,9 +2323,12 @@ def reserve_for_migration(
     max_length: int | None,
     words: frozenset[str],
     rng=None,
+    reserved_names: frozenset[str] | None = None,
 ) -> Reservation:
     """Reserve the migration's new name and declare the rename as ``intent``, in one commit."""
-    from . import session_naming
+    from . import session_naming, session_title
+
+    resolved_reserved = session_title.resolve_reserved_names() if reserved_names is None else reserved_names
 
     def build_for(locked: bool) -> Callable[[Snapshot], Change]:
         return lambda snapshot: build(snapshot, locked)
@@ -2277,7 +2336,13 @@ def reserve_for_migration(
     def build(snapshot: Snapshot, locked: bool) -> Change:
         if name is None:
             request, warnings = pick_request(
-                registry, snapshot, slot, max_length=max_length, words=words, session=old_title
+                registry,
+                snapshot,
+                slot,
+                max_length=max_length,
+                words=words,
+                session=old_title,
+                reserved_names=resolved_reserved,
             )
             pick = session_naming.pick_name(request, rng)
             chosen, tier = pick.name, pick.tier
@@ -2287,7 +2352,9 @@ def reserve_for_migration(
             if verdict == "spare":
                 if not locked:
                     raise _SpoolLockNeeded
-                row, writes, added = _take_own_spare(snapshot, name, slot, spool, words)
+                row, writes, added = _take_own_spare(
+                    snapshot, name, slot, spool, words, reserved_names=resolved_reserved
+                )
                 writes[migration_path(old_title)] = encode_json(
                     migration_record(old_title, row["title"], slot.machine, slot.client)
                 )

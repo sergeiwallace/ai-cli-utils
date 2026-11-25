@@ -74,7 +74,7 @@ def live_sessions(tmp_path, monkeypatch, register_repo):
         if argv[:2] == ["tmux", "list-sessions"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         if argv[:2] == ["tmux", "list-panes"]:
-            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=")], "")
+            return subprocess.CompletedProcess(argv, 0, rows[argv[3].removeprefix("=").removesuffix(":")], "")
         pytest.fail(f"unexpected subprocess: {argv[:2]}")
 
     monkeypatch.setattr(session_enrol.subprocess, "run", run)
@@ -202,8 +202,11 @@ def test_given_pre_codex_thread_script_when_enrolled_then_only_unchanged_active_
         source,
     )
     if changed_flags:
-        command = {"c": "claude", "g": "gemini", "p": "pi"}[engine]
-        source = source.replace(f"run_agent {command} ", f"run_agent {command} --unexpected ")
+        if engine == "g":
+            source = source.replace("ai_cli.agy_session launch", "ai_cli.agy_session launch --unexpected")
+        else:
+            command = {"c": "claude", "p": "pi"}[engine]
+            source = source.replace(f"run_agent {command} ", f"run_agent {command} --unexpected ")
     script.write_text(source, encoding="utf-8")
     result = invoke("-a", "-j")
     assert result.exit_code == 0, result.output

@@ -100,7 +100,6 @@ def _run_launch(repo, tmp_path, monkeypatch, **over):
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -152,6 +151,7 @@ def test_given_neither_transport_when_the_launch_refuses_then_no_worktree_was_cr
     assert "kg-1" not in listed, "a refused launch must register no worktree"
 
 
+@pytest.mark.real_pty
 def test_given_a_pty_is_available_when_ai_c_launches_bare_then_it_proceeds(real_repo, tmp_path, monkeypatch):
     """The other half of the control: tmux is off, so the pty is what carries it."""
     code, execs = _run_launch(real_repo, tmp_path, monkeypatch)
@@ -161,6 +161,7 @@ def test_given_a_pty_is_available_when_ai_c_launches_bare_then_it_proceeds(real_
     assert execs[0][0] == "claude"
 
 
+@pytest.mark.real_pty
 def test_given_a_pty_is_available_when_the_transport_resolves_then_it_is_the_pty(real_repo, tmp_path, monkeypatch):
     resolved = compact_transport.resolve(tmux_usable=False, tmux_detail="--bare requested", config={})
 
@@ -282,6 +283,7 @@ def test_given_no_openpty_when_the_probe_runs_then_it_reports_the_platform_unsup
 # --- the probe reads, it does not trust its own write ---------------------------
 
 
+@pytest.mark.real_pty
 def test_given_the_pty_probe_when_nothing_reaches_the_slave_then_it_reports_unusable():
     """A successful write is not a successful delivery -- the 2026-09-27 discipline.
 
@@ -296,6 +298,7 @@ def test_given_the_pty_probe_when_nothing_reaches_the_slave_then_it_reports_unus
     assert "nothing arrived at its slave" in result.detail
 
 
+@pytest.mark.real_pty
 def test_given_the_pty_probe_when_the_slave_reads_other_bytes_then_it_reports_unusable():
     """What the slave READ is the verdict, so corrupted input is a refusal too.
 
@@ -316,6 +319,7 @@ def test_given_the_pty_probe_when_the_slave_reads_other_bytes_then_it_reports_un
     assert "instead of the marker" in result.detail
 
 
+@pytest.mark.real_pty
 def test_given_a_posix_host_when_the_pty_probe_runs_then_the_marker_arrives_at_the_slave():
     result = compact_transport.probe_pty()
 

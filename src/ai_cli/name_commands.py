@@ -150,6 +150,7 @@ def show_name_config_command() -> None:
         settings = session_title.resolve_settings(
             enabled_flag=None, with_label_flag=None, policy_config=policy_config, host=_host(), policy_source=source
         )
+        reserved_setting = session_title.resolve_reserved_setting()
     except session_title.TitleError as exc:
         _out.error(Tag.NAMES, "config", str(exc))
         sys.exit(EXIT_REFUSED)
@@ -160,6 +161,10 @@ def show_name_config_command() -> None:
     ]
     for key in ("enabled", "name_with_label"):
         lines.append(f"{key:<18} {settings[key].value!s:<8} ({settings[key].layer})")
+    reserved = reserved_setting.value
+    assert isinstance(reserved, frozenset)
+    reserved_value = ", ".join(sorted(reserved)) if reserved else "(none)"
+    lines.append(f"reserved           {reserved_value:<8} ({reserved_setting.layer})")
     if registry is None:
         _out.emit(Tag.NAMES, "config", "\n".join(lines))
         return
@@ -782,7 +787,7 @@ def list_names_command(as_json: bool, pool: bool) -> None:
 )
 @click.option("-L", "--max-length", type=int, default=None, help="Count only names of at most this many letters")
 def list_name_candidates_command(repo_alias: str | None, max_length: int | None) -> None:
-    from . import session_naming
+    from . import session_naming, session_title
     from .session import get_project_prefix
 
     registry = open_registry()
@@ -794,7 +799,7 @@ def list_name_candidates_command(repo_alias: str | None, max_length: int | None)
     slot = reg.Slot(repo="", repo_alias=alias, host_alias=_host_alias(), label=None, machine=_host(), client="")
     try:
         request, warnings = reg.pick_request(registry, snapshot, slot, spool=reg.read_spool(), max_length=max_length)
-    except reg.RegistryError as exc:
+    except (reg.RegistryError, session_title.TitleError) as exc:
         _fail(exc)
         return
     candidates, removed = session_naming.name_candidates(request)
@@ -836,7 +841,7 @@ def locate_session_command(query: str, as_json: bool) -> None:
     _out.emit(Tag.NAMES, "locate", "\n".join(session_locate.describe(located)))
 
 
-CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "gemini": "gemini"}
+CLIENT_EXECUTABLES = {"claude-code": "claude", "codex": "codex", "pi": "pi", "agy": "agy"}
 
 
 def _most_recent_record(client):
@@ -889,7 +894,19 @@ def _probe_cases(client, scratch: Path) -> list[dict]:
         cases.append(case(sc.PRESENT, sc.PRESENT, client.probe_transcript(Path(record.cwd), "")))
     worktree = scratch / "worktree"
     worktree.mkdir()
-    cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    if client.can_probe_absence:
+        cases.append(case(sc.ABSENT, sc.ABSENT, client.probe_transcript(worktree, "")))
+    else:
+        cases.append(
+            {
+                "case": sc.ABSENT,
+                "expected": sc.ABSENT,
+                "actual": None,
+                "reason": f"{client.client} store cannot prove conversation absence",
+                "skipped": True,
+                "ok": True,
+            }
+        )
     missing_home = scratch / "missing-home"
     cases.append(case(sc.UNKNOWN, sc.UNKNOWN, type(client)(missing_home).probe_transcript(worktree, "")))
     return cases

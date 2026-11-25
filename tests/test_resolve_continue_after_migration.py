@@ -134,7 +134,7 @@ def test_given_a_partly_migrated_slot_when_bare_launching_new_then_resumes_the_t
     _partly_migrated(slot)
     _record_migration(slot)
 
-    command = _bare_engine_command("c", NEW, slot["cwd"], None, "gemini", "--no-sandbox", [])
+    command = _bare_engine_command("c", NEW, slot["cwd"], None, "--no-sandbox", [])
 
     assert command[-4:] == ["--resume", REAL, "--name", NEW]
 

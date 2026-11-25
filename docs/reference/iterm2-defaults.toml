@@ -6,7 +6,7 @@
 enabled = true
 
 [iterm2.tab_title]
-## Include type symbol (* for CC, ✦ for Gemini, π for Pi) in tab and pane titles
+## Include type symbol (* for CC, ✦ for Antigravity, π for Pi) in tab and pane titles
 show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
 show_status_symbol = false
@@ -53,7 +53,7 @@ charcoal    = "#2d2d2d"
 [iterm2.defaults]
 ## Settings applied to all sessions unless overridden by a project or session block.
 ## tab_color: palette color name (e.g. "blue") or omit for auto-rotation
-## icon_color: hex tint for the Claude/Gemini icon; omit to auto-derive from tab_color
+## icon_color: hex tint for the Claude or Antigravity icon; omit to auto-derive from tab_color
 # tab_color  = "blue"
 # icon_color = "#ffffff"
 
@@ -77,7 +77,7 @@ charcoal    = "#2d2d2d"
 ## hand-maintained profiles required. Override with the exact name of a custom
 ## profile only if you deliberately want a session type to inherit from it.
 cc         = "Default"
-gemini     = "Default"
+agy        = "Default"
 pi         = "Default"
 codex      = "Default"
 shell      = "Default"

@@ -907,6 +907,7 @@ class PickRequest:
     letters: frozenset[str]
     pick_floor: int
     reserved_words: frozenset[str] = frozenset()
+    reserved_names: frozenset[str] = frozenset()
     denylist: frozenset[str] = frozenset()
     manual: frozenset[str] = frozenset()
     passes_static: Callable[[str], bool] | None = None
@@ -969,6 +970,7 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
             "held",
             f"within {request.max_edit_distance} edit of a held name",
             "equal to a repo or host alias",
+            "reserved in user config",
             "a strict-prefix title pair with a held title",
         ),
         0,
@@ -993,8 +995,10 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
             removed[keys[6]] += 1
         elif name in request.reserved_words:
             removed[keys[7]] += 1
-        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+        elif name in request.reserved_names:
             removed[keys[8]] += 1
+        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+            removed[keys[9]] += 1
         else:
             candidates.append(name)
     return candidates, removed

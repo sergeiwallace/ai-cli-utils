@@ -1,6 +1,7 @@
 """Regression coverage for the live-process test isolation guard (AI-CLI-117)."""
 
 import os
+import re
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -17,13 +18,10 @@ class TestRealProcessGuard:
         with pytest.raises(RuntimeError, match="attempted to spawn a real `claude` process"):
             os.execvp("claude", ["claude"])
 
-    def test_given_unmocked_agent_popen_when_called_then_fails_loudly(self):
-        # An assertion TARGET, not a spawn: the guard raises before any process
-        # exists, so there is nothing to own and nothing to reap. Routing this
-        # through `process_ownership.spawn_owned` would test the helper instead
-        # of the guard.
-        with pytest.raises(RuntimeError, match="attempted to spawn a real `gemini` process"):
-            subprocess.Popen(["gemini"])
+    @pytest.mark.parametrize("binary", ["agy", "agy.exe"])
+    def test_given_unmocked_agy_popen_when_called_then_fails_loudly(self, binary, tmp_path):
+        with pytest.raises(RuntimeError, match=rf"attempted to spawn a real `{re.escape(binary)}` process"):
+            subprocess.Popen([str(tmp_path / binary)])
 
     def test_given_unmocked_ssh_process_when_run_then_fails_loudly(self):
         """A missed remote transport mock must fail before SSH can connect."""
