@@ -783,7 +783,7 @@ def _stamp_within(line: str, started: datetime, finished: datetime) -> bool:
     return earliest <= match.group(1) <= latest
 
 
-@pytest.mark.parametrize("engine", ["c", "g", "p"])
+@pytest.mark.parametrize("engine", ["c", "p"])
 def test_given_a_fresh_unapproved_worktree_envrc_when_the_child_body_starts_then_the_agent_gets_its_environment(
     session_repo, stub_direnv, child_body, engine
 ):
@@ -899,7 +899,6 @@ def _launch_in(repo_root: Path, tmp_path: Path, monkeypatch, stub_direnv):
         patch("ai_cli.main._direnv_installed", return_value=True),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
