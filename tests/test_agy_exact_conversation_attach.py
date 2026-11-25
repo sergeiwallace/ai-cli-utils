@@ -148,6 +148,7 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
     # must run `agy models` to verify Google sign-in.
     token = agy_session.sign_in_cache_token("agy", home)
     events_log = tmp_path / "events.log"
+    release_file = tmp_path / "release-child-1"
     script_path = tmp_path / "state" / "ai-cli-utils" / "sessions" / f"{SLOT}.sh"
 
     fake_ai = (
@@ -162,6 +163,7 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
         "import json, os, subprocess, sys, time\n"
         "from pathlib import Path\n"
         f"log = Path({str(events_log)!r})\n"
+        f"release = Path({str(release_file)!r})\n"
         f"script = Path({str(script_path)!r})\n"
         "if sys.argv[1:] == ['--version']:\n"
         "    print('1.5.14')\n"
@@ -171,20 +173,27 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
         "        f.write('probe:models\\n')\n"
         "    print('Error: Please sign in to view models.', file=sys.stderr)\n"
         "    sys.exit(1)\n"
+        "started_at = time.monotonic()\n"
         "with log.open('a', encoding='utf-8') as f:\n"
         "    f.write(f\"launch:{os.environ.get('AI_CLI_AGY_SIGN_IN_VERIFIED', 'UNSET')}\\n\")\n"
-        "# Confirm slot 1 via SessionStart hook, outlive the 3s quick-failure guard, and bump\n"
-        "# script mtime so child 1 exits 78 and the persistent supervisor spawns replacement child 2.\n"
+        "# Confirm slot 1 via SessionStart hook, bump script mtime so child 1 triggers reload\n"
+        "# on exit, and hold child 1 live until the test releases it after checking tmux env.\n"
         "payload = json.dumps({'hookEventName': 'SessionStart', 'conversationId': '11111111-2222-4333-8444-555555555555', 'cwd': os.getcwd()})\n"
         "subprocess.run(['ai', 'internal', 'agy-session-confirm'], input=payload, text=True, check=False)\n"
         "st = script.stat()\n"
         "os.utime(script, (st.st_atime + 20, st.st_mtime + 20))\n"
-        "time.sleep(3.5)\n"
+        "wait_deadline = time.monotonic() + 30.0\n"
+        "while time.monotonic() < wait_deadline and not release.exists():\n"
+        "    time.sleep(0.05)\n"
+        "# Outlive the supervisor's 3s quick-failure guard so child 1 exits 78 and reloads.\n"
+        "remaining = 3.5 - (time.monotonic() - started_at)\n"
+        "if remaining > 0:\n"
+        "    time.sleep(remaining)\n"
         "sys.exit(1)\n"
     )
 
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv(agy_session.SIGN_IN_VERIFIED_ENV, token)
+    monkeypatch.delenv(agy_session.SIGN_IN_VERIFIED_ENV, raising=False)
     monkeypatch.setattr(
         "test_session_reload_loop.get_engine_script",
         lambda *_args, **_kw: get_engine_script(
@@ -198,37 +207,51 @@ def test_given_generated_agy_supervisor_when_child_restarts_after_signout_then_t
             SLOT,
             rewrite_once_during_startup=False,
             extra_fakes={"ai": fake_ai, "agy": fake_agy},
+            session_env={agy_session.SIGN_IN_VERIFIED_ENV: token},
         )
 
-    # 1. Wait until child 1 has launched fake_agy (which sleeps 3.5s) and verify the tmux
-    #    session env cleared AI_CLI_AGY_SIGN_IN_VERIFIED while the pane is STILL LIVE.
+    # 1. Wait until child 1 has launched fake_agy (held live by release_file) and verify the
+    #    session-scoped tmux env cleared AI_CLI_AGY_SIGN_IN_VERIFIED while child 1 is STILL LIVE.
     deadline = time.monotonic() + 25.0
     lines: list[str] = []
-    while time.monotonic() < deadline:
-        if events_log.is_file():
-            lines = events_log.read_text(encoding="utf-8").splitlines()
-            if "launch:UNSET" in lines:
-                break
-        time.sleep(0.05)
-    assert "launch:UNSET" in lines, f"child 1 never launched: {lines!r}; pane:\n{_pane_history(tmux_socket, SLOT)}"
+    try:
+        while time.monotonic() < deadline:
+            if events_log.is_file():
+                lines = events_log.read_text(encoding="utf-8").splitlines()
+                if "launch:UNSET" in lines:
+                    break
+            time.sleep(0.05)
+        assert "launch:UNSET" in lines, f"child 1 never launched: {lines!r}; pane:\n{_pane_history(tmux_socket, SLOT)}"
 
-    live_check = subprocess.run(
-        ["tmux", "-S", tmux_socket, "has-session", "-t", f"={SLOT}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert live_check.returncode == 0, "expected tmux session to be live during child 1"
-    env_res = subprocess.run(
-        ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert env_res.returncode != 0 or env_res.stdout.strip().startswith("-"), (
-        f"expected {agy_session.SIGN_IN_VERIFIED_ENV} cleared while session live, got rc={env_res.returncode} "
-        f"stdout={env_res.stdout!r}"
-    )
+        live_check = subprocess.run(
+            ["tmux", "-S", tmux_socket, "has-session", "-t", f"={SLOT}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert live_check.returncode == 0, "expected tmux session to be live during child 1"
+        global_env = subprocess.run(
+            ["tmux", "-S", tmux_socket, "show-environment", "-g", agy_session.SIGN_IN_VERIFIED_ENV],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert global_env.returncode != 0 or global_env.stdout.strip().startswith("-"), (
+            f"expected {agy_session.SIGN_IN_VERIFIED_ENV} absent from server env, got rc={global_env.returncode} "
+            f"stdout={global_env.stdout!r}"
+        )
+        env_res = subprocess.run(
+            ["tmux", "-S", tmux_socket, "show-environment", "-t", f"={SLOT}", agy_session.SIGN_IN_VERIFIED_ENV],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert (env_res.returncode != 0 or env_res.stdout.strip().startswith("-")) and token not in env_res.stdout, (
+            f"expected session-scoped {agy_session.SIGN_IN_VERIFIED_ENV} cleared while child 1 live, "
+            f"got rc={env_res.returncode} stdout={env_res.stdout!r}"
+        )
+    finally:
+        release_file.touch()
 
     # 2. Wait for replacement child 2 to re-probe `agy models` and refuse after sign-out.
     while time.monotonic() < deadline:
@@ -269,6 +292,11 @@ def test_given_real_tmux_sessions_when_verifying_live_agy_marker_then_exact_slot
         time.sleep(0.05)
     assert ran_flag.is_file(), "expected respawned one-shot pane command to execute"
 
+    # Pin the leading `=` exact-match operator while g-myproject-1 is the sole live session on the server:
+    # without `=`, tmux prefix-matches g-myproject to g-myproject-1 and returns @ai_cli_client=agy.
+    absent_prefix = main._verify_live_agy_tmux_session("g-myproject")
+    assert absent_prefix is not None and "Relaunch with `ai g`" in absent_prefix
+
     # 2. Create prefix-colliding slot 10 marked non-agy and unmarked slot 2 on the same real tmux server.
     subprocess.run(
         ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-10", "--", "/bin/sh", "-c", "sleep 60"],
@@ -291,3 +319,335 @@ def test_given_real_tmux_sessions_when_verifying_live_agy_marker_then_exact_slot
     assert missing is not None and "missing the @ai_cli_client=agy marker" in missing
     absent = main._verify_live_agy_tmux_session("g-myproject-999")
     assert absent is not None and "Relaunch with `ai g`" in absent
+
+
+def test_given_tmux_server_restart_recycling_session_id_when_fenced_marker_or_respawn_runs_then_replacement_session_is_untouched(
+    tmux_socket, tmp_path
+):
+    import subprocess
+    import time
+
+    from ai_cli import tmux_ownership
+
+    tmux_cmd = ("tmux", "-S", tmux_socket)
+    created = subprocess.run(
+        [
+            *tmux_cmd,
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
+            "-s",
+            "g-myproject-1",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 60",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    orig_id = created.stdout.strip()
+    subprocess.run(
+        [*tmux_cmd, "set-option", "-t", orig_id, "@ai_cli_session_generation", "gen-original-1"],
+        check=True,
+    )
+    stale_identity = tmux_ownership.capture_tmux_session_identity(
+        orig_id, expected_generation="gen-original-1", tmux_command=tmux_cmd
+    )
+    assert stale_identity is not None
+
+    # Simulate a tmux server restart that recycles the exact same opaque session id ($0) for an unrelated session.
+    subprocess.run([*tmux_cmd, "kill-server"], check=True)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and Path(tmux_socket).exists():
+        time.sleep(0.05)
+    replacement = subprocess.run(
+        [
+            *tmux_cmd,
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
+            "-s",
+            "unrelated-slot",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 60",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    replacement_id = replacement.stdout.strip()
+    assert replacement_id == stale_identity.session_id
+
+    orig_pane_pid = subprocess.run(
+        [*tmux_cmd, "display-message", "-p", "-t", replacement_id, "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    # Neither marker write nor respawn-pane may touch the replacement session when its generation is absent or different.
+    touched_flag = tmp_path / "replacement-respawned"
+    for gen_value in (None, "gen-different-2"):
+        if gen_value is not None:
+            subprocess.run(
+                [*tmux_cmd, "set-option", "-t", replacement_id, "@ai_cli_session_generation", gen_value],
+                check=True,
+            )
+        assert (
+            tmux_ownership.set_owned_tmux_option(stale_identity, main._TMUX_CLIENT_OPTION, "agy", tmux_command=tmux_cmd)
+            is False
+        )
+        assert (
+            tmux_ownership.respawn_owned_tmux_pane(
+                stale_identity,
+                ("/bin/sh", "-c", f"touch {shlex.quote(str(touched_flag))} && sleep 60"),
+                tmux_command=tmux_cmd,
+            )
+            is False
+        )
+        time.sleep(0.1)
+        marker = subprocess.run(
+            [*tmux_cmd, "show-options", "-t", "=unrelated-slot:", "-qv", main._TMUX_CLIENT_OPTION],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert marker == ""
+        assert not touched_flag.exists()
+        current_pane_pid = subprocess.run(
+            [*tmux_cmd, "display-message", "-p", "-t", replacement_id, "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert current_pane_pid == orig_pane_pid
+
+    # Verify matching generation passes special characters (quotes, $, #, ;, backslash, newline) verbatim.
+    live_identity = tmux_ownership.capture_tmux_session_identity(
+        replacement_id, expected_generation="gen-different-2", tmux_command=tmux_cmd
+    )
+    assert live_identity is not None
+    out_file = tmp_path / "quoted-payload.txt"
+    payload = 'it\'s "$HOME" #{session_id}; a\\b\nline2'
+    assert (
+        tmux_ownership.respawn_owned_tmux_pane(
+            live_identity,
+            (
+                sys.executable,
+                "-c",
+                "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8'); time.sleep(60)",
+                str(out_file),
+                payload,
+            ),
+            tmux_command=tmux_cmd,
+        )
+        is True
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not (out_file.is_file() and out_file.stat().st_size > 0):
+        time.sleep(0.05)
+    assert out_file.read_text(encoding="utf-8") == payload
+
+
+def test_given_remain_on_exit_server_when_once_agy_setup_fails_then_placeholder_session_is_cleaned_up(
+    tmux_socket, monkeypatch
+):
+    import subprocess
+
+    tmux_cmd = ("tmux", "-S", tmux_socket)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: tmux_cmd)
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: [*tmux_cmd, *args])
+
+    # Keep one unrelated session alive and enable global remain-on-exit on the real tmux server.
+    subprocess.run(
+        [*tmux_cmd, "new-session", "-d", "-s", "unrelated-slot", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run([*tmux_cmd, "set-option", "-g", "remain-on-exit", "on"], check=True)
+
+    def _live_sessions() -> set[str]:
+        res = subprocess.run(
+            [*tmux_cmd, "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return {line.strip() for line in res.stdout.splitlines() if line.strip()}
+
+    # 1. capture_tmux_session_identity returns None after generation stamp -> provisional fenced kill removes placeholder.
+    real_capture = main._tmux_ownership.capture_tmux_session_identity
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", lambda *_a, **_kw: None)
+    with pytest.raises(RuntimeError, match="failed to establish ownership"):
+        main._create_marked_agy_once_session("g-myproject-1", [], "/bin/sh", "sleep 60")
+    assert _live_sessions() == {"unrelated-slot"}
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", real_capture)
+
+    # 2. set-option @ai_cli_session_generation fails -> unmarked placeholder kill removes placeholder under remain-on-exit.
+    real_run = main.subprocess.run
+
+    def fail_gen_set(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, "", "simulated set-option failure")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(main.subprocess, "run", fail_gen_set)
+    with pytest.raises(RuntimeError, match="failed to establish ownership"):
+        main._create_marked_agy_once_session("g-myproject-2", [], "/bin/sh", "sleep 60")
+    monkeypatch.setattr(main.subprocess, "run", real_run)
+    assert _live_sessions() == {"unrelated-slot"}
+
+    # 3. respawn_owned_tmux_pane fails -> owned session kill removes placeholder under remain-on-exit.
+    real_respawn = main._tmux_ownership.respawn_owned_tmux_pane
+    monkeypatch.setattr(main._tmux_ownership, "respawn_owned_tmux_pane", lambda *_a, **_kw: False)
+    with pytest.raises(RuntimeError, match="failed to start Antigravity one-shot session"):
+        main._create_marked_agy_once_session("g-myproject-3", [], "/bin/sh", "sleep 60")
+    monkeypatch.setattr(main._tmux_ownership, "respawn_owned_tmux_pane", real_respawn)
+    assert _live_sessions() == {"unrelated-slot"}
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Linux symlink to Python sets pane_current_command=agy; macOS AMFI rejects renamed system binaries",
+)
+def test_given_real_tmux_manual_agy_pane_without_metadata_when_attaching_then_labels_agy_and_skips_plain_shell(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+    import time
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_agy = fake_bin / "agy"
+    # Symlinking sys.executable avoids multi-call coreutils binaries (e.g. Ubuntu 26.04 uutils sleep)
+    # that reject argv[0]=="agy" while reporting pane_current_command=="agy" on Linux tmux.
+    fake_agy.symlink_to(sys.executable)
+
+    # Manually started g- tmux session running an executable named agy, with NO metadata or @ai_cli_client marker.
+    subprocess.run(
+        [
+            "tmux",
+            "-S",
+            tmux_socket,
+            "new-session",
+            "-d",
+            "-s",
+            "g-myproject-manual",
+            "--",
+            str(fake_agy),
+            "-c",
+            "import time; time.sleep(60)",
+        ],
+        check=True,
+    )
+    # Manually started g- tmux session running a plain shell command.
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-shell", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+
+    # Poll until tmux reflects the pane's foreground command before asserting.
+    deadline = time.monotonic() + 5.0
+    observed_cmd = ""
+    while time.monotonic() < deadline:
+        probe = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                tmux_socket,
+                "display-message",
+                "-p",
+                "-t",
+                "=g-myproject-manual:",
+                "#{pane_current_command}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        observed_cmd = probe.stdout.strip()
+        if observed_cmd == "agy":
+            break
+        time.sleep(0.05)
+
+    assert observed_cmd == "agy", f"expected pane_current_command='agy', got {observed_cmd!r}"
+    assert main._g_session_client("g-myproject-manual") == "agy"
+    assert main._g_session_client("g-myproject-shell") is None
+
+    attach_calls: list[list[str]] = []
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    manual_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-manual"])
+    assert manual_res.exit_code == 0, manual_res.output
+    assert "Attaching to g-myproject-manual [agy]" in manual_res.output
+
+    shell_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-shell"])
+    assert shell_res.exit_code == 0, shell_res.output
+    assert "[agy]" not in shell_res.output
+    assert "[legacy gemini]" not in shell_res.output
+
+
+def test_given_real_tmux_marked_g_session_without_metadata_when_attaching_then_labels_agy_cross_platform(
+    tmux_socket, tmp_path, monkeypatch
+):
+    import subprocess
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux", "-S", tmux_socket))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args, **_kw: ["tmux", "-S", tmux_socket, *args])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-marked", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "set-option", "-t", "=g-myproject-marked:", main._TMUX_CLIENT_OPTION, "agy"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "new-session", "-d", "-s", "g-myproject-other", "--", "/bin/sh", "-c", "sleep 60"],
+        check=True,
+    )
+    subprocess.run(
+        ["tmux", "-S", tmux_socket, "set-option", "-t", "=g-myproject-other:", main._TMUX_CLIENT_OPTION, "legacy"],
+        check=True,
+    )
+
+    assert main._g_session_client("g-myproject-marked") == "agy"
+    assert main._g_session_client("g-myproject-other") is None
+    assert main._probe_all_g_session_clients_from_tmux() == {
+        "g-myproject-marked": "agy",
+        "g-myproject-other": None,
+    }
+
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda _argv: sys.exit(0))
+
+    marked_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-marked"])
+    assert marked_res.exit_code == 0, marked_res.output
+    assert "Attaching to g-myproject-marked [agy]" in marked_res.output
+
+    other_res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-other"])
+    assert other_res.exit_code == 0, other_res.output
+    assert "[agy]" not in other_res.output
+    assert "[legacy gemini]" not in other_res.output

@@ -436,34 +436,87 @@ def _extract_json_text_and_denial(payload: object) -> tuple[str, bool]:
 
 
 _FENCE_OPEN_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$")
+_LIST_ITEM_RE = re.compile(r"^[ ]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)")
+_THEMATIC_BREAK_RE = re.compile(r"^[ ]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+_ATX_HEADING_RE = re.compile(r"^[ ]{0,3}#{1,6}(?:[ \t]|$)")
+
+
+def _is_indented_code_line(line: str) -> bool:
+    """Return True when a non-blank line has >= 4 columns of leading spaces/tabs (CommonMark §4.4)."""
+    cols = 0
+    for ch in line:
+        if ch == " ":
+            cols += 1
+        elif ch == "\t":
+            cols += 4 - (cols % 4)
+        else:
+            break
+        if cols >= 4:
+            return True
+    return False
 
 
 def _has_plain_text_auto_denial(text: str) -> bool:
-    """Return True when ``text`` has an unquoted, non-fenced auto-denial diagnostic line.
+    """Return True when ``text`` has an unquoted, non-code auto-denial diagnostic line.
 
     Follows CommonMark fenced code block rules (0-3 leading spaces, matching delimiter
-    character and minimum length) so a 4-space-indented backtick line cannot open a
-    fence to hide a genuine denial and a shorter inner fence cannot close an outer fence.
+    character and minimum length) and indented code block rules (>= 4 columns of leading
+    spaces/tabs at document start or after a blank/non-paragraph block) so an indented
+    code example is skipped without allowing an indented backtick line to open a fence
+    and hide a subsequent unindented denial.
+
+    Only a line of spaces and tabs is blank, and a heading or thematic break ends a
+    paragraph. Inside a list, an indented line after a blank line continues the list item
+    rather than opening a code block, so it is checked; the list ends at an unindented,
+    non-list line after a blank line. This is not full CommonMark: an indented code block
+    nested in a list item is checked too, which errs toward reporting a denial. A genuine
+    denial printed with 4 or more columns of indent outside a paragraph or list is skipped
+    as code; agy prints its diagnostic at column 0.
     """
     fence_char = ""
     fence_len = 0
+    in_indented_code = False
+    in_paragraph = False
+    in_list = False
     for line in text.splitlines():
         if fence_char:
             if re.match(rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$", line):
                 fence_char = ""
                 fence_len = 0
             continue
+        if not line.strip(" \t"):
+            in_paragraph = False
+            continue
+        if in_indented_code:
+            if _is_indented_code_line(line):
+                continue
+            in_indented_code = False
+        elif not in_paragraph and not in_list and _is_indented_code_line(line):
+            in_indented_code = True
+            continue
+        if not _is_indented_code_line(line):
+            if _THEMATIC_BREAK_RE.match(line) or _ATX_HEADING_RE.match(line):
+                in_paragraph = False
+                in_list = False
+                continue
+            if _LIST_ITEM_RE.match(line):
+                in_list = True
+            elif not in_paragraph:
+                in_list = False
         match = _FENCE_OPEN_RE.match(line)
         if match:
             marker, info = match.group(1), match.group(2)
             if marker[0] == "~" or "`" not in info:
                 fence_char = marker[0]
                 fence_len = len(marker)
+                in_paragraph = False
                 continue
         if re.match(r"^[ ]{0,3}>", line):
+            in_paragraph = False
             continue
         if _STDOUT_AUTO_DENIAL_LINE_RE.match(line):
             return True
+        in_paragraph = True
     return False
 
 

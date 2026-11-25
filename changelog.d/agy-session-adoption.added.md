@@ -1,1 +1,1 @@
-`ai adopt-session -e agy` registers a stopped Antigravity conversation by UUID in a session worktree. Adoption keeps the native conversation and artifacts in place. Adoption and local `ai g` previews print the managed tmux launch command for the slot.
+- `ai adopt-session -e agy` registers a stopped Antigravity conversation by UUID in a session worktree. Adoption keeps the native conversation and artifacts in place. Adoption and local `ai g` previews print the managed tmux launch command for the slot.

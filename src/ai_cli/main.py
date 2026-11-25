@@ -1422,6 +1422,7 @@ def _await_peer_update(
 
 
 UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+SKIP_AUTO_UPDATE_ENV = "AI_CLI_SKIP_AUTO_UPDATE"
 _LAUNCH_REEXEC_ENV = "AI_CLI_LAUNCH_REEXEC"
 
 
@@ -1433,6 +1434,15 @@ def _update_verbose_requested() -> bool:
     whether a source change actually reached the installed build.
     """
     return os.environ.get(UPDATE_VERBOSE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _auto_update_skipped() -> bool:
+    """Whether the operator opted out of launch-time auto-update via ``AI_CLI_SKIP_AUTO_UPDATE``.
+
+    Used by isolated canaries, review checkouts, and tests so launching from an
+    alternate tree never fingerprints or reinstalls the global ``uv tool`` build.
+    """
+    return os.environ.get(SKIP_AUTO_UPDATE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _packaged_source_paths(project_path: Path) -> list[Path]:
@@ -1596,6 +1606,8 @@ def _auto_update_if_stale(config: dict) -> bool:
     A successful reinstall rewrote this process's own installed tree, so the
     caller must re-exec: True says so. Every other outcome returns False.
     """
+    if _auto_update_skipped():
+        return False
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
         return False
@@ -1716,6 +1728,8 @@ def _auto_update_if_stale(config: dict) -> bool:
 
 
 def trigger_background_update():
+    if _auto_update_skipped():
+        return
     state_file = _config.get_xdg_state_home() / "update_check.json"
     now = time.time()
     if state_file.exists():
@@ -2575,7 +2589,7 @@ def _handle_internal(argv: list[str]) -> None:
                 target = _resolve_resume_target(
                     engine,
                     naming_prefix,
-                    project_prefix,
+                    launch_naming.legacy_prefix,
                     name,
                     is_remote=True,
                     bare=not use_tmux,
@@ -3071,14 +3085,17 @@ def _sync_launch_client(config: dict, origin: InstallOrigin) -> "_LaunchClient |
     return _LaunchClient(checkout, sync_client_checkout(checkout))
 
 
-def _install_decision(client: "_LaunchClient | None", reinstalled: bool) -> str:
+def _install_decision(client: "_LaunchClient | None", reinstalled: bool, *, skipped: bool = False) -> str:
     if client is not None:
         check = client.check
         if check.state is ClientState.SYNCED:
             return f"fast-forwarded {check.behind} commit(s) from origin/main; restarting"
         if check.state is ClientState.BEHIND:
             return f"{check.behind} commit(s) behind origin/main, not updated"
-    decision = "reinstalled; restarting" if reinstalled else "current"
+    if skipped:
+        decision = f"skipped ({SKIP_AUTO_UPDATE_ENV})"
+    else:
+        decision = "reinstalled; restarting" if reinstalled else "current"
     if client is not None and client.check.state is ClientState.UNCHECKED:
         return f"{decision} locally; could not check origin/main ({client.check.reason})"
     return decision
@@ -3471,10 +3488,106 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     sys.exit(0)
 
 
-def _g_session_client(session_name: str) -> str | None:
-    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
-    if not session_name.startswith("g-"):
+_TMUX_CLIENT_OPTION = "@ai_cli_client"
+_G_CLIENT_EXEC_EXTS = (".exe", ".cmd", ".bat", ".ps1", ".com")
+_G_PANE_QUERY_FORMAT = f"#{{{_TMUX_CLIENT_OPTION}}}\t#{{pane_current_command}}"
+_G_ALL_PANES_QUERY_FORMAT = f"#{{session_name}}\t{_G_PANE_QUERY_FORMAT}"
+
+
+def _classify_g_command_name(token: str) -> str | None:
+    cleaned = token.strip().strip("\"'")
+    if not cleaned:
         return None
+    base = re.split(r"[/\\]", cleaned)[-1].lower()
+    for ext in _G_CLIENT_EXEC_EXTS:
+        if base.endswith(ext) and len(base) > len(ext):
+            base = base[: -len(ext)]
+            break
+    if base in ("agy", "antigravity"):
+        return "agy"
+    if base == "gemini":
+        return "gemini"
+    return None
+
+
+def _decode_tmux_stdout(raw_out: bytes | str | None) -> str | None:
+    if isinstance(raw_out, bytes):
+        return raw_out.decode("utf-8", errors="replace")
+    if isinstance(raw_out, str):
+        return raw_out
+    return None
+
+
+def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
+    found: set[str] = set()
+    for marker, current_cmd in rows:
+        if marker:
+            return marker if marker in ("agy", "gemini") else None
+        client = _classify_g_command_name(current_cmd)
+        if client is not None:
+            found.add(client)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
+    """Fallback client detection for a live ``g-`` tmux session lacking metadata files."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", _G_PANE_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return None
+
+    rows: list[tuple[str, str]] = []
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], parts[1]))
+    return _client_from_pane_rows(rows)
+
+
+def _probe_all_g_session_clients_from_tmux() -> dict[str, str | None]:
+    """Batch-probe live ``g-`` tmux sessions in a single ``list-panes -a`` call."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-a", "-F", _G_ALL_PANES_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if res.returncode != 0:
+        return {}
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return {}
+
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith("g-"):
+            continue
+        grouped.setdefault(parts[0], []).append((parts[1], parts[2]))
+    return {name: _client_from_pane_rows(rows) for name, rows in grouped.items()}
+
+
+def _g_session_client_from_files(session_name: str) -> str | None:
     state = _config.get_xdg_state_home()
     if (state / "sessions" / f"{session_name}.agy.json").is_file():
         return "agy"
@@ -3492,7 +3605,16 @@ def _g_session_client(session_name: str) -> str | None:
     return None
 
 
-_TMUX_CLIENT_OPTION = "@ai_cli_client"
+def _g_session_client(session_name: str, *, live_pane_clients: Mapping[str, str | None] | None = None) -> str | None:
+    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
+    if not session_name.startswith("g-"):
+        return None
+    from_files = _g_session_client_from_files(session_name)
+    if from_files is not None:
+        return from_files
+    if live_pane_clients is not None:
+        return live_pane_clients.get(session_name)
+    return _probe_g_session_client_from_tmux(session_name)
 
 
 def _verify_live_agy_tmux_session(session_name: str) -> str | None:
@@ -3546,33 +3668,105 @@ def _is_agy_replay_command(command: list[str]) -> bool:
     return _agy_session.is_agy_replay_command(command)
 
 
+_TMUX_ONCE_SETUP_TIMEOUT_SECONDS = 10.0
+
+
+def _cleanup_failed_agy_once_session(
+    session_name: str,
+    *,
+    created_session_id: str | None,
+    generation: str | None,
+    identity: _tmux_ownership.TmuxSessionIdentity | None,
+) -> None:
+    """Tear down an unstarted one-shot placeholder session without touching unrelated sessions."""
+    if identity is not None:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+        return
+    if created_session_id is not None:
+        if generation is not None:
+            provisional = _tmux_ownership.TmuxSessionIdentity(created_session_id, session_name, generation)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                if _tmux_ownership.kill_owned_tmux_session(provisional):
+                    return
+        _tmux_ownership.kill_unmarked_tmux_placeholder(
+            created_session_id,
+            session_name,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        return
+    # new-session -d -s <session_name> just returned 0 (so the name did not exist before),
+    # but tmux returned an unexpanded or unusable session id.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            tmux_binary.argv("kill-session", "-t", f"={session_name}"),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+
+
+def _recorded_single_run_exit_status(session_name: str) -> int | None:
+    """Return the exit status recorded by ``sessions _run`` for this launch of ``session_name``."""
+    try:
+        doc = _session_registry.load_registry()
+    except Exception:
+        return None
+    for record in doc.get("sessions", ()):
+        if record.get("kind") != "local" or record.get("name") != session_name:
+            continue
+        if record.get("run_state") != "exited":
+            continue
+        exit_info = record.get("supervisor_exit") or record.get("exit")
+        if not isinstance(exit_info, dict):
+            continue
+        launched_at = record.get("launched_at")
+        exit_at = exit_info.get("at")
+        if isinstance(launched_at, str) and launched_at and (not isinstance(exit_at, str) or exit_at < launched_at):
+            continue
+        evidence = exit_info.get("evidence")
+        if isinstance(evidence, dict) and evidence.get("source") == "single-run":
+            status = evidence.get("status")
+            if isinstance(status, int) and not isinstance(status, bool):
+                return status
+    return None
+
+
+def _handle_once_session_exited_before_attach(
+    session_id: str,
+    launch_log_path: str | None,
+    reporter: LaunchReporter,
+) -> None:
+    """Report cleanly when a fast-exiting one-shot tmux session ends before attach-session."""
+    status = _recorded_single_run_exit_status(session_id)
+    log_suffix = f" (see {launch_log_path})" if launch_log_path else ""
+    if status == 0:
+        reporter.phase("session").outcome(f"one-shot session '{session_id}' finished before attach{log_suffix}")
+        return
+    if status is not None:
+        reporter.error(
+            "session",
+            f"one-shot session '{session_id}' exited with status {status} before attach{log_suffix}",
+        )
+        exit_code = status if status > 0 else (128 - status if status < 0 else 1)
+        sys.exit(exit_code)
+    reporter.error(
+        "session",
+        f"one-shot session '{session_id}' exited before attach{log_suffix}",
+    )
+    sys.exit(1)
+
+
 def _create_marked_agy_once_session(
     session_id: str,
     tmux_env_flags: list[str],
     session_shell: str,
     pane_command: str,
+    *,
+    pre_respawn: Callable[[_tmux_ownership.TmuxSessionIdentity], None] | None = None,
 ) -> _tmux_ownership.TmuxSessionIdentity:
     """Create a detached one-shot ``ai g`` tmux session with ownership-fenced ``@ai_cli_client agy`` before startup."""
-    result = subprocess.run(
-        tmux_binary.argv(
-            "new-session",
-            "-d",
-            "-P",
-            "-F",
-            "#{session_id}",
-            "-s",
-            session_id,
-            *tmux_env_flags,
-            "--",
-            session_shell,
-            "-c",
-            "sleep 60",
-        ),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    try:
         result = subprocess.run(
             tmux_binary.argv(
                 "new-session",
@@ -3583,6 +3777,7 @@ def _create_marked_agy_once_session(
                 "-s",
                 session_id,
                 *tmux_env_flags,
+                "--",
                 session_shell,
                 "-c",
                 "sleep 60",
@@ -3590,50 +3785,75 @@ def _create_marked_agy_once_session(
             capture_output=True,
             text=True,
             check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
         )
+        if result.returncode != 0:
+            result = subprocess.run(
+                tmux_binary.argv(
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{session_id}",
+                    "-s",
+                    session_id,
+                    *tmux_env_flags,
+                    session_shell,
+                    "-c",
+                    "sleep 60",
+                ),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not create one-shot tmux session '{session_id}': {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"could not create one-shot tmux session '{session_id}'")
-    id_status, created_session_id = _tmux_ownership.classify_new_session_output(
-        result.stdout if isinstance(result.stdout, str) else ""
-    )
-    if id_status != "ok":
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    generation = secrets.token_urlsafe(32)
-    gen_marked = subprocess.run(
-        tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
-        capture_output=True,
-        check=False,
-    )
-    if gen_marked.returncode != 0:
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
-    if identity is None:
-        raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
-    client_marked = subprocess.run(
-        tmux_binary.argv("set-option", "-t", identity.session_id, _TMUX_CLIENT_OPTION, "agy"),
-        capture_output=True,
-        check=False,
-    )
-    if client_marked.returncode != 0:
-        _tmux_ownership.kill_owned_tmux_session(identity)
-        raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-    started = subprocess.run(
-        tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, "--", session_shell, "-c", pane_command),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if started.returncode != 0:
-        started = subprocess.run(
-            tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, session_shell, "-c", pane_command),
-            capture_output=True,
-            text=True,
-            check=False,
+
+    created_session_id: str | None = None
+    generation: str | None = None
+    identity: _tmux_ownership.TmuxSessionIdentity | None = None
+    started = False
+    try:
+        id_status, candidate_id = _tmux_ownership.classify_new_session_output(
+            result.stdout if isinstance(result.stdout, str) else ""
         )
-    if started.returncode != 0:
-        _tmux_ownership.kill_owned_tmux_session(identity)
-        raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
-    return identity
+        if id_status != "ok":
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        created_session_id = candidate_id
+        generation = secrets.token_urlsafe(32)
+        gen_marked = subprocess.run(
+            tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        if gen_marked.returncode != 0:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
+        if identity is None:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        if not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+        if pre_respawn is not None:
+            pre_respawn(identity)
+        if not _tmux_ownership.respawn_owned_tmux_pane(identity, (session_shell, "-c", pane_command)):
+            raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
+        started = True
+        return identity
+    except BaseException as exc:
+        if not started:
+            _cleanup_failed_agy_once_session(
+                session_id,
+                created_session_id=created_session_id,
+                generation=generation,
+                identity=identity,
+            )
+        if isinstance(exc, (OSError, subprocess.SubprocessError)):
+            raise RuntimeError(f"failed to initialize one-shot tmux session '{session_id}': {exc}") from exc
+        raise
 
 
 def _do_attach(session_name: str) -> NoReturn:
@@ -3713,8 +3933,17 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
+    file_clients = {name: _g_session_client_from_files(name) for name, _ in sessions if name.startswith("g-")}
+    live_pane_clients: dict[str, str | None] = (
+        _probe_all_g_session_clients_from_tmux() if any(client is None for client in file_clients.values()) else {}
+    )
+
     def _client_tag(name: str) -> str:
-        client = _g_session_client(name)
+        if not name.startswith("g-"):
+            return ""
+        client = file_clients.get(name)
+        if client is None:
+            client = live_pane_clients.get(name)
         if client == "agy":
             return " [agy]"
         if client == "gemini":
@@ -4904,6 +5133,39 @@ def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str 
     return None
 
 
+def _saved_agy_no_worktree_cwd(session_id: str, repo_root: "Path | None") -> "Path | None":
+    """Return the saved non-worktree cwd for a stopped ``ai g`` slot launched with ``-W``."""
+    if repo_root is None:
+        return None
+    record_path = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+    if not record_path.is_file():
+        return None
+    try:
+        doc = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("slot") != session_id:
+        return None
+    raw_cwd = doc.get("cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        return None
+    saved_path = Path(raw_cwd)
+    if not saved_path.is_absolute():
+        return None
+    try:
+        saved_cwd = saved_path.resolve()
+        resolved_root = Path(repo_root).resolve()
+    except OSError:
+        return None
+    if not saved_cwd.is_dir():
+        return None
+    if saved_cwd == resolved_root:
+        return saved_cwd
+    if resolved_root in saved_cwd.parents and _session.WORKTREE_DIR not in saved_cwd.relative_to(resolved_root).parts:
+        return saved_cwd
+    return None
+
+
 def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path | None") -> list[str]:
     """Every title a resume could reach here: live tmux sessions and session worktrees of this repository."""
     titles = set()
@@ -4920,7 +5182,7 @@ def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path
 def _resolve_resume_target(
     engine: str,
     naming_prefix: str,
-    legacy_prefix: str,
+    legacy_prefix: str | None,
     name: str,
     *,
     is_remote: bool,
@@ -4940,17 +5202,64 @@ def _resolve_resume_target(
     from . import name_registry as _names
 
     remote_seg = "-r" if is_remote else ""
-    prefix = f"{engine}{remote_seg}-{naming_prefix}-"
+    engine_prefix = f"{engine}{remote_seg}-"
+    prefix = f"{engine_prefix}{naming_prefix}-"
     clean = _session._slot_name(name, naming_prefix) if name else ""
     # A full tmux name (what the remote allocator hands back) is matched as given; a
     # title typed in full is reduced to its slot so the prefix is not applied twice.
     query = name if name and _session.session_name_for(prefix, name) == name else clean
+    has_legacy = bool(legacy_prefix and legacy_prefix.casefold() != naming_prefix.casefold())
     if not bare:
         try:
-            session = _session.resolve_session(prefix, query)
-            if not session and legacy_prefix.casefold() != naming_prefix.casefold():
-                # Migration window: a session named before the host alias joined the name.
-                session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+            if engine == "g" and has_legacy:
+                assert legacy_prefix is not None
+                legacy_tmux_prefix = f"{engine_prefix}{legacy_prefix}-"
+                legacy_clean = _session._slot_name(name, legacy_prefix) if name else ""
+                legacy_query = (
+                    name if name and _session.session_name_for(legacy_tmux_prefix, name) == name else legacy_clean
+                )
+                exact_targets = {name.casefold(), f"{engine_prefix}{name}".casefold()} if name else set()
+                current_err: _session.SessionSlotAmbiguityError | None = None
+                legacy_err: _session.SessionSlotAmbiguityError | None = None
+                try:
+                    session = _session.resolve_session(prefix, query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    session = ""
+                    current_err = exc
+                try:
+                    legacy_session = _session.resolve_session(legacy_tmux_prefix, legacy_query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    legacy_session = ""
+                    legacy_err = exc
+                # An exact full-title or full-session match wins before ambiguity refusal
+                # (e.g. `ai g myproject-1 -r` with both `g-myproject-1` and `g-myproject-box-myproject-1` live).
+                if session and session.casefold() in exact_targets:
+                    pass
+                elif legacy_session and legacy_session.casefold() in exact_targets:
+                    session = legacy_session
+                elif current_err is not None:
+                    raise current_err
+                elif legacy_err is not None:
+                    raise legacy_err
+                elif session and legacy_session and session.casefold() != legacy_session.casefold():
+                    matches = sorted((session, legacy_session))
+                    if name:
+                        raise _session.SessionSlotAmbiguityError(
+                            f"ambiguous Antigravity resume for {name!r}: {len(matches)} live slots match "
+                            f"({', '.join(matches)}); specify an exact session name"
+                        )
+                    raise _session.SessionSlotAmbiguityError(
+                        f"ambiguous Antigravity resume: {len(matches)} live slots match "
+                        f"({', '.join(matches)}); specify a session name explicitly"
+                    )
+                else:
+                    session = session or legacy_session
+            else:
+                session = _session.resolve_session(prefix, query)
+                if not session and has_legacy:
+                    assert legacy_prefix is not None
+                    # Migration window: a session named before the host alias joined the name.
+                    session = _session.resolve_session(f"{engine_prefix}{legacy_prefix}-", name)
         except _session.SessionSlotAmbiguityError as exc:
             _naming_exit(reporter, str(exc), 1)
         if session:
@@ -4972,7 +5281,8 @@ def _resolve_resume_target(
                 1,
             )
         candidates = [held, wanted]
-        if legacy_prefix.casefold() != naming_prefix.casefold():
+        if has_legacy:
+            assert legacy_prefix is not None
             candidates.append(
                 _session_naming.compose_session_name(legacy_prefix, _session._slot_name(name, legacy_prefix))
             )
@@ -4981,7 +5291,7 @@ def _resolve_resume_target(
             if found:
                 return _ResumeTarget(title=found)
     host = _session_naming.host_id()
-    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix), repo_root)
+    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix) if legacy_prefix else (naming_prefix,), repo_root)
     close = difflib.get_close_matches(wanted, pool, n=5, cutoff=0.6) or pool[:5]
     holds = "tmux session or worktree" if engine != "c" else "tmux session, worktree or transcript"
     if positional is not None and positional.kind == "title":
@@ -5356,6 +5666,16 @@ def _do_session_launch(
         bare = True
         tmux_reason = "[session] use_tmux = false in config.toml"
 
+    agy_cmd = config.get("agy", {}).get("command") or "agy"
+    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
+    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
+    if agy_print_mode and not detached:
+        # Headless print runs are synchronous and non-interactive; resolve bare before
+        # the tmux preflight and version gate so tmux is never probed or required.
+        if not bare:
+            tmux_reason = "Antigravity headless print mode runs synchronously without tmux"
+        bare = True
+
     # The runnability preflight and the report are both emitted further down,
     # AFTER input validation: a launch rejected for a bad --project-prefix must
     # reach no probe at all, which is the no-side-effect-before-rejection contract
@@ -5670,13 +5990,10 @@ def _do_session_launch(
     # about the wrong machine.
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    agy_cmd = config.get("agy", {}).get("command") or "agy"
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
-    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
-    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
     if agy_print_mode:
-        # Headless print runs are synchronous and non-interactive; never detach them inside
-        # tmux (which would exit 0 before the model runs) and never require interactive PTY.
+        # Headless print runs are synchronous and non-interactive; even a detached
+        # invocation that passed the tmux gates above must run bare rather than in tmux.
         bare = True
 
     compact_transport = None
@@ -6222,20 +6539,22 @@ def _do_session_launch(
     # above the dry-run exit and every write: a resume that fell through to naming
     # reserved a fresh first name for a NAME no session held.
     resume_target: _ResumeTarget | None = None
+    _resume_root_path: Path | None = None
     if resume and replay_recipe is None:
         try:
             _resume_root = _session.detect_repo_root()
         except RuntimeError:
             _resume_root = None
+        _resume_root_path = Path(_resume_root) if _resume_root else None
         try:
             resume_target = _resolve_resume_target(
                 engine,
                 naming_prefix,
-                project_prefix,
+                launch_naming.legacy_prefix,
                 name,
                 is_remote=is_remote,
                 bare=bare,
-                repo_root=Path(_resume_root) if _resume_root else None,
+                repo_root=_resume_root_path,
                 reporter=reporter,
             )
         except _session.SessionSlotAmbiguityError as exc:
@@ -6266,13 +6585,21 @@ def _do_session_launch(
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
+        _dry_run_saved_no_worktree = (
+            engine == "g"
+            and resume_target is not None
+            and bool(resume_target.title)
+            and _saved_agy_no_worktree_cwd(session_id, _resume_root_path) is not None
+        )
         _print_launch_plan(
             engine=engine,
             session_id=session_id,
             ai_name=ai_name,
             bare=bare,
             remote=remote,
-            worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
+            worktree_enabled=(
+                config.get("worktree", {}).get("enabled", True) and not no_worktree and not _dry_run_saved_no_worktree
+            ),
             sandbox=use_sandbox,
             extra_args=extra_args,
             agy_command=agy_cmd,
@@ -6385,6 +6712,23 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    saved_agy_no_worktree_cwd = (
+        _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
+        if engine == "g" and replay_recipe is None and resume_target is not None and resume_target.title
+        else None
+    )
+    if saved_agy_no_worktree_cwd is not None and _resume_root_path is not None:
+        no_worktree = True
+        if saved_agy_no_worktree_cwd == _resume_root_path.resolve() or bare or once:
+            worktree_path = saved_agy_no_worktree_cwd
+        elif Path.cwd().resolve() != saved_agy_no_worktree_cwd:
+            reporter.error(
+                "worktree",
+                f"stopped Antigravity slot '{session_id}' was launched with --no-worktree in "
+                f"{saved_agy_no_worktree_cwd}; run from that directory to resume it",
+            )
+            sys.exit(1)
+        reporter.phase("worktree").outcome(f"reusing saved --no-worktree directory {saved_agy_no_worktree_cwd}")
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -6775,9 +7119,19 @@ def _do_session_launch(
         if engine == "g":
             if detached and _session_registry._local_session_alive(session_id) is not False:
                 raise RuntimeError("session already exists or tmux could not be checked")
+            loop = _session_wake_watch_loop(config, ai_name) if not is_remote and not detached else None
+            pre_respawn = (
+                (lambda ident: _start_session_wake_watcher(config, ident.session_id, ai_name, loop=loop))
+                if loop is not None
+                else None
+            )
             try:
                 once_identity = _create_marked_agy_once_session(
-                    session_id, _tmux_env_flags, _session_shell, once_pane_cmd
+                    session_id,
+                    _tmux_env_flags,
+                    _session_shell,
+                    once_pane_cmd,
+                    pre_respawn=pre_respawn,
                 )
             except RuntimeError as exc:
                 if detached:
@@ -6786,11 +7140,16 @@ def _do_session_launch(
                 sys.exit(1)
             if detached:
                 return
-            loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-            if loop is not None:
-                _start_session_wake_watcher(config, once_identity.session_id, ai_name, loop=loop)
             if not attach:
                 _report_detached_launch(session_id, reporter)
+                return
+            if (
+                _tmux_ownership.capture_tmux_session_identity(
+                    once_identity.session_id, expected_generation=once_identity.generation
+                )
+                is None
+            ):
+                _handle_once_session_exited_before_attach(session_id, launch_log_path, reporter)
                 return
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(tmux_binary.argv("attach-session", "-t", once_identity.session_id))
@@ -7072,17 +7431,11 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
-        if engine == "g":
-            client_marked = subprocess.run(
-                tmux_binary.argv("set-option", "-t", identity.session_id, _TMUX_CLIENT_OPTION, "agy"),
-                capture_output=True,
-                check=False,
-            )
-            if client_marked.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
-                sys.exit(1)
+        if engine == "g" and not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+            sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
         tmux_options = (
             tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
@@ -7096,25 +7449,11 @@ def _do_session_launch(
                 Path(_script_path).unlink(missing_ok=True)
                 reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
                 sys.exit(1)
-        if engine == "g":
-            started = subprocess.run(
-                tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, "--", _session_shell, _script_path),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if started.returncode != 0:
-                started = subprocess.run(
-                    tmux_binary.argv("respawn-pane", "-k", "-t", identity.session_id, _session_shell, _script_path),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            if started.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
-                sys.exit(1)
+        if engine == "g" and not _tmux_ownership.respawn_owned_tmux_pane(identity, (_session_shell, _script_path)):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
+            sys.exit(1)
         if detached:
             reporter.phase("session").outcome(f"{session_id} running detached")
             return
@@ -7201,9 +7540,10 @@ def _session_command(engine: str):
                 trigger_background_update()
                 with reporter.phase("install", "checking installed version") as install_phase:
                     origin = _launch_install_origin()
-                    client = _sync_launch_client(config, origin) if remote else None
-                    reexec = _auto_update_if_stale(config) is True
-                    decision = _install_decision(client, reexec)
+                    skip_auto_update = _auto_update_skipped()
+                    client = None if skip_auto_update else (_sync_launch_client(config, origin) if remote else None)
+                    reexec = False if skip_auto_update else (_auto_update_if_stale(config) is True)
+                    decision = _install_decision(client, reexec, skipped=skip_auto_update)
                     reexec = reexec or (client is not None and client.check.state is ClientState.SYNCED)
                     install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
                 if client is not None and client.check.state is ClientState.BEHIND:

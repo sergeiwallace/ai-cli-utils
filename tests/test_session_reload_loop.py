@@ -135,6 +135,7 @@ def _start_session(
     *,
     rewrite_once_during_startup: bool,
     extra_fakes: dict[str, str] | None = None,
+    session_env: dict[str, str] | None = None,
 ) -> Path:
     """Run the generated stable script as a tmux pane, exactly as ``ai c`` does.
 
@@ -142,6 +143,8 @@ def _start_session(
     runs after taking its baseline mtime and before its loop-top check -- give the
     stable script a new mtime, the way a concurrent ``ai c`` or ``ai update`` does.
     ``extra_fakes`` adds stand-in executables, by name, ahead of the real ones on PATH.
+    ``session_env`` seeds session-scoped variables via ``tmux new-session -e`` without
+    placing them in the tmux server environment.
     Returns the file the stand-in agent appends its pid to when it starts.
     """
     started = tmp_path / "started"
@@ -181,9 +184,28 @@ def _start_session(
     zdotdir.mkdir()
     script.write_text(get_engine_script("c", "reload", session, "c-reload-", "reload", worktree_dir=str(tmp_path)))
     script.chmod(0o700)
-    inherited = {key: value for key, value in os.environ.items() if not key.startswith("DIRENV_")}
+    session_env_keys = set(session_env or ())
+    inherited = {
+        key: value for key, value in os.environ.items() if not key.startswith("DIRENV_") and key not in session_env_keys
+    }
+    session_env_flags = [flag for key, value in (session_env or {}).items() for flag in ("-e", f"{key}={value}")]
     created = subprocess.run(
-        ["tmux", "-S", sock, "new-session", "-d", "-s", session, "-x", "120", "-y", "30", "bash", str(script)],
+        [
+            "tmux",
+            "-S",
+            sock,
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-x",
+            "120",
+            "-y",
+            "30",
+            *session_env_flags,
+            "bash",
+            str(script),
+        ],
         capture_output=True,
         text=True,
         env={

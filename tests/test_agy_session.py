@@ -1185,6 +1185,90 @@ def test_given_two_live_agy_slots_outside_tmux_even_if_display_message_answers_t
         ),
         (
             ["-p", "hi", "--mode", "plan"],
+            "    ```\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Example:\n\n    ```\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Example:\n\n    first line\n\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "\t```\n\ttool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "  \ttool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "   tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Run failed:\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "    ```\n    code\n    ```\ntool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "    indented header\n```\ntool call auto-denied by policy\n```\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "- Run failed:\n\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "1. Run failed:\n\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "- step\n\nAfter the list.\n\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "Run failed:\n\u00a0\n    tool call auto-denied by policy\n",
+            "",
+            agy_session.EXIT_PRINT_AUTO_DENIED,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
+            "## Example\n    tool call auto-denied by policy\n",
+            "",
+            0,
+        ),
+        (
+            ["-p", "hi", "--mode", "plan"],
             "```\nhello\n```\ntool call auto-denied by policy\n",
             "",
             agy_session.EXIT_PRINT_AUTO_DENIED,
@@ -1797,7 +1881,9 @@ def test_given_new_agy_tmux_launch_when_ai_g_creates_session_then_sets_client_ma
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
 
     def fake_run(cmd, **kwargs):
@@ -1813,19 +1899,29 @@ def test_given_new_agy_tmux_launch_when_ai_g_creates_session_then_sets_client_ma
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
 
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 0
     new_idx = next(i for i, c in enumerate(seen_cmds) if "new-session" in c)
-    mark_idx = seen_cmds.index(["tmux", "set-option", "-t", "$7", main._TMUX_CLIENT_OPTION, "agy"])
-    respawn_idx = next(i for i, c in enumerate(seen_cmds) if "respawn-pane" in c)
+    mark_idx = next(
+        i
+        for i, c in enumerate(seen_cmds)
+        if c[:5] == ["tmux", "if-shell", "-F", "-t", "$7"]
+        and c[6] == f"set-option -t '$7' '{main._TMUX_CLIENT_OPTION}' 'agy'"
+    )
+    respawn_idx = next(
+        i
+        for i, c in enumerate(seen_cmds)
+        if c[:5] == ["tmux", "if-shell", "-F", "-t", "$7"] and c[6].startswith("respawn-pane -k -t '$7'")
+    )
     # Agent script must NOT start on new-session; marker is written before respawn-pane starts the script.
     assert "sleep 60" in seen_cmds[new_idx]
     assert not any("g-myproject-1.sh" in arg for arg in seen_cmds[new_idx])
     assert new_idx < mark_idx < respawn_idx
-    assert any("g-myproject-1.sh" in arg for arg in seen_cmds[respawn_idx])
+    assert "g-myproject-1.sh" in seen_cmds[respawn_idx][6]
     assert attached == [["tmux", "attach-session", "-d", "-t", "$7"]]
 
 
@@ -1839,7 +1935,9 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
     monkeypatch.setattr(main._tmux_ownership, "kill_owned_tmux_session", lambda ident: (killed.append(ident), True)[1])
 
@@ -1851,18 +1949,19 @@ def test_given_regular_agy_launch_when_client_marker_write_fails_then_kills_owne
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
         if "new-session" in cmd:
             return type("R", (), {"returncode": 0, "stdout": "$9\n", "stderr": ""})()
-        if "set-option" in cmd and main._TMUX_CLIENT_OPTION in cmd:
+        if "if-shell" in cmd and any(main._TMUX_CLIENT_OPTION in part for part in cmd):
             return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree"])
 
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 1
     assert len(killed) == 1
-    assert not any("respawn-pane" in c for c in seen_cmds)
+    assert not any("respawn-pane" in part for c in seen_cmds for part in c)
     assert not (state_dir / "sessions" / "g-myproject-1.sh").exists()
     assert "failed to mark tmux session" in capsys.readouterr().err
 
@@ -1948,11 +2047,14 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
     tmp_path, monkeypatch, capsys
 ):
     _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("/custom/bin/psmux",))
     monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["/custom/bin/psmux", *args])
     monkeypatch.setattr(
         main._tmux_ownership,
         "capture_tmux_session_identity",
-        lambda sid, expected_generation=None: type("Id", (), {"session_id": sid})(),
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
     )
 
     # 1. Attached --once: ONE ownership-fenced marker write on configured mux binary BEFORE respawn-pane and handoff.
@@ -1973,20 +2075,30 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
 
     monkeypatch.setattr(main, "_exec_tmux", fake_exec)
     monkeypatch.setattr(main.subprocess, "run", fake_run_ok)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run_ok)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc:
         main.cli()
     assert exc.value.code == 0
     new_idx = next(i for i, c in enumerate(seen_ok) if "new-session" in c)
-    mark_idx = seen_ok.index(["/custom/bin/psmux", "set-option", "-t", "$11", main._TMUX_CLIENT_OPTION, "agy"])
-    respawn_idx = next(i for i, c in enumerate(seen_ok) if "respawn-pane" in c)
+    mark_idx = next(
+        i
+        for i, c in enumerate(seen_ok)
+        if c[:5] == ["/custom/bin/psmux", "if-shell", "-F", "-t", "$11"]
+        and c[6] == f"set-option -t '$11' '{main._TMUX_CLIENT_OPTION}' 'agy'"
+    )
+    respawn_idx = next(
+        i
+        for i, c in enumerate(seen_ok)
+        if c[:5] == ["/custom/bin/psmux", "if-shell", "-F", "-t", "$11"] and c[6].startswith("respawn-pane -k -t '$11'")
+    )
     assert "sleep 60" in seen_ok[new_idx]
     assert new_idx < mark_idx < respawn_idx
-    assert "ai_cli.agy_session" in seen_ok[respawn_idx][-1]
-    assert "@ai_cli_client" not in seen_ok[respawn_idx][-1]
+    assert "ai_cli.agy_session" in seen_ok[respawn_idx][6]
+    assert "@ai_cli_client" not in seen_ok[respawn_idx][6]
     assert execed == [["/custom/bin/psmux", "attach-session", "-t", "$11"]]
 
-    # 2. Attached --once marker write failure: kills owned session by identity, never respawns, never hands off!
+    # 2. Attached --once marker write failure (or fence mismatch): kills owned session by identity, never respawns, never hands off!
     execed.clear()
     seen_fail: list[list[str]] = []
     killed: list[object] = []
@@ -1998,20 +2110,271 @@ def test_given_once_agy_launch_when_attached_and_marker_succeeds_or_fails_then_u
             return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
         if "new-session" in cmd:
             return type("R", (), {"returncode": 0, "stdout": "$12\n", "stderr": ""})()
-        if "set-option" in cmd and main._TMUX_CLIENT_OPTION in cmd:
-            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
+        if "if-shell" in cmd and any(main._TMUX_CLIENT_OPTION in part for part in cmd):
+            return type("R", (), {"returncode": 0, "stdout": "__ai_cli_ownership_mismatch__\n", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run_fail)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run_fail)
     monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
     with pytest.raises(SystemExit) as exc2:
         main.cli()
     assert exc2.value.code == 1
     assert len(killed) == 1
-    assert not any("respawn-pane" in c for c in seen_fail)
-    assert not any("kill-session" in c for c in seen_fail)
+    assert not any("respawn-pane" in part for c in seen_fail for part in c)
+    assert not any("kill-session" in part for c in seen_fail for part in c)
     assert not execed
     assert "failed to mark tmux session" in capsys.readouterr().err
+
+
+def test_given_once_agy_launch_when_respawn_fails_then_kills_owned_session_without_attaching(
+    tmp_path, monkeypatch, capsys
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "capture_tmux_session_identity",
+        lambda sid, expected_generation=None, **_kw: main._tmux_ownership.TmuxSessionIdentity(
+            sid, "g-myproject-1", expected_generation or "gen-test"
+        ),
+    )
+    killed: list[object] = []
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main._tmux_ownership, "kill_owned_tmux_session", lambda ident: (killed.append(ident), True)[1])
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    def fake_run(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$13\n", "stderr": ""})()
+        if "if-shell" in cmd and len(cmd) > 6 and cmd[6].startswith("respawn-pane"):
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "respawn failed"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 1
+    assert len(killed) == 1
+    assert not execed
+    assert "failed to start Antigravity one-shot session" in capsys.readouterr().err
+
+
+def test_given_once_agy_launch_when_ownership_or_mux_fails_before_identity_then_cleans_up_placeholder(
+    tmp_path, monkeypatch, capsys
+):
+    import subprocess as _subprocess
+
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    # 1. set-option @ai_cli_session_generation fails -> tries provisional fenced kill, then unmarked placeholder kill.
+    provisional_kills: list[object] = []
+    placeholder_kills: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), False)[1],
+    )
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_unmarked_tmux_placeholder",
+        lambda sid, name, **_kw: (placeholder_kills.append((sid, name)), True)[1],
+    )
+
+    def fake_run_gen_fail(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$21\n", "stderr": ""})()
+        if "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "set-option failed"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_gen_fail)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+    with pytest.raises(SystemExit) as exc1:
+        main.cli()
+    assert exc1.value.code == 1
+    assert len(provisional_kills) == 1
+    assert placeholder_kills == [("$21", "g-myproject-1")]
+    assert not execed
+    assert "failed to establish ownership" in capsys.readouterr().err
+
+    # 2. capture_tmux_session_identity returns None after generation stamp -> provisional fenced kill succeeds.
+    provisional_kills.clear()
+    placeholder_kills.clear()
+    monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), True)[1],
+    )
+
+    def fake_run_ok_gen(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$22\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_ok_gen)
+    with pytest.raises(SystemExit) as exc2:
+        main.cli()
+    assert exc2.value.code == 1
+    assert len(provisional_kills) == 1
+    assert placeholder_kills == []
+    assert not execed
+
+    # 3. Unexpected mux TimeoutExpired during set-option -> cleans up placeholder and exits 1 cleanly.
+    provisional_kills.clear()
+    placeholder_kills.clear()
+    monkeypatch.setattr(
+        main._tmux_ownership,
+        "kill_owned_tmux_session",
+        lambda ident: (provisional_kills.append(ident), False)[1],
+    )
+
+    def fake_run_timeout(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$23\n", "stderr": ""})()
+        if "set-option" in cmd and "@ai_cli_session_generation" in cmd:
+            raise _subprocess.TimeoutExpired(cmd, 10.0)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_timeout)
+    with pytest.raises(SystemExit) as exc3:
+        main.cli()
+    assert exc3.value.code == 1
+    assert placeholder_kills == [("$23", "g-myproject-1")]
+    assert not execed
+    assert "failed to initialize one-shot tmux session" in capsys.readouterr().err
+
+    # 4. format-not-expanded on new-session -> kills newly created =g-myproject-1 by exact name.
+    killed_by_name: list[list[str]] = []
+
+    def fake_run_unexpanded(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "#session_id\n", "stderr": ""})()
+        if "kill-session" in cmd:
+            killed_by_name.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run_unexpanded)
+    with pytest.raises(SystemExit) as exc4:
+        main.cli()
+    assert exc4.value.code == 1
+    assert killed_by_name == [["tmux", "kill-session", "-t", "=g-myproject-1"]]
+    assert not execed
+
+
+def test_given_once_agy_launch_when_agent_exits_before_attach_then_handles_fast_exit_cleanly(
+    tmp_path, monkeypatch, capsys
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.tmux_binary, "command", lambda *_a, **_kw: ("tmux",))
+    monkeypatch.setattr(main.tmux_binary, "argv", lambda *args: ["tmux", *args])
+    execed: list[list[str]] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (execed.append(list(argv)), None)[1])
+
+    def fake_run(cmd, **kw):
+        if "-V" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "tmux 3.4\n", "stderr": ""})()
+        if "new-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "$30\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main._tmux_ownership.subprocess, "run", fake_run)
+
+    # First capture (during setup) succeeds; second capture (right before attach) returns None (session already exited).
+    def _install_disappearing_capture():
+        calls = {"n": 0}
+
+        def capture(sid, expected_generation=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return main._tmux_ownership.TmuxSessionIdentity(sid, "g-myproject-1", expected_generation or "gen-test")
+            return None
+
+        monkeypatch.setattr(main._tmux_ownership, "capture_tmux_session_identity", capture)
+
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "-o", "1", "--no-worktree"])
+
+    # 1. Recorded clean exit (status 0) -> returns cleanly without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: 0)
+    with pytest.raises(SystemExit) as exc_clean:
+        main.cli()
+    assert exc_clean.value.code == 0
+    assert not execed
+    out_clean = capsys.readouterr()
+    assert "finished before attach" in (out_clean.out + out_clean.err)
+
+    # 2. Recorded failure exit (status 76) -> exits 76 without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: 76)
+    with pytest.raises(SystemExit) as exc_fail:
+        main.cli()
+    assert exc_fail.value.code == 76
+    assert not execed
+    assert "exited with status 76 before attach" in capsys.readouterr().err
+
+    # 3. Unrecorded exit (None) -> fail-closed exit 1 without invoking attach-session.
+    _install_disappearing_capture()
+    monkeypatch.setattr(main, "_recorded_single_run_exit_status", lambda _name: None)
+    with pytest.raises(SystemExit) as exc_unknown:
+        main.cli()
+    assert exc_unknown.value.code == 1
+    assert not execed
+    assert "exited before attach" in capsys.readouterr().err
+
+
+def test_given_registry_records_when_reading_single_run_exit_status_then_ignores_stale_runs(monkeypatch):
+    monkeypatch.setattr(
+        main._session_registry,
+        "load_registry",
+        lambda: {
+            "sessions": [
+                {
+                    "kind": "local",
+                    "name": "g-myproject-stale",
+                    "run_state": "exited",
+                    "launched_at": "2026-11-24T10:00:00Z",
+                    "exit": {
+                        "cause": "manual_exit",
+                        "at": "2026-11-24T09:00:00Z",
+                        "evidence": {"source": "single-run", "status": 0},
+                    },
+                },
+                {
+                    "kind": "local",
+                    "name": "g-myproject-fresh",
+                    "run_state": "exited",
+                    "launched_at": "2026-11-24T10:00:00Z",
+                    "supervisor_exit": {
+                        "cause": "manual_exit",
+                        "at": "2026-11-24T10:00:01Z",
+                        "evidence": {"source": "single-run", "status": 76},
+                    },
+                },
+            ]
+        },
+    )
+    assert main._recorded_single_run_exit_status("g-myproject-stale") is None
+    assert main._recorded_single_run_exit_status("g-myproject-fresh") == 76
 
 
 def test_given_non_g_engine_when_session_script_generated_then_omits_agy_signin_supervisor_logic(tmp_path):
@@ -2026,3 +2389,860 @@ def test_given_non_g_engine_when_session_script_generated_then_omits_agy_signin_
             engine, AI_NAME, slot, f"{engine}-myproject-", "myproject", None, False, str(tmp_path)
         )
         assert "_supervisor_agy_signin_token" not in other
+
+
+@pytest.mark.parametrize(
+    ("extra_argv", "stdin_tty"),
+    [
+        (["--print", "--mode", "plan"], False),
+        (["-p", "inspect", "--mode", "plan"], True),
+    ],
+)
+def test_given_mismatched_tmux_server_when_agy_print_mode_launches_then_skips_tmux_version_gate(
+    tmp_path, monkeypatch, extra_argv, stdin_tty
+):
+    import io
+
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main.tmux_binary, "which", lambda: "/usr/bin/tmux")
+    # If the tmux preflight or version gate probes tmux at all, fail immediately (simulating a
+    # mismatched client/server that would otherwise block headless print runs).
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "_tmux_probe",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(f"unexpected tmux probe: {args}")),
+    )
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "tmux_runs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tmux_runs must not run for agy print mode")),
+    )
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "formats_expand",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("formats_expand must not run for agy print mode")),
+    )
+
+    class _FakeStdin(io.StringIO):
+        def isatty(self) -> bool:
+            return stdin_tty
+
+    monkeypatch.setattr(main.sys, "stdin", _FakeStdin("hello from pipe\n"))
+    handed_off: list[tuple[str, list[str]]] = []
+
+    def fake_handoff(file, args, **_kw):
+        handed_off.append((file, list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+    monkeypatch.setattr(main.sys, "argv", ["ai", "g", "1", "--no-worktree", "--", *extra_argv])
+
+    with pytest.raises(SystemExit) as exc:
+        main.cli()
+    assert exc.value.code == 0
+    assert len(handed_off) == 1
+    _file, argv = handed_off[0]
+    assert "ai_cli.agy_session" in argv
+    assert "--mode" in argv and "plan" in argv
+
+
+def test_given_detached_replay_with_print_args_when_tmux_unusable_then_still_refuses(tmp_path, monkeypatch):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: False)
+    with pytest.raises(RuntimeError, match="detached replay requires a working tmux executable"):
+        main._do_session_launch(
+            engine="g",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=True,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=["--print", "--mode", "plan", "hi"],
+            config={},
+            detached=True,
+        )
+
+
+def test_given_detached_replay_with_print_args_when_tmux_healthy_then_still_runs_bare(tmp_path, monkeypatch):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    seen_tmux: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        seen_tmux.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    handed_off: list[tuple[str, list[str]]] = []
+
+    def fake_handoff(file, args, **_kw):
+        handed_off.append((file, list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=True,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=["--print", "--mode", "plan", "hi"],
+            config={},
+            detached=True,
+        )
+    assert exc.value.code == 0
+    assert len(handed_off) == 1
+    assert "ai_cli.agy_session" in handed_off[0][1]
+    assert not any("new-session" in cmd for cmd in seen_tmux)
+
+
+def _fake_tmux_has_session(live_sessions: list[str]):
+    """Build a subprocess.run stub answering ``has-session -t =<name>`` against ``live_sessions``."""
+    live_set = set(live_sessions)
+
+    def _run(cmd, **_kw):
+        if "has-session" in cmd and "-t" in cmd:
+            target = cmd[cmd.index("-t") + 1].lstrip("=")
+            return type("R", (), {"returncode": 0 if target in live_set else 1, "stdout": "", "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    return _run
+
+
+@pytest.mark.parametrize(
+    ("naming_prefix", "legacy_prefix", "live_sessions", "name", "is_remote"),
+    [
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "", False),
+        ("myproject-box", "oldproj", ["g-myproject-box-1", "g-oldproj-1"], "", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker-1", "g-myproject-worker-1"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-worker", "g-myproject-worker"], "worker", False),
+        ("myproject-box", "myproject", ["g-myproject-box-1", "g-myproject-1"], "1", False),
+        ("myproject-box", "myproject", ["g-r-myproject-box-worker-1", "g-r-myproject-worker-1"], "worker", True),
+    ],
+)
+def test_given_current_and_legacy_live_agy_slots_when_resuming_ambiguously_then_refuses(
+    tmp_path, monkeypatch, capsys, naming_prefix, legacy_prefix, live_sessions, name, is_remote
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main._resolve_resume_target(
+            "g",
+            naming_prefix,
+            legacy_prefix,
+            name,
+            is_remote=is_remote,
+            bare=False,
+            repo_root=tmp_path,
+            reporter=reporter,
+        )
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "ambiguous Antigravity resume" in combined
+    for expected in live_sessions:
+        assert expected in combined
+
+
+@pytest.mark.parametrize(
+    ("live_sessions", "name", "expected_session"),
+    [
+        (["g-myproject-box-1"], "", "g-myproject-box-1"),
+        (["g-myproject-1"], "", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "g-myproject-1", "g-myproject-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-box-1", "g-myproject-box-1"),
+        (["g-myproject-box-1", "g-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-box-worker-1", "g-myproject-box-worker-1"),
+        (["g-myproject-box-worker-1", "g-myproject-worker-1"], "g-myproject-worker-1", "g-myproject-worker-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-1", "g-myproject-1"),
+        (["g-myproject-1", "g-myproject-box-myproject-1"], "myproject-box-myproject-1", "g-myproject-box-myproject-1"),
+        (
+            ["g-myproject-1", "g-myproject-box-myproject-1-a", "g-myproject-box-myproject-1-b"],
+            "myproject-1",
+            "g-myproject-1",
+        ),
+    ],
+)
+def test_given_current_or_legacy_live_agy_slots_when_resuming_unambiguously_then_resolves_target(
+    tmp_path, monkeypatch, live_sessions, name, expected_session
+):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    reporter = main.LaunchReporter(verbose=False)
+
+    target = main._resolve_resume_target(
+        "g",
+        "myproject-box",
+        "myproject",
+        name,
+        is_remote=False,
+        bare=False,
+        repo_root=tmp_path,
+        reporter=reporter,
+    )
+    assert target.session == expected_session
+
+
+@pytest.mark.parametrize(
+    ("legacy_convention", "expect_refusal"),
+    [
+        ("off", False),
+        ("full", True),
+    ],
+)
+def test_given_live_current_and_legacy_agy_slots_when_launching_resume_with_legacy_convention_then_honors_setting(
+    tmp_path, monkeypatch, capsys, legacy_convention, expect_refusal
+):
+    _setup_agy_cli_tmux_env(tmp_path, monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    live_sessions = ["g-myproject-box-1", "g-myproject-1"]
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box",
+            repo_alias if cfg.get("naming", {}).get("legacy_convention", "full") in ("reach", "full") else None,
+            "box",
+            False,
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", lambda: list(live_sessions))
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session(live_sessions))
+    monkeypatch.setattr(main, "_verify_live_agy_tmux_session", lambda _s: None)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _s: None)
+    monkeypatch.setattr(main._session_launch_state, "reattach", lambda _s: None)
+    monkeypatch.setattr(main, "_track_launch", lambda *_a, **_kw: None)
+    attached: list[list[str]] = []
+    created: list[str] = []
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attached.append(list(argv)), sys.exit(0)))
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created.append("wt"))
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="",
+            resume=True,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"naming": {"legacy_convention": legacy_convention}},
+            detached=False,
+        )
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert created == []
+    if expect_refusal:
+        assert exc.value.code == 1
+        assert "ambiguous Antigravity resume" in combined
+        assert "g-myproject-box-1" in combined and "g-myproject-1" in combined
+        assert attached == []
+    else:
+        assert exc.value.code == 0
+        assert len(attached) == 1
+        assert attached[0][-1] == "g-myproject-box-1"
+
+
+def _write_agy_slot_record(state_dir: Path, slot: str, cwd: Path) -> Path:
+    sessions_dir = state_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    record_path = sessions_dir / f"{slot}.agy.json"
+    record_path.write_text(
+        json.dumps(
+            {
+                "schema_version": agy_session.SCHEMA_VERSION,
+                "slot": slot,
+                "cwd": str(cwd),
+                "phase": "confirmed",
+                "conversation_id": "11111111-2222-4333-8444-555555555555",
+                "transcript_path": None,
+                "result": "confirmed",
+                "resumable": {
+                    "conversation_id": "11111111-2222-4333-8444-555555555555",
+                    "transcript_path": None,
+                },
+                "client_version": "1.0.0",
+                "execution_mode": "interactive",
+                "route": "local-tmux",
+                "in_flight": {
+                    "token": "deadbeef" * 4,
+                    "writer": {"pid": 999999, "backend": "procfs", "start_time": 1},
+                    "launched_at": "2026-01-01T00:00:00+00:00",
+                    "client_version": "1.0.0",
+                    "route": "local-tmux",
+                    "expected_conversation_id": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return record_path
+
+
+def test_given_stopped_no_worktree_agy_slot_when_resuming_without_dash_W_then_reuses_saved_repo_root_without_creating_worktree(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    subdir = repo_root / "subdir"
+    subdir.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    _setup_agy_cli_tmux_env(repo_root, monkeypatch)
+    # Invoke from a subdirectory to prove saved repo_root is reused even when cwd differs.
+    monkeypatch.chdir(subdir)
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda: str(repo_root))
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(main._config, "_project_root", lambda _p: repo_root.resolve())
+    monkeypatch.setattr(main._session, "_tmux_session_names", list)
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session([]))
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, _cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box", repo_alias, "box", False
+        ),
+    )
+    monkeypatch.setattr(main._session_naming, "validate_script_metadata", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session, "cleanup_stale_sessions", lambda _cfg: None)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session_launch_state, "register_launch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session_launch_state, "handoff", lambda _name, delegate: delegate)
+
+    slot = "g-myproject-box-1"
+    _write_agy_slot_record(state_dir, slot, repo_root.resolve())
+
+    created_worktrees: list[str] = []
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created_worktrees.append(str(a)))
+
+    handed_off: list[tuple[Path, list[str]]] = []
+
+    def fake_handoff(_file, args, **_kw):
+        handed_off.append((Path.cwd().resolve(), list(args)))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "_exec_handoff", fake_handoff)
+    monkeypatch.setattr(main, "_pty_handoff", lambda *_a, **_kw: fake_handoff)
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="myproject-box-1",
+            resume=True,
+            once=False,
+            bare=True,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"worktree": {"enabled": True}},
+            detached=False,
+        )
+
+    assert exc.value.code == 0
+    assert created_worktrees == []
+    assert len(handed_off) == 1
+    launch_cwd, launch_argv = handed_off[0]
+    assert launch_cwd == repo_root.resolve()
+    assert str(repo_root.resolve()) in launch_argv
+
+
+def test_given_stopped_no_worktree_agy_slot_when_dry_run_resume_without_dash_W_then_plan_disables_worktree(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    _setup_agy_cli_tmux_env(repo_root, monkeypatch)
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda: str(repo_root))
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(main._session, "_tmux_session_names", list)
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session([]))
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, _cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box", repo_alias, "box", False
+        ),
+    )
+
+    _write_agy_slot_record(state_dir, "g-myproject-box-1", repo_root.resolve())
+
+    seen_plans: list[dict] = []
+    monkeypatch.setattr(main, "_print_launch_plan", lambda **kw: seen_plans.append(kw))
+
+    main._do_session_launch(
+        engine="g",
+        name="myproject-box-1",
+        resume=True,
+        once=False,
+        bare=True,
+        notify=False,
+        sandbox=False,
+        no_worktree=False,
+        no_direnv=True,
+        remote=False,
+        remote_machine=None,
+        is_remote=False,
+        project=None,
+        project_prefix_override=None,
+        extra_args=[],
+        config={"worktree": {"enabled": True}},
+        detached=False,
+        dry_run=True,
+    )
+
+    assert len(seen_plans) == 1
+    assert seen_plans[0]["session_id"] == "g-myproject-box-1"
+    assert seen_plans[0]["worktree_enabled"] is False
+
+
+def test_given_stopped_no_worktree_agy_slot_when_resuming_tmux_without_dash_W_then_script_uses_saved_repo_root(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    _setup_agy_cli_tmux_env(repo_root, monkeypatch)
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda: str(repo_root))
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", list)
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session([]))
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, _cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box", repo_alias, "box", False
+        ),
+    )
+    monkeypatch.setattr(main._session_naming, "validate_script_metadata", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session, "cleanup_stale_sessions", lambda _cfg: None)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", lambda *_a, **_kw: None)
+
+    slot = "g-myproject-box-1"
+    _write_agy_slot_record(state_dir, slot, repo_root.resolve())
+
+    created_worktrees: list[str] = []
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created_worktrees.append(str(a)))
+
+    seen_script_worktree: list[str | None] = []
+
+    def fake_get_engine_script(*args, **kwargs):
+        seen_script_worktree.append(args[7] if len(args) > 7 else kwargs.get("worktree_dir"))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main._session_script, "get_engine_script", fake_get_engine_script)
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="myproject-box-1",
+            resume=True,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"worktree": {"enabled": True}},
+            detached=False,
+        )
+
+    assert exc.value.code == 0
+    assert created_worktrees == []
+    assert seen_script_worktree == [str(repo_root.resolve())]
+
+
+def test_given_stopped_no_worktree_agy_slot_in_subdir_when_resuming_tmux_from_repo_root_then_refuses_without_creating_worktree(
+    tmp_path, monkeypatch, capsys
+):
+    repo_root = tmp_path / "repo"
+    subdir = repo_root / "subdir"
+    subdir.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    _setup_agy_cli_tmux_env(repo_root, monkeypatch)
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda: str(repo_root))
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", list)
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session([]))
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, _cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box", repo_alias, "box", False
+        ),
+    )
+    monkeypatch.setattr(main._session, "cleanup_stale_sessions", lambda _cfg: None)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", lambda *_a, **_kw: None)
+
+    slot = "g-myproject-box-1"
+    _write_agy_slot_record(state_dir, slot, subdir.resolve())
+
+    created_worktrees: list[str] = []
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created_worktrees.append(str(a)))
+
+    with pytest.raises(SystemExit) as exc:
+        main._do_session_launch(
+            engine="g",
+            name="myproject-box-1",
+            resume=True,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            no_direnv=True,
+            remote=False,
+            remote_machine=None,
+            is_remote=False,
+            project=None,
+            project_prefix_override=None,
+            extra_args=[],
+            config={"worktree": {"enabled": True}},
+            detached=False,
+        )
+
+    assert exc.value.code == 1
+    assert created_worktrees == []
+    captured = capsys.readouterr()
+    assert str(subdir.resolve()) in (captured.out + captured.err)
+
+
+def test_given_stopped_worktree_agy_slot_when_checking_saved_no_worktree_cwd_then_returns_none(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    wt_dir = repo_root / ".worktrees" / "myproject-box-1"
+    wt_dir.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    _write_agy_slot_record(state_dir, "g-myproject-box-1", wt_dir.resolve())
+    assert main._saved_agy_no_worktree_cwd("g-myproject-box-1", repo_root) is None
+
+    # Foreign directory outside repo_root is also ignored.
+    other = tmp_path / "other"
+    other.mkdir()
+    _write_agy_slot_record(state_dir, "g-myproject-box-2", other.resolve())
+    assert main._saved_agy_no_worktree_cwd("g-myproject-box-2", repo_root) is None
+
+    # Repo root itself is recognized.
+    _write_agy_slot_record(state_dir, "g-myproject-box-3", repo_root.resolve())
+    assert main._saved_agy_no_worktree_cwd("g-myproject-box-3", repo_root) == repo_root.resolve()
+
+
+@pytest.mark.parametrize(
+    ("command_name", "expected"),
+    [
+        ("agy", "agy"),
+        ("/usr/local/bin/agy", "agy"),
+        (r"C:\Tools\agy.exe", "agy"),
+        ("agy.cmd", "agy"),
+        ("antigravity", "agy"),
+        ("gemini", "gemini"),
+        ("bash", None),
+        ("vim", None),
+        ("", None),
+    ],
+)
+def test_given_pane_command_name_when_classifying_g_client_then_matches_only_real_clients(command_name, expected):
+    assert main._classify_g_command_name(command_name) == expected
+
+
+def test_given_manually_started_agy_pane_without_metadata_when_do_attach_runs_then_prints_agy_label(
+    tmp_path, monkeypatch
+):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    seen_cmds: list[list[str]] = []
+    attach_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        seen_cmds.append(cmd)
+        if "has-session" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": ""})()
+        if "list-panes" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "\tagy\n"})()
+        return type("R", (), {"returncode": 1, "stdout": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main, "_resume_suspended_panes", lambda _name: None)
+    monkeypatch.setattr(main, "_exec_tmux", lambda argv: (attach_calls.append(list(argv)), sys.exit(0)))
+
+    res = CliRunner().invoke(main._cli_group, ["attach", "g-myproject-manual"])
+    assert res.exit_code == 0, res.output
+    assert "Attaching to g-myproject-manual [agy]" in res.output
+    list_pane_calls = [cmd for cmd in seen_cmds if "list-panes" in cmd]
+    assert list_pane_calls and "=g-myproject-manual:" in list_pane_calls[0]
+    assert attach_calls and attach_calls[0][-1] == "=g-myproject-manual"
+
+
+def test_given_g_session_without_metadata_when_probing_live_panes_then_handles_marker_ambiguity_and_errors(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+
+    # 1. @ai_cli_client option wins even when pane command is a shell.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\tbash\n"})(),
+    )
+    assert main._g_session_client("g-myproject-1") == "agy"
+
+    # 2. Explicit non-agy/non-gemini (or padded/space-only) @ai_cli_client marker refuses fallback.
+    for raw_marker in (b"legacy\tagy\n", b" agy \tagy\n", b" \tagy\n"):
+        monkeypatch.setattr(
+            main.subprocess,
+            "run",
+            lambda *_a, _raw=raw_marker, **_kw: type("R", (), {"returncode": 0, "stdout": _raw})(),
+        )
+        assert main._g_session_client("g-myproject-marked-other") is None
+
+    # 3. Malformed single-field row is ignored and never treated as an authoritative marker.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"agy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-malformed") is None
+
+    # 4. Non-UTF-8 bytes in tmux stdout are decoded with replacement instead of raising UnicodeDecodeError.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\t\xff\xfe\n\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonutf8") == "agy"
+
+    # 5. Multi-pane session with one agy pane and one helper shell still resolves to agy.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tbash\n\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-2") == "agy"
+
+    # 6. Multi-pane session with both agy and gemini is ambiguous -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tagy\n\tgemini\n"})(),
+    )
+    assert main._g_session_client("g-myproject-3") is None
+
+    # 7. Plain shell pane or empty output -> None.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b"\tzsh\n"})(),
+    )
+    assert main._g_session_client("g-myproject-4") is None
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": b""})(),
+    )
+    assert main._g_session_client("g-myproject-empty") is None
+
+    # 8. Nonzero exit, missing tmux binary, and timeout degrade cleanly to None with exact argv + timeout=5.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 1, "stdout": b"\tagy\n"})(),
+    )
+    assert main._g_session_client("g-myproject-nonzero") is None
+
+    def raise_missing(*_a, **_kw):
+        raise FileNotFoundError("tmux")
+
+    monkeypatch.setattr(main.subprocess, "run", raise_missing)
+    assert main._g_session_client("g-myproject-missing-tmux") is None
+
+    timeout_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def raise_timeout(argv, **kwargs):
+        timeout_calls.append((list(argv), dict(kwargs)))
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._g_session_client("g-myproject-5") is None
+    assert len(timeout_calls) == 1
+    assert timeout_calls[0][0][-4:] == ["-t", "=g-myproject-5:", "-F", main._G_PANE_QUERY_FORMAT]
+    assert timeout_calls[0][1].get("timeout") == 5
+    assert timeout_calls[0][1].get("text") is False
+
+
+def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_single_list_panes_call(
+    tmp_path, monkeypatch
+):
+    import time
+
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: tmp_path)
+    monkeypatch.setattr(main.shutil, "which", lambda _cmd: None)
+    now = int(time.time())
+    list_panes_calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        cmd = list(argv)
+        if "list-sessions" in cmd:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": f"g-myproject-1 {now - 30}\ng-myproject-10 {now - 60}\n"},
+            )()
+        if "list-panes" in cmd:
+            list_panes_calls.append(cmd)
+            assert kwargs.get("text") is False
+            return type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        b"g-myproject-1\t\tagy\n"
+                        b"g-myproject-1\t\t\xff\xfe\n"
+                        b"g-myproject-10\tlegacy\tagy\n"
+                        b"g-myproject-malformed\tagy\n"
+                        b"g-myproject-padded\t agy \tagy\n"
+                    ),
+                },
+            )()
+        return type("R", (), {"returncode": 1, "stdout": b""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    res = CliRunner().invoke(main._cli_group, ["ls"])
+    assert res.exit_code == 0, res.output
+    assert len(list_panes_calls) == 1
+    assert "-a" in list_panes_calls[0]
+    row_1 = next(line for line in res.output.splitlines() if "g-myproject-1 " in line)
+    row_10 = next(line for line in res.output.splitlines() if "g-myproject-10 " in line)
+    assert "[agy]" in row_1
+    assert "[agy]" not in row_10 and "[legacy gemini]" not in row_10
+
+    # Batch probe degrades cleanly on timeout and malformed/unknown rows.
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *_a, **_kw: type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    b"g-myproject-1\t\t\xff\n"
+                    b"g-myproject-bad\tagy\n"
+                    b"g-myproject-other\tcustom\tagy\n"
+                    b"g-myproject-space\t \tagy\n"
+                ),
+            },
+        )(),
+    )
+    assert main._probe_all_g_session_clients_from_tmux() == {
+        "g-myproject-1": None,
+        "g-myproject-other": None,
+        "g-myproject-space": None,
+    }
+
+    def raise_timeout(*_a, **_kw):
+        raise main.subprocess.TimeoutExpired(["tmux"], 5)
+
+    monkeypatch.setattr(main.subprocess, "run", raise_timeout)
+    assert main._probe_all_g_session_clients_from_tmux() == {}
