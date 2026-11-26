@@ -953,7 +953,6 @@ def _verify_update_parity(
                 still_present = Counter(line for line in removed if line not in added and line in contents)
                 if still_present <= removed_by_path[candidate]:
                     break
-            # For source hunks only, absent old lines can indicate an unrendered section.
             elif path not in verified_render_paths and removed and contents.keys().isdisjoint(added):
                 before = head_lines(candidate)
                 if before is not None and before.isdisjoint(removed):
