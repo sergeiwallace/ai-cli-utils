@@ -519,12 +519,15 @@ def hosting_environment(background_id: str) -> dict[str, str] | None:
     None when no such process is found or its environment cannot be read.
     """
     socket_name = f"{background_id}.sock"
-    for process in psutil.process_iter(["cmdline"]):
+    # Each process's arguments are read here, not by process_iter, so a failing read skips that
+    # process instead of ending the scan. psutil on macOS can raise SystemError reading another
+    # process's arguments (sysctl KERN_PROCARGS2), not only AccessDenied.
+    for process in psutil.process_iter():
         try:
-            arguments = [Path(part) for part in process.info.get("cmdline") or ()]
+            arguments = [Path(part) for part in process.cmdline()]
             if any(path.name == socket_name and path.parent.name == "pty" for path in arguments):
                 return process.environ()
-        except (psutil.Error, OSError):
+        except (psutil.Error, OSError, SystemError):
             continue
     return None
 

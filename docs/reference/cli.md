@@ -873,6 +873,8 @@ Every Beads issue assigned to exactly OLD and not closed, in each store under th
 
 --finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the pair and its repo in this host's migration record, from any directory; a name matching no pair, or several, is refused with exit 2 and what it matched.
 
+Every symlink inside the slot and the moved agent worktrees that names the old slot or an OLD-agents container, `.venv` included, is repointed at the same path under NEW, a relative link staying relative. A link outside those worktrees is never changed: one a link inside resolves through that names an old-name path is listed as NOT fixed, and the run exits 1.
+
 Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds nothing left records the migration finished (verified); otherwise the run names each part left as NOT finished and exits 1. A hook is done only when its --dry-run prints `migrate-status: done`.
 
 A run that finishes then looks for references to OLD left behind. It runs the `[migrate_session] references_command` from config.toml, if one is set, with `--old OLD --new NEW`, and scans the repo's tracked files for OLD and its tmux session names as whole words. Each reference left is listed as file:line and the run reports `finished with leftovers` and exits 1; a path matching `references_allow` is not a leftover. Nothing in the scan is rewritten.
