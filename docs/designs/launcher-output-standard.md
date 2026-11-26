@@ -545,8 +545,8 @@ Phase 4, T-6, as built:
   `session-reload-reason-<session>` in the state directory, then exits 78.
 - **The supervisor counts.** After each child it restores the terminal's foreground
   group, then reads and removes the reason file. A child that left a reason extends the
-  run of consecutive reloads; any other exit, including the remote recovery shell's
-  `exit 78` relaunch, resets it. The file rather than the exit status is the signal:
+  run of consecutive reloads; any other exit, including a pinned restart's
+  `exit 78`, resets it. The file rather than the exit status is the signal:
   macOS CI showed a reload whose row never appeared, consistent with the child's status
   being lost to the stop its promotion left pending (see the zsh fix below). The row is drawn only when the restore
   succeeded, so the supervisor writes only while it holds the foreground group.

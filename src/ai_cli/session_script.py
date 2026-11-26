@@ -12,7 +12,7 @@ import sys
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
 from .direnv_setup import PROJECT_ENV_REFUSED_EXIT
-from .iterm2_restore import LAUNCH_REASON_VAR
+from .iterm2_restore import INHERITED_LAUNCH_REASON_VAR, LAUNCH_REASON_VAR
 from .launch_logging import AGENT_DIAGNOSTIC_ENV, LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
@@ -250,31 +250,6 @@ def resolve_session_shell() -> str | None:
         if found:
             return found
     return None
-
-
-def _stop_epilogue(is_remote: bool) -> str:
-    """What the child body does once the launch loop has stopped relaunching the agent.
-
-    A local child exits with 77 so its supervisor hands the pane to a shell. A remote
-    failed launch offers a recovery shell where the human can log in again, and
-    that shell's banner is the only instruction they get. It used to name only how to
-    close the session, so after a forced ``/login`` exit there was no way back to the
-    agent: ``exit`` returns 79, which tears the session down, and ``ai c`` run inside
-    the pane would attach the session to itself (AI-CLI-tozg).
-
-    The restart route reuses the supervisor's existing contract: it relaunches any
-    child body that does not return 77 or 79, so the shell handing back 78 is an
-    in-place restart. The consecutive-exit count is cleared first, or the relaunched
-    agent would inherit a tripped breaker.
-    """
-    if not is_remote:
-        return "exit 77"
-    return (
-        "_ai_emit info exit \"Session ended. Type 'exit 78' to relaunch the agent here, or 'exit' to close this session.\"; "
-        '"$SHELL"; _recovery_status=$?; '
-        'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
-        "exit 79"
-    )
 
 
 def rendered_terminal_reset() -> str:
@@ -676,8 +651,8 @@ def get_engine_script(
       # A Ctrl+C while the renderer runs must not cost the message.
       _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
-        # The renderer's default datetime leads the plain line too.
     # BEGIN EMIT STAMP
+        # The plain line leads with the configured datetime, as a rendered one does (emit_stamp_command).
         _ai_emit_stamp=$({_emit_stamp_command} 2>/dev/null) || _ai_emit_stamp=""
     # END EMIT STAMP
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
@@ -831,9 +806,6 @@ def get_engine_script(
         fi
       fi
       _heartbeat_pid=""
-    # BEGIN SHELL RETURN state
-      _supervisor_return_to_shell=false
-    # END SHELL RETURN
       _supervisor_cleanup() {{
     # BEGIN RUN STATE cleanup-exit
         # EXIT also runs after terminal loss or an unexpectedly killed child.
@@ -865,13 +837,20 @@ def get_engine_script(
           "$_ai_state_dir/session-agent-exits-$tmux_session" "$_ai_reload_reason_file"
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
+    # BEGIN RUN STATE return-client
+        # A client `ai c` switched in from another tmux session goes back there before this
+        # session ends, rather than leaving tmux with it (tmux_ownership.return_switched_client).
+        if $_supervisor_tmux_ownership_established; then
+          ai internal return-tmux-client "$_supervisor_tmux_session_id" 2>/dev/null || true
+        fi
+    # END RUN STATE
     # BEGIN TMUX CLEANUP
-        if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then
+        if $_supervisor_tmux_ownership_established; then
           _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
           if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
             _ai_emit info cleanup "refusing to kill tmux session: ownership fence mismatch"
           fi
-        elif ! $_supervisor_return_to_shell; then
+        else
           _ai_emit info cleanup "skipping tmux session cleanup because supervisor ownership was not established"
         fi
     # END TMUX CLEANUP
@@ -982,22 +961,6 @@ def get_engine_script(
         trap '' TTOU
         python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
-    # BEGIN SHELL RETURN terminal
-      _supervisor_preserve_pane() {{
-        # Policy changes may leave a worktree shell. Interrupts end the tmux
-        # session so its attach client returns to the original calling shell.
-        [[ "$(cat "$_ai_state_dir/session-int-exit-$tmux_session" 2>/dev/null)" == stop ]] && return
-        # A script launched as tmux's pane command has no interactive shell
-        # parent to return to. Keep that pane and replace its supervisor below.
-        # Failed-start guards also return 77, but persist an unknown exit cause.
-        # Preserve the pane only for a deliberate stop, never a failed launch.
-        if [[ -t 0 ]] && \\
-          [[ "$(cat "$_ai_state_dir/session-final-exit-$tmux_session" 2>/dev/null)" == manual_exit ]] && \\
-          _supervisor_restore_terminal; then
-          _supervisor_return_to_shell=true
-        fi
-      }}
-    # END SHELL RETURN
       # Consecutive reloads share one in-place row (AI-CLI-zss5): the reason, the attempt
       # and the time since the first, rendered by `ai internal progress`, which escalates
       # past the configured thresholds so a reload loop gets louder rather than looking
@@ -1114,14 +1077,15 @@ def get_engine_script(
     # END RUN STATE
     # BEGIN SHELL RETURN policy
         # Template refreshes replace the body without starting another agent.
-        # All other replacements obey the current session policy.
+        # All other replacements obey the current session policy. A policy that stops
+        # restarts ends the session like any other final exit: the teardown below ends the
+        # tmux session, and the attached client returns to the shell that ran `ai c`.
         if (( _child_status != 78 )); then
           _relaunch_policy=$({_relaunch_policy_command} 2>/dev/null)
           if [[ "$_relaunch_policy" == never || "$_relaunch_policy" == auto_restart_off ]]; then
             [[ "$_relaunch_policy" == auto_restart_off ]] && \
               _ai_emit info exit {shlex.quote(f"not restarting: [session] auto_restart = false in {config_file_text()}")}
             _ai_final_manual_exit
-            _supervisor_preserve_pane
             break
           fi
         fi
@@ -1148,28 +1112,9 @@ def get_engine_script(
           _reload_count=0
         fi
       done
-    # BEGIN SHELL RETURN interactive
-      if $_supervisor_return_to_shell; then
-        # Release supervisor resources before exec: an exec does not run EXIT.
-        # The shell must inherit neither the lease nor the supervisor's traps.
-        _supervisor_cleanup
-        # Keep INT caught through the shell return; exec resets caught dispositions.
-        trap - EXIT TERM WINCH TTOU
-        if [[ -n "$_ai_emit_terminal_fd" ]]; then exec 2>&3; fi
-        exec 3>&- 8>&- 9<&-
-        unset AI_CLI_SUPERVISOR_LEASE_FD AI_CLI_SUPERVISOR_TERMINAL_FD AI_CLI_SUPERVISOR_CHILD_READY_PATH AI_CLI_RUN_GENERATION
-        [[ -t 1 ]] && printf {_terminal_reset}
-        stty sane 2>/dev/null || true
-        {cd_cmd}
-        _ai_emit_terminal_fd=""
-        _ai_emit info exit "Auto-restart stopped. Returning to an interactive shell."
-        if [[ -n "${{SHELL:-}}" && -x "$SHELL" ]]; then exec "$SHELL" -i; fi
-        exec {shlex.quote(_session_shell)} -i
-      fi
     # BEGIN RUN STATE final-exit-message
       _ai_emit info exit "Auto-restart stopped. Returning to the calling shell."
     # END RUN STATE
-    # END SHELL RETURN
       exit 0
     fi
     # BEGIN RUN STATE child-stderr-restore
@@ -1490,6 +1435,17 @@ def get_engine_script(
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
+    # BEGIN RUN STATE launch-reason
+    # The launch reason belongs to the launch that set it, and only its first agent start reads
+    # it. That agent keeps it, marked as this session's, so an `ai c` run from inside the
+    # session starts fresh; a later agent and a new pane in this tmux session never get it.
+    if $first_run && [[ -n "${{{LAUNCH_REASON_VAR}:-}}" ]]; then
+      export {INHERITED_LAUNCH_REASON_VAR}="${LAUNCH_REASON_VAR}"
+    elif ! $first_run; then
+      unset {LAUNCH_REASON_VAR} {INHERITED_LAUNCH_REASON_VAR}
+    fi
+    tmux set-environment -t "=$tmux_session" -r {LAUNCH_REASON_VAR} 2>/dev/null || true
+    # END RUN STATE
     _template_version={shlex.quote(_template_version)}
     _template_commit={shlex.quote(_template_commit)}
     uuid={shell["uuid"]}
@@ -1942,14 +1898,14 @@ with open(path, 'w') as f:
       # 74: the [resume_restore] command failed for an archived transcript. Resuming
       # or starting fresh would both lose the conversation, so stop here.
       if [[ "$engine" == "c" && $resolve_status -eq 74 ]]; then
-        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name'."
         _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
         break
       fi
     # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH parked
       if $_bg_gave_up; then
-        _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' or type 'exit 78' here to try again."
+        _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' to try again."
     # BEGIN RUN STATE background-parked
         _ai_persist_exit unknown '{{"reason":"relaunch parked beside a live background copy"}}'
     # END RUN STATE
@@ -2037,7 +1993,7 @@ with open(path, 'w') as f:
       if [[ "$engine" == "c" && -z "$bg_target" && $resolve_status -eq 0 && -n "$matched_file" ]]; then
         _restore_id="${{matched_file##*/}}"
         if ! ai internal restore-transcript "${{_restore_id%.jsonl}}"; then
-          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name'."
           _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
           break
         fi
@@ -2103,8 +2059,7 @@ with open(path, 'w') as f:
     # BEGIN SHELL RETURN interrupt-exit
       # Status 130 is a deliberate stop. So is a clean exit inside the startup
       # guard: a raw-mode TUI consumes an early Ctrl+C and exits 0, and treating
-      # that as a failure opens a remote recovery shell whose prompt consumes all
-      # further interrupts.
+      # that as a failed start would record the stop as a crash.
       if $agent_attempted && (( agent_exit_code == 130 || \\
         (agent_exit_code == 0 && agent_elapsed < 3) )); then
         _ai_final_manual_exit
@@ -2247,6 +2202,10 @@ with open(path, 'w') as f:
     # The old supervisor does not persist final exits. Failed-start paths have
     # already recorded their cause, which the final-exit marker preserves here.
     _ai_final_manual_exit
+    # A stopped child ends the session, local and remote alike: 77 tells the supervisor this is
+    # a final exit, and its teardown ends the tmux session so the attached client returns to the
+    # shell that ran `ai c`. No recovery shell is left in the pane; 79 and the `exit 78`
+    # relaunch named above came from the one a remote child used to run.
     # END RUN STATE
-    {_stop_epilogue(is_remote)}
+    exit 77
     """

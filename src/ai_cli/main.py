@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
@@ -377,6 +377,74 @@ def _exec_tmux(args: list[str]) -> NoReturn:
     """
     _transport.restore_terminal()
     _exec_handoff(args[0], args)
+
+
+def _tmux_client_here() -> "tuple[str, str] | str":
+    """The tmux client showing this process's pane, as ``(session id, client tty)``; else why there is none.
+
+    Asked only inside tmux (``TMUX`` set). The pane is the one ``TMUX_PANE`` names, on the
+    server ``TMUX`` names, which is the server every ``tmux`` call from here reaches.
+    """
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return "TMUX is set but TMUX_PANE is not, so tmux cannot say which pane this is"
+    try:
+        shown = subprocess.run(
+            tmux_binary.argv("display-message", "-p", "-t", pane, "#{session_id}\t#{client_tty}"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"tmux could not be asked which client shows this pane ({exc})"
+    session_id, _, client = (shown.stdout or "").strip().partition("\t")
+    if shown.returncode != 0 or not session_id.startswith("$"):
+        detail = _decode_tmux_stderr(shown.stderr or "").strip() or "no answer"
+        return f"the tmux server that TMUX names does not know pane {pane} ({detail})"
+    if not client:
+        return "no tmux client shows this pane's session, so there is no terminal to switch"
+    return session_id, client
+
+
+def _attach_terminal(target: str, *, detach_others: bool = False) -> NoReturn:
+    """Put this terminal on tmux session ``target``: the one way a launch enters a session.
+
+    Outside tmux the terminal becomes the session's client (``attach-session``, exec'd), so
+    when the session ends its client exits and the shell that ran ``ai`` has the terminal
+    again. Inside tmux a client cannot nest, so the client already showing this pane is
+    switched to ``target`` and ``target`` records where it came from: the session's
+    teardown sends it back there, to the shell that ran ``ai`` in its own pane
+    (:func:`tmux_ownership.return_switched_client`).
+    """
+    if os.environ.get("TMUX"):
+        _switch_tmux_client(target)
+    else:
+        _exec_tmux(tmux_binary.argv("attach-session", *(["-d"] if detach_others else []), "-t", target))
+
+
+def _switch_tmux_client(target: str) -> NoReturn:
+    """Switch the tmux client showing this pane to ``target``, recording where it came from; exit."""
+    here = _tmux_client_here()
+    refusal = here if isinstance(here, str) else ""
+    if not refusal:
+        origin, client = here
+        if not _tmux_ownership.record_return(target, origin, client):
+            refusal = f"this pane is already in {target}, or tmux would not record where its client came from"
+        else:
+            switched = subprocess.run(
+                tmux_binary.argv("switch-client", "-c", client, "-t", target),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if switched.returncode != 0:
+                refusal = _decode_tmux_stderr(switched.stderr or "").strip() or "tmux refused the switch"
+    if refusal:
+        _out.error(Tag.LAUNCH, "tmux", f"could not switch this terminal's tmux client to {target}: {refusal}")
+        sys.exit(1)
+    _out.flush_sinks()
+    sys.exit(0)
 
 
 def _refresh_claude_plugins() -> None:
@@ -2830,6 +2898,11 @@ def _dispatch_internal(argv: list[str]) -> None:
 
         schedule_auto(argv[1], config)
         sys.exit(0)
+    elif action == "return-tmux-client":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal return-tmux-client <tmux_session_id>", err=True)
+            sys.exit(1)
+        sys.exit(0 if _tmux_ownership.return_switched_client(argv[1]) else 1)
     elif action == "revoke-heartbeat":
         if len(argv) < 3:
             _out.emit(
@@ -3020,9 +3093,10 @@ _TMUX_FORWARDED_VARS = (
     _direnv_setup.BYPASS_ENV,
 )
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
+_INHERITED_LAUNCH_REASON_VAR = _iterm2_restore.INHERITED_LAUNCH_REASON_VAR
 
 
-def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+def build_tmux_env_flags(env: "Mapping[str, str]", *, launch_reason: str = "") -> list[str]:
     """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
 
     ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
@@ -3048,9 +3122,11 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AIH_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
-    forwarded, empty when unset: the first relaunch after a reboot starts the tmux
-    server, whose global environment then holds that reason for every later session.
+    ``AIH_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
+    this launch gave it, and never a value read from ``env``: a shell or agent inside a
+    session relaunched after a reboot still carries that session's reason, and a new
+    session must not inherit it. It is always emitted, empty when there is none, so a
+    value left in a tmux server's global environment reaches no session either.
     """
     flags: list[str] = []
     for var in _TMUX_FORWARDED_VARS:
@@ -3059,8 +3135,23 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
             value = value or str(Path.home() / ".local" / "state")
         if value:
             flags += ["-e", f"{var}={value}"]
-    flags += ["-e", f"{_LAUNCH_REASON_VAR}={env.get(_LAUNCH_REASON_VAR, '')}"]
+    flags += ["-e", f"{_LAUNCH_REASON_VAR}={launch_reason}"]
     return flags
+
+
+def _take_launch_reason(env: "MutableMapping[str, str]") -> str:
+    """Remove the launch reason from ``env`` and return it when it was set for this launch.
+
+    A relaunch hands ``ai c`` its reason in the environment of that one command
+    (``AIH_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
+    hands its reason to its first agent the same way, marked with
+    ``AI_CLI_INHERITED_LAUNCH_REASON``, so an ``ai c`` run from inside that session sees a
+    reason equal to the mark and starts fresh. Both are removed, so nothing this launch
+    starts, the tmux server included, inherits either.
+    """
+    reason = env.pop(_LAUNCH_REASON_VAR, "")
+    inherited = env.pop(_INHERITED_LAUNCH_REASON_VAR, None)
+    return "" if inherited is not None and reason == inherited else reason
 
 
 def _install_is_editable(venv: "Path") -> bool:
@@ -3911,7 +4002,7 @@ def _do_attach(session_name: str) -> NoReturn:
     elif client == "gemini":
         _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [legacy gemini]")
     _resume_suspended_panes(session_name)
-    _exec_tmux(tmux_binary.argv("attach-session", "-t", tmux_target))
+    _attach_terminal(tmux_target)
 
 
 def _do_ls(show_all: bool) -> None:
@@ -4017,7 +4108,7 @@ def _do_ls(show_all: bool) -> None:
             sys.exit(0)
         selected = result.stdout.strip().split("\t")[0]
         _resume_suspended_panes(selected)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", selected))
+        _attach_terminal(selected)
     else:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
@@ -5698,6 +5789,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    launch_reason: str = "",
 ) -> None:
     agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
@@ -6020,14 +6112,19 @@ def _do_session_launch(
             )
             sys.exit(1)
 
-    # An attached tmux launch from inside a tmux pane ends in a tmux client that tmux
-    # refuses to nest ("sessions should be nested with care"). That refusal used to come
-    # at the very end, after a name was reserved and the worktree synchronized, leaving
-    # the name held by a session that never ran. Refuse here, above every write.
-    if not remote and not bare and attach and not detached and os.environ.get("TMUX"):
+    # tmux refuses to nest a client, so an attached launch from inside a tmux pane switches
+    # the client already showing this pane to the new session (_attach_terminal), and the
+    # session sends it back here when it ends. Where that switch cannot work, refuse here,
+    # above every write: refused at the handoff, a name would be held by a session that
+    # never ran, after the worktree was synchronized.
+    _tmux_here = (
+        _tmux_client_here() if not remote and not bare and attach and not detached and os.environ.get("TMUX") else None
+    )
+    if isinstance(_tmux_here, str):
         reporter.error(
             "tmux",
-            "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"
+            "this terminal is already inside a tmux session, and its tmux client cannot be switched to the new "
+            f"session: {_tmux_here}.\n"
             "  Nothing was reserved or created. Either:\n"
             "    - run the command from a terminal outside tmux (or detach this one first), or\n"
             "    - launch with -b/--bare to run the agent in this pane without tmux.",
@@ -6714,7 +6811,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", session))
+        _attach_terminal(session)
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -7119,7 +7216,7 @@ def _do_session_launch(
     # a server created before this launch cannot select a stale script or agent.
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
-    _tmux_env_flags = build_tmux_env_flags(os.environ)
+    _tmux_env_flags = build_tmux_env_flags(os.environ, launch_reason=launch_reason)
     if agent_diagnostic_path:
         _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
     if agy_sign_in_token:
@@ -7267,7 +7364,7 @@ def _do_session_launch(
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-        if loop is None and attach:
+        if loop is None and attach and not os.environ.get("TMUX"):
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(once_argv)
         result = subprocess.run(
@@ -7283,7 +7380,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", f"={session_id}"))
+        _attach_terminal(f"={session_id}")
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -7418,7 +7515,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session_id, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", session_id))
+        _attach_terminal(session_id, detach_others=True)
     else:
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
@@ -7527,18 +7624,31 @@ def _do_session_launch(
             reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
             sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
+        # How the session ends when its supervisor cannot end it (tmux_ownership.configure_session_end).
+        # remain-on-exit is required, as it always was; the rest backs up the supervisor's own
+        # teardown, so a tmux that refuses it (one older than 2.2) is reported and the launch goes on.
+        # Captured before anything else can split it: the session's only pane is its supervisor's.
+        _supervisor_pane = _tmux_ownership.pane_id_of(f"{identity.session_id}:")
+        _end_refused = _tmux_ownership.configure_session_end(identity.session_id, _supervisor_pane)
         tmux_options = (
-            tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
             tmux_binary.argv("set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode),
             tmux_binary.argv("set-option", "-s", "set-clipboard", "on"),
         )
-        for tmux_option in tmux_options:
-            configured = subprocess.run(tmux_option, capture_output=True, check=False)
-            if configured.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
-                sys.exit(1)
+        configured_ok = "remain-on-exit" not in _end_refused and all(
+            subprocess.run(tmux_option, capture_output=True, check=False).returncode == 0
+            for tmux_option in tmux_options
+        )
+        if not configured_ok:
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
+            sys.exit(1)
+        if _end_refused:
+            reporter.warning(
+                "tmux",
+                f"tmux refused {', '.join(_end_refused)} for session '{session_id}': if its supervisor dies "
+                "without ending it, an attached terminal stays on the dead pane until it detaches",
+            )
         if engine == "g" and not _tmux_ownership.respawn_owned_tmux_pane(identity, (_session_shell, _script_path)):
             _tmux_ownership.kill_owned_tmux_session(identity)
             Path(_script_path).unlink(missing_ok=True)
@@ -7565,7 +7675,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", identity.session_id))
+        _attach_terminal(identity.session_id, detach_others=True)
 
 
 # --- Click command tree ---
@@ -7618,6 +7728,7 @@ def _session_command(engine: str):
         # process's stderr and log never outlives the launch that created it.
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
+        launch_reason = _take_launch_reason(os.environ)
         try:
             mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
@@ -7655,6 +7766,9 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_reason:
+                        # The continuation is this same launch, so it takes this reason again.
+                        os.environ[_LAUNCH_REASON_VAR] = launch_reason
                     if launch_log.mirror_path:
                         # The re-run launch is the one that may refuse, so it keeps the copy.
                         os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
@@ -7689,6 +7803,7 @@ def _session_command(engine: str):
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                launch_reason=launch_reason,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -7751,7 +7866,13 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None, *, 
     if restart_json:
         _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
     else:
-        _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
+        _out.emit(
+            Tag.SESSION,
+            "session",
+            "restart; " + "; ".join(f"{key}={value}" for key, value in report.items() if key != "remedy"),
+        )
+        if report.get("remedy"):
+            _out.emit(Tag.SESSION, "session", report["remedy"])
     raise SystemExit(
         0
         if report["reason"] in ("restarted", "ready", "detached")

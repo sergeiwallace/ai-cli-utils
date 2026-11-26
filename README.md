@@ -328,9 +328,15 @@ after confirming a live pane. Launch failures still return nonzero; attach later
 with `ai attach <session-name>`. With a terminal, launches attach as usual.
 Bare launches (`-b/--bare`) keep returning the engine's exit status.
 
-Run from a terminal that is already inside tmux, a tmux launch refuses before it reserves
-a name or touches a worktree, since tmux will not attach one session inside another.
-Launch from a terminal outside tmux, or use `-b/--bare` to run the agent in the current pane.
+Run from a terminal that is already inside tmux, a tmux launch switches that terminal's
+tmux client to the new session instead of nesting a second client, and when the session
+ends the client goes back to the session it came from, at the shell that ran `ai c`.
+Where the switch cannot work (no client shows the pane, or the server `TMUX` names does
+not know it), the launch refuses before it reserves a name or touches a worktree; launch
+from a terminal outside tmux, or use `-b/--bare` to run the agent in the current pane.
+
+However a tmux session ends, the terminal returns to the shell that ran `ai c` and the
+terminal pane stays open; no shell is left inside tmux.
 
 A `-o/--once` session runs the agent on the pane's own terminal and, when the agent ends,
 records why (its exit status, the signal that ended it, or why it could not start) in the
