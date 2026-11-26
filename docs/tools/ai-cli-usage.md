@@ -682,7 +682,7 @@ ai memory watch
 
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
-Acquires PID file `memory-watch` — only one instance runs at a time.
+Acquires PID file `memory-watch` — only one instance runs at a time. It stops on its own once that PID file is removed or names another process, for example when the home it was started for is deleted.
 
 ### ai telemetry writer
 
@@ -730,7 +730,7 @@ This boundary exists because `ai sync` is for CC session migration (conversation
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
 - `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.
-- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off.
+- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off. It holds PID file `sync-watch` and stops on its own once that file is removed or names another process.
 
 Each action's options: [CLI reference](../reference/cli.md#ai-sync).
 
