@@ -43,7 +43,9 @@ def _capture_process_identity(pid: int, port: int) -> _ManagedProcessIdentity | 
         create_time = process.create_time()
         executable = process.exe()
         command = tuple(process.cmdline())
-    except (OSError, psutil.Error):
+    # SystemError: psutil on macOS can raise it reading a process's argv (sysctl
+    # KERN_PROCARGS2). Without the argv there is no identity, so the tunnel is not recorded.
+    except (OSError, psutil.Error, SystemError):
         return None
     if (
         pid <= 0
@@ -123,7 +125,9 @@ def _matching_process(identity: _ManagedProcessIdentity) -> psutil.Process | Non
             or tuple(process.cmdline()) != identity.command
         ):
             return None
-    except (OSError, psutil.Error):
+    # SystemError: see _capture_process_identity. A process whose argv cannot be read is
+    # not proven to be the recorded one, so it is never signalled.
+    except (OSError, psutil.Error, SystemError):
         return None
     return process
 

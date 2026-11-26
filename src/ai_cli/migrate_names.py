@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import name_list, session_clients
+from . import name_list, session_clients, session_naming
 from . import name_registry as reg
 from .session_migrate import MigrationError, MigrationResult, PartialMigrationError, migrate_session
 
@@ -112,6 +112,7 @@ def migrate_to_name(
     regenerate_script: Callable[[dict], str] | None = None,
     migrate: Callable[..., MigrationResult | None] = migrate_session,
     complete: Callable[[reg.Registry, str, str], bool] = reg.complete_migration,
+    reserved_names: frozenset[str] | None = None,
 ) -> NamedMigration:
     """Reserve a name for ``old``'s session and rename it, releasing what a failure leaves unused."""
     preview = (name or "zz").lower()
@@ -119,7 +120,13 @@ def migrate_to_name(
         repo_root, old, slot.title_for(preview), dry_run=True, regenerate_script=regenerate_script, new_is_reserved=True
     )
     reservation = reg.reserve_for_migration(
-        registry, slot, old, name=name.lower() if name else None, max_length=max_length, words=words
+        registry,
+        slot,
+        old,
+        name=name.lower() if name else None,
+        max_length=max_length,
+        words=words,
+        reserved_names=reserved_names,
     )
     try:
         result = migrate(
@@ -171,8 +178,9 @@ def recover_intents(
     """
     snapshot = registry.snapshot()
     settled: list[str] = []
+    here = session_naming.machine_identity(machine)
     for old, record in snapshot.migrations.items():
-        if record.get("status") != "intent" or record.get("machine") != machine:
+        if record.get("status") != "intent" or not here.holds(record):
             continue
         new = str(record["new_title"])
         token = new.rsplit("-", 1)[-1]
@@ -334,9 +342,12 @@ def migrate_transcript_only(
     *,
     max_length: int | None,
     words: frozenset[str],
+    reserved_names: frozenset[str] | None = None,
 ) -> NamedMigration:
     """Name a session whose worktree is gone: reserve, retitle its client records, complete. No worktree is made."""
-    reservation = reg.reserve_for_migration(registry, slot, item.title, name=None, max_length=max_length, words=words)
+    reservation = reg.reserve_for_migration(
+        registry, slot, item.title, name=None, max_length=max_length, words=words, reserved_names=reserved_names
+    )
     changes: list[session_clients.Changed] = []
     try:
         for record in item.records:

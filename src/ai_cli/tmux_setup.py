@@ -16,9 +16,11 @@ Step 4 is the reason this module exists. tmux is a C binary, so ``libtmux`` in
 the binary itself; before this, a non-Windows host without tmux was told to
 install it and exited 1, which made a missing enhancement block every launch.
 
-Windows has no native tmux at all — the real thing runs under WSL, MSYS2, or
-Cygwin — so there are deliberately no unattended candidates for ``win32`` and
-bare mode is the correct permanent answer there.
+On Windows no package manager installs a tmux unattended: psmux (a native
+tmux-compatible multiplexer that answers to ``tmux``) and a tmux under WSL, MSYS2
+or Cygwin are installed by hand. So there are deliberately no unattended
+candidates for ``win32``; a Windows host with psmux on PATH, or named by
+``[tmux] binary``, uses it, and one with neither runs in bare mode.
 """
 
 import contextlib
@@ -41,9 +43,10 @@ from .tmux_ownership import classify_new_session_output
 # native_deps.needs_root skips the system managers there rather than hanging on
 # a password prompt.
 _INSTALLERS: dict[str, list[Candidate]] = {
-    # No entry for "win32" on purpose: no package manager ships a native tmux,
-    # so an empty candidate list produces the honest "no unattended installer"
-    # result and the launcher degrades to bare.
+    # No entry for "win32" on purpose: no package manager installs a tmux there
+    # unattended (psmux and an MSYS2/WSL tmux are installed by hand), so an empty
+    # candidate list produces the honest "no unattended installer" result and the
+    # launcher degrades to bare.
     "darwin": [
         ("brew", ["brew", "install", "tmux"]),
         ("conda", ["conda", "install", "-y", "-c", "conda-forge", "tmux"]),
@@ -63,9 +66,10 @@ _INSTALLERS: dict[str, list[Candidate]] = {
 # _INSTALLERS these may need sudo/elevation, because a human runs them.
 _MANUAL_HINTS: dict[str, tuple[str, ...]] = {
     "win32": (
+        "psmux: https://github.com/psmux/psmux # native; answers to tmux",
         "wsl --install                       # then run tmux inside WSL",
         "pacman -S tmux                      # inside MSYS2",
-        "(there is no native Windows tmux; bare mode is the right answer here)",
+        "(or stay in bare mode: [session] use_tmux = false)",
     ),
     "darwin": ("brew install tmux",),
     "linux": (

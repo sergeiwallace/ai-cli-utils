@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--project", help="Current project name")
     parser.add_argument("--config", help="Path to platform config file")
     parser.add_argument(
-        "--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)"
+        "--engine", choices=["c", "g"], help="AI engine (c for Claude Code, g for Antigravity)"
     )
     parser.add_argument("--output", help="Output file path (default based on engine)")
     args = parser.parse_args()

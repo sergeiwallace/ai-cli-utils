@@ -82,6 +82,40 @@ The supervisor script that runs inside each session calls `tmux` by name; when t
 setting is present the launcher prepends a `tmux()` shell function to that script
 naming the same executable, so the session's own calls reach the same server.
 
+## Design Decisions
+
+### D-1: the statusline script reads the binary the session exported
+
+The statusline script (`statusline-command.sh`) runs outside Python, as a child of
+the agent the session script starts. The session script's prelude exports the
+resolved binary as `AI_CLI_TMUX_BINARY`, and the statusline runs
+`"${AI_CLI_TMUX_BINARY:-tmux}"`. With nothing configured, the prelude unsets the
+variable, so a value inherited from an outer session cannot point this one at
+another build, and the tmux on PATH answers. A statusline in a session the launcher
+did not start sees no variable and also uses PATH.
+
+The value is fixed when the session starts, not read from config.toml on each
+render. That is deliberate: the session's server was started by the launch-time
+binary, so that binary is the client that can reach it. Re-reading the setting
+would, after a mid-session edit, query a different build's server and find nothing.
+Asking `ai` on each render was rejected for the same reason and for its cost (a
+Python start per statusline refresh).
+
+### D-2: ssh commands run the remote host's bare `tmux`
+
+`ai reconnect` and the remote liveness probe in `ai iterm2 sessions --prune` send a tmux command
+over ssh. That tmux runs on the other host, so this host's `[tmux] binary` is the
+wrong answer, and both name `tmux` (`tmux_binary.REMOTE`): the remote login's PATH
+decides, as it did before the setting existed.
+
+Running `ai` on the remote host to resolve its own setting was considered and
+rejected for now. The remote login's shell may be POSIX, cmd or PowerShell, and only
+a plain program name runs in all of them; a fallback for a remote without `ai` on
+its non-interactive PATH needs shell syntax, and without one a probe that works
+today would fail. Bare `tmux` is also the more reversible choice: it adds no remote
+interface. A remote host that sets `[tmux] binary` should put that build first on
+the ssh login's PATH.
+
 ## Git Bash
 
 psmux runs Git Bash panes and runs tmux plugin scripts with Git Bash
@@ -89,3 +123,34 @@ psmux runs Git Bash panes and runs tmux plugin scripts with Git Bash
 measures cursor shapes in eight terminals, mintty among them
 (<https://github.com/psmux/psmux/blob/master/docs/diagnostics.md>). No psmux doc confirms
 attaching a session from Git Bash's mintty window; that is unconfirmed until measured.
+
+## The session under Git Bash
+
+Under Git Bash the session script runs in an MSYS2 shell while `ai` and `python3` are
+native Windows programs. Three things follow, and the launcher handles each:
+
+- A shell pid is not a Windows pid. `$$` names the shell in MSYS2's own pid table, which
+  native Python cannot see, so a session record built from it failed with
+  `process PID not found` and the session never started. Every shell pid the script
+  hands Python goes through `_ai_native_pid`, which reads MSYS2's `/proc/<pid>/winpid`.
+- A native program has no POSIX process groups. The POSIX session hands the terminal to
+  its child body's process group; under Git Bash the child body runs as the
+  supervisor's foreground command on the pane's console instead, and the stale-session
+  reaper evidence, which needs process groups, stays off.
+- Windows has no exec. CPython emulates it by starting the program and ending the
+  caller, so the shell that ran `ai c` printed its prompt while the tmux client ran on
+  the same console, and the two shared the keyboard. The launcher waits for the program
+  it hands off to instead, and exits with its status.
+
+- `direnv exec` cannot run a native program. Its PATH search splits on `:`, accepts
+  only files with a POSIX execute bit, and ends in Go's `syscall.Exec`, which Windows
+  lacks, so it reported `command 'claude' not found on PATH` with `claude.exe` on that
+  PATH. Bare and one-shot launches run the agent through `python -m ai_cli.direnv_exec`
+  there instead: it loads the environment with `direnv export json` and finds the agent
+  with `shutil.which`, which honours PATHEXT. A managed session already evaluates
+  `direnv export bash`; that export hands the MSYS2 shell PATH in its Windows spelling,
+  so the session script converts it back with `cygpath`. `ai doctor` reports where each
+  agent CLI resolves on the PATH a launch from the current directory uses.
+
+A session that still cannot start, for any reason, can be launched without a
+multiplexer with `ai c <name> -b`.

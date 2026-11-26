@@ -19,6 +19,7 @@ import psutil
 import pytest
 from process_ownership import reap, spawn_owned_python
 
+from ai_cli import direnv_exec
 from ai_cli.main import (
     _bare_engine_command,
     _cc_project_dir,
@@ -224,7 +225,7 @@ def test_given_a_title_that_only_resembles_a_numbered_copy_when_searched_then_it
 
 def test_given_bare_claude_when_no_prior_session_then_passes_name_without_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "--no-sandbox", [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "kg-1"
@@ -235,7 +236,7 @@ def test_given_bare_claude_when_prior_session_exists_then_resumes_its_session_id
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, None, "--no-sandbox", [])
 
     assert argv[-4:] == ["--resume", transcript.stem, "--name", "kg-1"]
 
@@ -246,7 +247,7 @@ def test_given_two_named_transcripts_when_bare_claude_resumes_then_uses_only_exa
     project_dir = _cc_project_dir(target)
     matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
     _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, None, "--no-sandbox", [])
 
     assert argv[-4:] == ["--resume", matching.stem, "--name", "proj-1"]
 
@@ -255,7 +256,7 @@ def test_given_only_different_named_transcript_when_bare_claude_launches_then_do
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, None, "--no-sandbox", [])
 
     assert "--resume" not in argv
 
@@ -365,7 +366,7 @@ def test_given_lone_mismatched_transcript_and_interactive_yes_when_bare_claude_l
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000006", "proj-1-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, None, "--no-sandbox", [])
 
     assert argv[-4:] == ["--resume", transcript.stem, "--name", "proj-1"]
 
@@ -378,7 +379,7 @@ def test_given_lone_mismatched_transcript_and_interactive_no_when_bare_claude_la
     target = tmp_path / "wt"
     _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000007", "proj-1-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, None, "--no-sandbox", [])
 
     assert "--resume" not in argv
 
@@ -392,7 +393,7 @@ def test_given_two_mismatched_transcripts_when_bare_claude_launches_then_does_no
     _write_transcript(project_dir, "56565656-0000-4000-8000-000000000008", "other-1")
     _write_transcript(project_dir, "56565656-0000-4000-8000-000000000009", "other-2")
 
-    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "proj-1", target, None, "--no-sandbox", [])
 
     assert "--resume" not in argv
 
@@ -410,7 +411,7 @@ def test_given_two_eligible_transcripts_when_bare_claude_resumes_then_warns_and_
     os.utime(older, (1, 1))
     os.utime(newer, (2, 2))
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, None, "--no-sandbox", [])
 
     assert argv[-4:] == ["--resume", newer.stem, "--name", "kg-1"]
     stderr = capsys.readouterr().err
@@ -428,7 +429,7 @@ def test_given_live_title_matched_session_when_bare_claude_then_refuses_duplicat
     monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, pid))
 
     with pytest.raises(_LiveClaudeSessionError) as exc_info:
-        _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+        _bare_engine_command("c", "kg-1", target, None, "--no-sandbox", [])
 
     assert exc_info.value.title == "kg-1"
     assert exc_info.value.pid == pid
@@ -445,7 +446,6 @@ def test_given_live_bare_claude_when_no_matching_tmux_session_then_launch_aborts
     monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
 
     with (
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.main.shutil.which", return_value=None),
@@ -482,7 +482,6 @@ def test_given_live_claude_when_matching_tmux_session_then_bare_launch_reattache
         raise SystemExit(0)
 
     with (
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.main.shutil.which", return_value="tmux"),
@@ -524,7 +523,7 @@ def test_given_stale_registry_record_when_bare_claude_then_still_resumes(tmp_pat
     os.utime(transcript, (1, 1))
     _write_session_registry(tmp_path, _reaped_pid(), session_id, proc_start=12345)
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "kg-1", target, None, "--no-sandbox", [])
 
     assert argv[-4:] == ["--resume", session_id, "--name", "kg-1"]
     assert "still running" not in capsys.readouterr().err
@@ -673,24 +672,29 @@ def test_given_unlinkable_dead_record_when_checked_then_walk_continues(tmp_path,
 
 def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", ["--model", "opus"])
+    argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "--no-sandbox", ["--model", "opus"])
 
     assert argv[-2:] == ["--model", "opus"]
 
 
-def test_given_bare_gemini_with_uuid_when_built_then_resumes_that_uuid(tmp_path, monkeypatch):
+def test_given_bare_agy_resume_when_command_is_built_then_uses_sandbox_and_passes_false_for_fresh(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", "uuid-123", "gemini", "-s", [])
+    argv = _bare_engine_command("g", "session-1", tmp_path / "wt", None, "-s", [], resume=True)
 
-    assert argv[:2] == ["gemini", "-y"]
-    assert "-r" in argv and argv[argv.index("-r") + 1] == "uuid-123"
+    assert argv[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+    assert "false" in argv
+    assert "--sandbox" in argv
 
 
-def test_given_bare_gemini_without_uuid_when_built_then_falls_back_to_resume_load(tmp_path, monkeypatch):
+def test_given_bare_agy_fresh_start_when_command_is_built_then_uses_default_command(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    argv = _bare_engine_command("g", "kg-1", tmp_path / "wt", None, "gemini", "-s", [])
+    argv = _bare_engine_command("g", "session-1", tmp_path / "wt", None, "-s", [], resume=False)
 
-    assert "-i" in argv and argv[argv.index("-i") + 1] == "/resume load kg-1"
+    assert argv[1:4] == ["-m", "ai_cli.agy_session", "launch"]
+    assert "true" in argv
+    assert "--command" in argv and argv[argv.index("--command") + 1] == "agy"
 
 
 # --- index discovery without tmux ---------------------------------------------
@@ -881,7 +885,6 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -942,11 +945,10 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
         patch("ai_cli.main._direnv_env_usable", return_value=True),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
-        patch("ai_cli.session._authorize_session_worktree_envrc"),
+        patch("ai_cli.main._prepare_project_environment"),
         patch("ai_cli.trust.ensure_workspace_trusted"),
     ):
         with pytest.raises(SystemExit):
@@ -954,8 +956,9 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
 
     worktree = real_repo / ".worktrees" / "kg-tst-1"
     file, args, cwd_at_exec = execs[0]
-    assert file == "direnv"
-    assert args[:3] == ["direnv", "exec", str(worktree)]
+    prefix = direnv_exec.prefix(worktree)
+    assert file == prefix[0]
+    assert args[: len(prefix)] == prefix
     assert cwd_at_exec == str(worktree)
     assert "--name" in args and args[args.index("--name") + 1] == "kg-tst-1"
 
@@ -972,7 +975,6 @@ def test_given_bare_launch_when_no_worktree_flag_then_runs_in_repo_root(real_rep
     with (
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -993,7 +995,6 @@ def test_given_bare_launch_when_executed_then_task_list_id_pinned(real_repo, tmp
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -1021,7 +1022,6 @@ def test_given_bare_launch_when_tmux_absent_then_no_tmux_invocation(real_repo, t
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
         patch("ai_cli.main.subprocess.run", side_effect=watch_run),
         patch("ai_cli.session.subprocess.run", side_effect=watch_run),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -1043,7 +1043,6 @@ def test_given_use_tmux_false_config_when_launched_then_still_creates_worktree(r
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
@@ -1126,7 +1125,7 @@ def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_t
 
     monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
 
-    argv = _bare_engine_command("c", "hub-2", target, None, "gemini", "--no-sandbox", [])
+    argv = _bare_engine_command("c", "hub-2", target, None, "--no-sandbox", [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "hub-2"

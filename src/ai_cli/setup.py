@@ -75,8 +75,9 @@ def run_setup(cwd: Path | None = None) -> int:
     # Wrapped because this is an optional enhancement and the install is not:
     # ensure_tmux is non-raising by contract, and an install that died inside its
     # own tmux preflight would be a strictly worse outcome than a missing tmux.
-    # On Windows there is no native tmux to provision, and ensure_tmux's empty
-    # candidate list is what makes that a quiet no-op rather than an error (AC-4).
+    # On Windows no tmux installs unattended (psmux is installed by hand), and
+    # ensure_tmux's empty candidate list is what makes that a quiet no-op rather
+    # than an error (AC-4).
     try:
         from .tmux_setup import ensure_tmux
 

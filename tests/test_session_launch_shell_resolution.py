@@ -172,7 +172,6 @@ def _drive_launch_against_real_tmux(sock: str, tmp_path: Path, name: str, script
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -950,7 +949,6 @@ def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):

@@ -1,6 +1,6 @@
 """A test run must not hand the runner's own launch reason to the session scripts its tests start.
 
-A suite launched from inside a relaunched session carries that session's ``AIH_LAUNCH_REASON``.
+A suite launched from inside a relaunched session carries that session's ``AI_CLI_LAUNCH_REASON``.
 A generated session script reads it to decide that its very first agent start is a restart, so
 a fixture supervisor started by a test resumed a transcript on its first launch, or refused to
 launch at all, where the test expected a fresh start.

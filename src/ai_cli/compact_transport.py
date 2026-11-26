@@ -42,8 +42,9 @@ So case 3 proceeds and says so once, naming the upgrade path. That is not a sile
 degradation, which is the failure this whole requirement exists to kill: what the
 operator loses is harness-DRIVEN compaction (the harness choosing when to compact,
 so it can checkpoint first), not compaction itself. The engine's own native
-auto-compact needs no pane, no keystroke and no terminal, and still applies. tmux
-runs on Windows under MSYS2/Cygwin/WSL, so the upgrade is real and reachable; a
+auto-compact needs no pane, no keystroke and no terminal, and still applies. On
+Windows psmux is a native tmux, and tmux also runs under MSYS2/Cygwin/WSL, so the
+upgrade is real and reachable; a
 native Windows pseudo-console (ConPTY, Windows 10 1809+) would also serve but needs
 a dependency this package does not carry, tracked as ``AI-CLI-ysht``.
 
@@ -284,5 +285,5 @@ def advisory_message(transport: CompactTransport) -> str:
         f"{transport.pty_detail}, and tmux is not hosting it ({transport.tmux_detail}). "
         "The engine's own auto-compact still applies, so the session is not uncompactable; "
         "the harness just cannot checkpoint first or choose when. Install tmux to get the "
-        "managed path (on Windows it runs under MSYS2/Cygwin/WSL)."
+        "managed path (on Windows: psmux, or a tmux under MSYS2/Cygwin/WSL)."
     )

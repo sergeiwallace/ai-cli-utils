@@ -294,10 +294,13 @@ if [[ -n "$_main_repo_dir" ]]; then
 fi
 
 # --- Tmux session (single call for both name and session_id) ---
+# AI_CLI_TMUX_BINARY is the [tmux] binary the session launcher exported: the build whose
+# server hosts this session. Unset (no setting, or a session the launcher did not start),
+# the tmux on PATH answers.
 tmux_part=""
 _telem_session="unknown"
 if [ -n "$TMUX" ]; then
-  _tmux_info=$(tmux display-message -p '#{session_name}|#{session_id}' 2>/dev/null)
+  _tmux_info=$("${AI_CLI_TMUX_BINARY:-tmux}" display-message -p '#{session_name}|#{session_id}' 2>/dev/null)
   tmux_session="${_tmux_info%|*}"
   _telem_session="${_tmux_info#*|}"
   [ -n "$tmux_session" ] && tmux_part="\033[35m${tmux_session}\033[0m"
@@ -683,6 +686,45 @@ EOF_PACE
   fi
 fi
 
+# --- Antigravity (agy) quota segment (stale-while-revalidate, never blocks render) ---
+# Delegates path resolution (`[quota] agy_state_file` or `$XDG_STATE_HOME/ai-cli-utils/agy-quota.json`)
+# to `ai quota statusline-part -p agy`. Serves cached output immediately (fresh < 30s, or 300s when
+# empty so hosts without agy do not poll often) and refreshes in a lock-deduped background subshell.
+agy_quota_part=""
+_agyqcache="${TMPDIR:-/tmp}/.ai-sl-agy-quota-${UID:-0}"
+_agyqlock="${TMPDIR:-/tmp}/.ai-sl-agy-quota-lock-${UID:-0}"
+_agyq_need_bg=1
+_agyq_now=$(date +%s)
+if [[ -f "$_agyqcache" ]]; then
+  { IFS= read -r _agyq_ts && IFS= read -r agy_quota_part; } < "$_agyqcache" 2>/dev/null
+  if [[ "$_agyq_ts" =~ ^[0-9]+$ ]]; then
+    _agyq_age=$(( _agyq_now - _agyq_ts ))
+    _agyq_ttl=30
+    [[ -z "$agy_quota_part" ]] && _agyq_ttl=300
+    if (( _agyq_age < _agyq_ttl )); then
+      _agyq_need_bg=0
+    fi
+    # Drop cached display value if very old (>300s) while refreshing in background.
+    (( _agyq_age >= 300 )) && agy_quota_part=""
+  fi
+fi
+if (( _agyq_need_bg )); then
+  _agyq_spawn=1
+  if [[ -f "$_agyqlock" ]]; then
+    IFS= read -r _agyqlts < "$_agyqlock" 2>/dev/null
+    [[ "$_agyqlts" =~ ^[0-9]+$ ]] && (( _agyq_now - _agyqlts <= 120 )) && _agyq_spawn=0
+    (( _agyq_spawn )) && rm -f "$_agyqlock" 2>/dev/null
+  fi
+  if (( _agyq_spawn )); then
+    printf '%d' "$_agyq_now" > "$_agyqlock" 2>/dev/null
+    ( _agyqfresh=$(ai quota statusline-part -p agy 2>/dev/null)
+      _agyqfresh="${_agyqfresh//$'\n'/ }"
+      printf '%d\n%s\n' "$(date +%s)" "$_agyqfresh" > "$_agyqcache" 2>/dev/null
+      rm -f "$_agyqlock" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+  fi
+fi
+
 # --- Assemble ---
 sep="\033[2m│\033[0m"
 if [[ -n "$worktree_name" ]]; then
@@ -697,11 +739,12 @@ fi
 # session name (e.g. "c-myproject-2" vs worktree "myproject-2") is redundant — drop it to free space.
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
-# Quota-gauge segments grouped together: cc+Fable (quota_part) -> cxWk (Codex
-# weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part) that
-# used to render here was removed by explicit request (2026-07-19) — see the cxWk block
+# Quota-gauge segments grouped together: cc+Fable (quota_part) -> agy (agy_quota_part) ->
+# cxWk (Codex weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part)
+# that used to render here was removed by explicit request (2026-07-19) — see the cxWk block
 # above for why.
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
+[ -n "$agy_quota_part" ] && line="${line} ${sep} ${agy_quota_part}"
 [ -n "$codex_weekly_part" ] && line="${line} ${sep} ${codex_weekly_part}"
 [ -n "$reset_part" ] && line="${line} ${sep} ${reset_part}"
 [ -n "$codex_weekly_reset_part" ] && line="${line} ${sep} ${codex_weekly_reset_part}"

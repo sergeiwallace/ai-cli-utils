@@ -515,6 +515,8 @@ def _remote_session_alive(record: dict, config: dict) -> bool | None:
 
     tmux answers 1 for "no such session" and for "no server running", and either means
     the session is gone. ssh's own failures are 255 and prove nothing about the session.
+    The command names the remote host's tmux, found by its own PATH: this host's
+    ``[tmux] binary`` does not apply there.
     """
     remote = record.get("remote") or {}
     try:
@@ -529,7 +531,7 @@ def _remote_session_alive(record: dict, config: dict) -> bool | None:
         ssh_args += ["-i", str(Path(machine["identity_file"]).expanduser())]
     ssh_args += [
         f"{machine.get('user', 'ubuntu')}@{host}",
-        f"tmux has-session -t {shlex.quote('=' + remote['session'])}",
+        f"{tmux_binary.REMOTE} has-session -t {shlex.quote('=' + remote['session'])}",
     ]
     try:
         result = subprocess.run(ssh_args, capture_output=True, check=False, timeout=PROBE_TIMEOUT_SECONDS)

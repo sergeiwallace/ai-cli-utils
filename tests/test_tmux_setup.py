@@ -69,8 +69,8 @@ class TestPresenceVersusUsable:
 
 
 class TestInstallCandidates:
-    def test_windows_has_no_unattended_candidate_because_native_tmux_does_not_exist(self):
-        """tmux runs under WSL/MSYS2/Cygwin; no manager ships a native win32 build.
+    def test_given_windows_when_tmux_is_installed_then_no_unattended_candidate_runs(self):
+        """psmux and a WSL/MSYS2/Cygwin tmux are installed by hand; nothing installs one unattended.
 
         An empty candidate list is the honest answer, and it is what makes the
         launcher fall through to bare mode on Windows without noise.

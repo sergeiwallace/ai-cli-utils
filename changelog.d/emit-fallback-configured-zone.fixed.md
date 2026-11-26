@@ -1,0 +1,1 @@
+- A session script line printed while `ai` cannot render (for example during a reinstall) is now stamped in the configured `[output.elements.datetime]` format and zone, like every other line. It was always stamped in US Eastern time, whatever the configured zone.
