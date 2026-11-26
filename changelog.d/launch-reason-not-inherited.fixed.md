@@ -1,1 +1,1 @@
-A session started by `ai c` from inside a session that was relaunched after a reboot (or by `ai iterm2 restore`) starts fresh instead of inheriting that session's launch reason and treating its first agent start as a restart.
+- A session started by `ai c` from inside a session that was relaunched after a reboot (or by `ai iterm2 restore`) starts fresh instead of inheriting that session's launch reason and treating its first agent start as a restart.
