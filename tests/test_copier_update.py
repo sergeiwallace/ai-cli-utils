@@ -222,6 +222,141 @@ def _init_git_repo(path: Path) -> None:
     subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, capture_output=True)
 
 
+@pytest.fixture
+def setup_template_revisions(tmp_path):
+    def create(before, after):
+        template = tmp_path / "template"
+        template.mkdir()
+        (template / "copier.yml").write_text("_subdirectory: files\n")
+        (template / "files").mkdir()
+        setup = template / "files" / "setup.sh.jinja"
+        setup.write_text(before)
+        _init_git_repo(template)
+        previous = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=template, text=True).strip()
+        setup.write_text(after)
+        subprocess.run(["git", "commit", "-am", "update"], cwd=template, check=True, capture_output=True)
+        return template, previous
+
+    return create
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected_paths"),
+    [
+        pytest.param({"secrets_backend": "keychain"}, set(), id="keychain"),
+        pytest.param({"secrets_backend": "doppler"}, {"setup.sh"}, id="doppler"),
+        pytest.param({}, {"setup.sh"}, id="undefined-answer"),
+    ],
+)
+def test_given_changed_setup_condition_when_comparing_template_revisions_then_requires_only_changed_renders(
+    tmp_path, setup_template_revisions, answers, expected_paths
+):
+    before = '{% if secrets_backend == "keychain" %}\nconfigure_secrets\n{% endif %}\n'
+    after = before.replace('== "keychain"', 'in ["doppler", "keychain"]')
+    template, previous = setup_template_revisions(before, after)
+
+    changes = _template_diff(str(template), previous, answers)
+
+    assert changes is not None
+    assert changes.paths == expected_paths
+    if not expected_paths:
+        assert changes.hunks == set()
+    else:
+        assert {hunk[0] for hunk in changes.hunks} == expected_paths
+        consumer = tmp_path / "consumer"
+        consumer.mkdir()
+        (consumer / "setup.sh").write_text("")
+        _init_git_repo(consumer)
+        assert (
+            _verify_update_parity(consumer, "", changes.paths, changes.hunks)
+            == "template parity failed: missing changed file(s): setup.sh"
+        )
+
+
+@pytest.mark.parametrize(
+    ("old_block", "new_block", "removed", "added"),
+    [
+        pytest.param(
+            "    check_response\n",
+            "    else\n        parse_response\n",
+            ("    check_response",),
+            ("    else", "        parse_response"),
+            id="shared-else",
+        ),
+        pytest.param(
+            "",
+            "    create_error_file\n    reset_status\n",
+            (),
+            ("    create_error_file", "    reset_status"),
+            id="pure-addition",
+        ),
+    ],
+)
+@pytest.mark.parametrize("use_jira", [False, True], ids=["disabled", "enabled"])
+def test_given_changed_optional_setup_block_when_verifying_parity_then_requires_only_rendered_hunks(
+    tmp_path, setup_template_revisions, old_block, new_block, removed, added, use_jira
+):
+    prefix = "old_setup\nkeep_setting\n    else\nkeep_general_setting\n"
+    optional = "{% if use_jira %}\n    start_optional_setup\n"
+    before = prefix + optional + old_block + "{% endif %}\n"
+    after = prefix.replace("old_setup", "new_setup") + optional + new_block + "{% endif %}\n"
+    template, previous = setup_template_revisions(before, after)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    setup = consumer / "setup.sh"
+    setup.write_text(prefix + ("    start_optional_setup\n" + old_block if use_jira else ""))
+    _init_git_repo(consumer)
+    setup.write_text(setup.read_text().replace("old_setup", "new_setup"))
+    porcelain = subprocess.check_output(["git", "status", "--porcelain"], cwd=consumer, text=True)
+
+    changes = _template_diff(str(template), previous, {"use_jira": use_jira})
+
+    assert changes is not None
+    assert changes.paths == {"setup.sh"}
+    expected_error = "template parity failed: one or more static template hunks were not applied" if use_jira else None
+    assert _verify_update_parity(consumer, porcelain, changes.paths, changes.hunks) == expected_error
+    expected_hunks = {("setup.sh", ("old_setup",), ("new_setup",))}
+    if use_jira:
+        expected_hunks.add(("setup.sh", removed, added))
+    assert changes.hunks == expected_hunks
+
+
+def test_given_rendered_hunk_with_no_local_old_lines_when_verifying_parity_then_reports_omission(
+    tmp_path, setup_template_revisions
+):
+    before = "old_setup\nkeep_setting\n{% if feature %}\nold_feature\n{% endif %}\n"
+    after = before.replace("old_setup", "new_setup").replace("old_feature", "new_feature")
+    template, previous = setup_template_revisions(before, after)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    setup = consumer / "setup.sh"
+    setup.write_text("old_setup\nkeep_setting\n")
+    _init_git_repo(consumer)
+    setup.write_text("new_setup\nkeep_setting\n")
+    porcelain = subprocess.check_output(["git", "status", "--porcelain"], cwd=consumer, text=True)
+
+    changes = _template_diff(str(template), previous, {"feature": True})
+
+    assert changes is not None
+    assert (
+        _verify_update_parity(
+            consumer, porcelain, changes.paths, changes.hunks, verified_render_paths=changes.verified_render_paths
+        )
+        == "template parity failed: one or more static template hunks were not applied"
+    )
+
+
+def test_given_render_with_only_whitespace_changes_when_comparing_revisions_then_ignores_path(setup_template_revisions):
+    before = "{% if enabled %}\nconfigure  feature\n{% endif %}\n"
+    after = "{% if enabled == true %}\nconfigure feature\n{% endif %}\n"
+    template, previous = setup_template_revisions(before, after)
+
+    changes = _template_diff(str(template), previous, {"enabled": True})
+
+    assert changes is not None
+    assert changes.paths == changes.hunks == set()
+
+
 def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_template_repository_files(tmp_path):
     """Only rendered subdirectory changes are required in a Copier destination."""
     template = tmp_path / "template"
