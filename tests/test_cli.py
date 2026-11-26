@@ -3193,6 +3193,59 @@ class TestTunnel:
             assert exc.value.code == 1
 
 
+def _argv_unreadable_for(pid):
+    """psutil on macOS can raise SystemError reading another process's argv (sysctl KERN_PROCARGS2)."""
+    read = psutil.Process.cmdline
+
+    def cmdline(process):
+        if process.pid == pid:
+            raise SystemError("sysctl(KERN_PROCARGS2) failed")
+        return read(process)
+
+    return patch.object(psutil.Process, "cmdline", cmdline)
+
+
+def test_given_recorded_tunnel_whose_argv_read_raises_systemerror_when_tunnel_stop_runs_then_process_survives(
+    tmp_path, capsys
+):
+    with owned_sleeper() as sibling:
+        live = psutil.Process(sibling.pid)
+        (tmp_path / "tunnel-9222.pid").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "pid": sibling.pid,
+                    "create_time": live.create_time(),
+                    "executable": live.exe(),
+                    "command": live.cmdline(),
+                    "port": 9222,
+                }
+            )
+        )
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path), _argv_unreadable_for(sibling.pid):
+            _cmd_tunnel_stop(9222)
+
+        assert sibling.poll() is None
+        assert not (tmp_path / "tunnel-9222.pid").exists()
+        assert "no process was stopped" in capsys.readouterr().out
+
+
+def test_given_new_tunnel_whose_argv_read_raises_systemerror_when_tunnel_start_runs_then_tunnel_is_stopped(tmp_path):
+    with owned_sleeper() as sibling:
+        started = MagicMock(pid=sibling.pid)
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=started),
+            _argv_unreadable_for(sibling.pid),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
+        assert exc.value.code == 1
+        started.terminate.assert_called_once()
+        assert not (tmp_path / "tunnel-9222.pid").exists()
+
+
 # --- Local -p chdir ---
 
 

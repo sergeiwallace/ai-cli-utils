@@ -225,7 +225,9 @@ def _pane_attach_client(target: str | None) -> str | None:
         except (ValueError, psutil.Error):
             continue
         for process in processes:
-            with contextlib.suppress(psutil.Error):
+            # psutil on macOS can raise SystemError reading another process's argv (sysctl
+            # KERN_PROCARGS2); that process is unknown here and the others are still read.
+            with contextlib.suppress(psutil.Error, SystemError):
                 command_lines.append(process.cmdline())
     return attached_background_id(command_lines)
 
@@ -849,7 +851,9 @@ def descendants_gate(pid: int, cwd: Path) -> None:
                 raise Refusal("background-work", "unclassified live descendant")
         for root, matching in runtimes.items():
             _mcp_npx_descendants(helpers.get(root, []), matching, cwd)
-    except (OSError, psutil.Error, TypeError, ValueError) as exc:
+    # SystemError: psutil on macOS can raise it reading a descendant's argv (sysctl
+    # KERN_PROCARGS2). An unreadable descendant is unclassified, so the restart is refused.
+    except (OSError, psutil.Error, TypeError, ValueError, SystemError) as exc:
         raise Refusal("background-work", "process tree unavailable") from exc
 
 
@@ -1204,7 +1208,9 @@ def _restart_pin_gate(supervisor: int, cwd: Path, session: str) -> None:
         )
         if result.returncode or result.stdout.strip() != RESTART_PIN_PROTOCOL:
             raise Refusal("supervisor-upgrade-required", "supervisor ai lacks restart-pin support")
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+    # SystemError: psutil on macOS reads the environment through sysctl KERN_PROCARGS2,
+    # which can raise it; an unreadable supervisor environment proves no restart pin.
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error, SystemError) as exc:
         # Neither the pane environment nor executable output is safe to echo.
         raise Refusal("supervisor-upgrade-required", "restart-pin compatibility cannot be established") from exc
 
@@ -1294,7 +1300,9 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         )
     except Refusal:
         raise
-    except (OSError, ValueError, KeyError, psutil.Error, StopIteration) as exc:
+    # SystemError: psutil on macOS can raise it reading the child's argv (sysctl
+    # KERN_PROCARGS2). A child whose argv cannot be read is not proven replaceable.
+    except (OSError, ValueError, KeyError, psutil.Error, StopIteration, SystemError) as exc:
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 

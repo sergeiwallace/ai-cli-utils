@@ -1,0 +1,1 @@
+- On macOS, a restart, session enrol, session exit or tunnel start no longer crashes when psutil raises SystemError reading another process's arguments or environment. The command now refuses with its existing reason, or skips the unreadable process where it only adds detail.
