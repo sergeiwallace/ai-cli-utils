@@ -47,7 +47,7 @@ diff "$render/out/<file>" "<file>"
 to avoid a network fetch; the `_commit` must exist in it.
 
 Paths listed in `comment-skip.txt` are copied in by the fleet installer and are not
-counted. Leave them alone: their comments are deleted at their source in ai-harness.
+counted. Leave them alone: their comments are deleted in the platform's source hooks.
 Paths listed in `comment-skip.local.txt` are files this repository does not author, such
 as vendored bundles, and are not counted either. Leave them alone too.
 
@@ -113,5 +113,5 @@ Report, for the path:
 - anything that could not be lexed.
 
 The report and the decision records are read by people: give them the pre-ship pass in
-`docs/procedures/ai-writing-anti-patterns.md` (in ai-harness) before committing, and have
-a model that did not write them review them.
+`docs/procedures/ai-writing-anti-patterns.md` in the platform repository before committing.
+Have a model that did not write them review them.

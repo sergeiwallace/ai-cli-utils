@@ -45,15 +45,15 @@ with `print`) lists the script under its own `per-file-ignores`, as it already d
 
 ## Files no repository owns
 
-The fleet installer in ai-harness copies two hooks into every repository it manages:
+The platform installer copies two hooks into every repository it manages:
 
-- `.githooks/reference-transaction`, a copy of ai-harness's
+- `.githooks/reference-transaction`, a copy of the platform repository's
   `.githooks/fleet/reference-transaction`;
-- `.githooks/reference-transaction-fallback`, a byte copy of ai-harness's
+- `.githooks/reference-transaction-fallback`, a byte copy of the platform repository's
   `.githooks/reference-transaction`.
 
 The installer overwrites both on every run, so a deletion in the repository does not last.
-When ai-harness deletes their comments at the source, a repository that counted them
+When the platform removes comments from the source hooks, a repository that counted them
 would fail as "under baseline" with nobody there owning the fix.
 
 So the ratchet skips the paths listed in two files at the repository root:
@@ -72,7 +72,7 @@ rewrites it on update: list a file the repository does not author, such as a ven
 "Do not edit" bundle, in `comment-skip.local.txt` instead. A new installer-managed path
 is added in the template, so every repository gets it on its next update.
 
-ai-harness holds the source of these hooks, so it must keep counting them. It answers
+The platform repository holds the source of these hooks, so it must keep counting them. It answers
 `owns_installer_hooks: true` once, in the commit of its copier update:
 
 ```bash
@@ -215,9 +215,9 @@ Each decision lists what was chosen, why, and the rejected alternative.
 15. Files the fleet installer manages are skipped through a copier-rendered
     `comment-skip.txt`, whose contents follow the hidden answer `owns_installer_hooks`.
     Anyone reading the repository can open the list. A change to it reaches every
-    repository on its next copier update. ai-harness, which owns the hook source, sets
-    one recorded answer and never edits a managed file.
-    - Rejected: a skip file each repository edits. ai-harness's edit would conflict on
+    repository on its next copier update. The platform repository owns the hook source, sets
+    one recorded answer, and never edits a managed file.
+    - Rejected: a skip file each repository edits. The platform repository's edit would conflict on
       every copier update that changes the list.
     - Rejected: the same file under `_skip_if_exists`. A path added later would never
       reach a repository that already has the file.
