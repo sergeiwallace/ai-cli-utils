@@ -172,3 +172,4 @@ docs/social/TEMPLATE.md
 # so a /sync-git dry-run on 2026-09-16 reported it would commit the zero-byte lock
 # into this repo and four siblings (AIH-beads-gate-lock-gitignored-only-m1pq0).
 /.*.lock
+.beads/.~issues.jsonl.*
