@@ -328,7 +328,9 @@ def test_given_a_global_tmux_binary_when_the_shell_prelude_is_built_then_bare_tm
 def test_given_no_tmux_binary_setting_when_the_shell_prelude_is_built_then_it_only_clears_the_export() -> None:
     _write_config("")
 
-    assert tmux_binary.shell_prelude() == f"unset {tmux_binary.ENV_VAR}\n"
+    commands = [line.strip() for line in tmux_binary.shell_prelude().splitlines() if not line.lstrip().startswith("#")]
+
+    assert commands == [f"unset {tmux_binary.ENV_VAR}"]
 
 
 # --------------------------------------------------------------------------

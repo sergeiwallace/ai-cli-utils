@@ -196,9 +196,18 @@ def shell_prelude(config: dict | None = None) -> str:
     """
     resolution = resolve(config)
     if resolution.configured is None or resolution.path is None:
-        return f"unset {ENV_VAR}\n"
+        return _bracketed(f"unset {ENV_VAR}")
     quoted = shlex.quote(Path(resolution.path).as_posix())
-    return f'tmux() {{ {quoted} "$@"; }}\nexport {ENV_VAR}={quoted}\n'
+    return f'tmux() {{ {quoted} "$@"; }}\n' + _bracketed(f"export {ENV_VAR}={quoted}")
+
+
+def _bracketed(line: str) -> str:
+    """``line`` inside the TMUX BINARY bracket the restart program comparison skips.
+
+    A supervisor started before the export existed is still certified for restart;
+    the ``tmux()`` routing line stays outside the bracket, so changing it still is not.
+    """
+    return f"    # BEGIN TMUX BINARY\n    {line}\n    # END TMUX BINARY\n"
 
 
 def server_process_names(config: dict | None = None) -> frozenset[str]:
