@@ -412,6 +412,81 @@ def test_given_unskipped_present_template_path_when_verifying_parity_then_report
     assert error == "template parity failed: missing changed file(s): settings.toml"
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "removed", "added", "expected_error"),
+    [
+        pytest.param(
+            "old rule\nold neighbor\n",
+            "new rule\nnew neighbor\n",
+            ("old rule",),
+            ("new rule",),
+            None,
+            id="adjacent-changes",
+        ),
+        pytest.param(
+            "general settings\n",
+            "updated general settings\n",
+            ("old Jira setting",),
+            ("new Jira setting",),
+            None,
+            id="unrendered-section",
+        ),
+        pytest.param(
+            "old Jira setting\ngeneral settings\n",
+            "old Jira setting\nupdated general settings\n",
+            ("old Jira setting",),
+            ("new Jira setting",),
+            "template parity failed: one or more static template hunks were not applied",
+            id="rendered-section-omitted",
+        ),
+        pytest.param(
+            "general settings\n",
+            "general settings\nnew Jira setting\n",
+            ("old Jira setting",),
+            ("new Jira setting", "another Jira setting"),
+            "template parity failed: one or more static template hunks were not applied",
+            id="partially-added-section",
+        ),
+        pytest.param(
+            "general settings\n",
+            "updated general settings\n",
+            (),
+            ("extra setting",),
+            "template parity failed: one or more static template hunks were not applied",
+            id="missing-addition",
+        ),
+        pytest.param(
+            "old rule\nlocal heading\nold rule\n",
+            "new rule\nlocal heading\nold rule\n",
+            ("old rule",),
+            ("new rule",),
+            None,
+            id="removed-line-retained-elsewhere",
+        ),
+        pytest.param(
+            "old rule\n",
+            "old rule\nnew rule\n",
+            ("old rule",),
+            ("new rule",),
+            "template parity failed: one or more static template hunks were not applied",
+            id="removed-line-still-present",
+        ),
+    ],
+)
+def test_given_static_template_hunk_when_verifying_parity_then_checks_applied_content(
+    tmp_path, before, after, removed, added, expected_error
+):
+    target = tmp_path / "settings.txt"
+    target.write_text(before)
+    _init_git_repo(tmp_path)
+    target.write_text(after)
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout
+
+    assert _verify_update_parity(tmp_path, porcelain, {target.name}, {(target.name, removed, added)}) == expected_error
+
+
 def test_run_copier_update_projects_dir_not_found(tmp_path):
     """Returns EX_CONFIG when projects_dir does not exist."""
     missing = tmp_path / "no-such-dir"

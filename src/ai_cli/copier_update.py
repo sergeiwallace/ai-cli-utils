@@ -51,6 +51,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -818,8 +819,18 @@ def _verify_update_parity(
     if missing_paths:
         return f"template parity failed: missing changed file(s): {', '.join(missing_paths)}"
 
+    untracked_paths = {line[3:].strip().strip('"') for line in porcelain.splitlines() if line.startswith("?? ")}
+    expected_static_hunks = {
+        hunk
+        for hunk in template_hunks
+        if hunk[0] not in ignored_paths
+        and "{{" not in "\n".join((*hunk[1], *hunk[2]))
+        and "{%" not in "\n".join((*hunk[1], *hunk[2]))
+    }
+    # Compare tracked changes to HEAD even if Copier staged part of the update.
+    base = ["HEAD"] if any(_path_candidates(path) - untracked_paths for path, _, _ in expected_static_hunks) else []
     actual = subprocess.run(
-        ["git", "-C", str(project_dir), "diff", "--no-ext-diff", "--unified=0", "--"],
+        ["git", "-C", str(project_dir), "diff", "--no-ext-diff", "--unified=0", *base, "--"],
         capture_output=True,
         text=True,
         env=_git_env(),
@@ -828,35 +839,45 @@ def _verify_update_parity(
     if actual.returncode != 0:
         return "template parity failed: could not inspect applied changes"
     _, actual_hunks = _parse_diff_hunks(actual.stdout)
-    untracked_paths = {line[3:].strip().strip('"') for line in porcelain.splitlines() if line.startswith("?? ")}
+    removed_by_path: dict[str, Counter[str]] = defaultdict(Counter)
+    for path, removed, _ in actual_hunks:
+        removed_by_path[path].update(removed)
 
-    def matches_untracked_file(hunk: tuple[str, tuple[str, ...], tuple[str, ...]]) -> bool:
-        for path in _path_candidates(hunk[0]) & untracked_paths:
-            target = project_dir / path
-            if target.is_file():
-                contents = target.read_text()
-                if all(line in contents.splitlines() for line in hunk[2]):
-                    return True
-        return False
+    @functools.cache
+    def working_lines(path: str) -> Counter[str]:
+        return Counter((project_dir / path).read_text(encoding="utf-8", errors="surrogateescape").splitlines())
 
-    expected_static_hunks = {
-        hunk
-        for hunk in template_hunks
-        if hunk[0] not in ignored_paths
-        and "{{" not in "\n".join((*hunk[1], *hunk[2]))
-        and "{%" not in "\n".join((*hunk[1], *hunk[2]))
-    }
-    missing_hunks = [
-        hunk
-        for hunk in expected_static_hunks
-        if not any(
-            _path_candidates(hunk[0]) & _path_candidates(actual_hunk[0]) and hunk[1:] == actual_hunk[1:]
-            for actual_hunk in actual_hunks
+    @functools.cache
+    def head_lines(path: str) -> set[str] | None:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "show", f"HEAD:{path}"],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
         )
-        and not matches_untracked_file(hunk)
-    ]
-    if missing_hunks:
-        return "template parity failed: one or more static template hunks were not applied"
+        return set(result.stdout.splitlines()) if result.returncode == 0 else None
+
+    for path, removed, added in expected_static_hunks:
+        for candidate in _path_candidates(path):
+            if not (project_dir / candidate).is_file():
+                continue
+            contents = working_lines(candidate)
+            if candidate in untracked_paths:
+                if all(line in contents for line in added):
+                    break
+                continue
+            if Counter(added) <= contents:
+                still_present = Counter(line for line in removed if line not in added and line in contents)
+                if still_present <= removed_by_path[candidate]:
+                    break
+            # A missing pure addition has no old lines to establish that a section was omitted.
+            elif removed and contents.keys().isdisjoint(added):
+                before = head_lines(candidate)
+                if before is not None and before.isdisjoint(removed):
+                    break
+        else:
+            return "template parity failed: one or more static template hunks were not applied"
     return None
 
 
