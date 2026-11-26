@@ -26,6 +26,17 @@ All use one shape::
     [aliases]
     my-host = "box"
 
+A machine renamed after it wrote registry rows keeps those rows under its old host id
+(and the old host alias in their titles). An optional ``[former_host_ids]`` table in
+any of these files says which ids are one machine::
+
+    [former_host_ids]
+    my-host = ["my-host-old", "my-old-hostname"]
+
+Every id in one entry is the same machine, whichever of them is the current host id,
+and entries that share an id join. :func:`machine_identity` is the one place a
+registry row's machine (or any recorded host id) is compared with this host.
+
 There is no guessed fallback. On a host none of them names, a launch with a terminal
 attached asks for the alias and appends it to the first registry that exists
 (:func:`prompt_for_host_alias`); without a terminal it is refused with the paths to
@@ -235,6 +246,105 @@ def _resolve_from(host: str, sources: list[Path]) -> str:
     raise _not_configured(host, sources)
 
 
+FORMER_IDS_TABLE = "former_host_ids"
+
+
+def _former_ids_from(path: Path, *, strict: bool) -> list[set[str]]:
+    """Each ``[former_host_ids]`` entry of ``path`` as one set of ids; malformed entries refuse or are skipped."""
+    table = (_read_registry(path) or {}).get(FORMER_IDS_TABLE, {})
+    if not isinstance(table, dict):
+        if strict:
+            raise HostAliasError(f"[{FORMER_IDS_TABLE}] in {path} must be a table of host id = [former ids]")
+        return []
+    groups = []
+    for host, former in table.items():
+        if not isinstance(former, list) or not all(isinstance(item, str) and item.strip() for item in former):
+            if strict:
+                raise HostAliasError(
+                    f"[{FORMER_IDS_TABLE}] {host!r} in {path} must be a list of non-empty host ids, got {former!r}"
+                )
+            continue
+        groups.append({host, *former})
+    return groups
+
+
+def _sources_read_for(host: str, sources: list[Path]) -> list[Path]:
+    """The sources :func:`_resolve_from` reads for ``host``: up to an authoritative hit, else all of them."""
+    authoritative = {*_environment_registries(_projects_roots()), _local_registry()}
+    for index, source in enumerate(sources):
+        if source in authoritative and _alias_from(source, host) is not None:
+            return sources[: index + 1]
+    return sources
+
+
+def check_former_host_ids(sources: list[Path] | None = None) -> None:
+    """Refuse a malformed ``[former_host_ids]`` table, naming its file."""
+    for source in alias_sources() if sources is None else sources:
+        _former_ids_from(source, strict=True)
+
+
+@dataclass(frozen=True)
+class MachineIdentity:
+    """Every id one machine is recorded under: its host id and each id the alias tables join to it."""
+
+    host: str
+    spellings: frozenset[str]
+
+    def matches(self, value: object) -> bool:
+        """True when ``value`` is one of this machine's ids."""
+        return isinstance(value, str) and value in self.spellings
+
+    def holds(self, row: dict | None) -> bool:
+        """True when a name-registry row's ``machine`` is this machine."""
+        return self.matches((row or {}).get("machine"))
+
+
+def machine_identity(host: str | None = None) -> MachineIdentity:
+    """The identity of ``host`` (default: this machine) with every spelling ``[former_host_ids]`` joins to it.
+
+    Compare a recorded machine with this one only through the result, never with
+    ``==``: a machine renamed after it wrote a row would otherwise disown that row. An
+    unreadable or malformed table folds nothing here; :func:`resolve_host_alias`
+    refuses it at launch, naming the file.
+    """
+    host = host_id() if host is None else host
+    spellings = {host}
+    groups = []
+    for source in alias_sources():
+        try:
+            groups.extend(_former_ids_from(source, strict=False))
+        except HostAliasError:
+            continue
+    grew = True
+    while grew:
+        grew = False
+        for group in groups:
+            if group & spellings and not group <= spellings:
+                spellings |= group
+                grew = True
+    return MachineIdentity(host, frozenset(spellings))
+
+
+def row_stem_is_this_repo(row: dict | None, naming_prefix: str) -> bool:
+    """True when ``row``'s title stem is ``naming_prefix`` or the same repo under the row's own host alias.
+
+    A row written before this machine's alias changed names its session
+    ``{repo-alias}-{old-alias}-...``; the row's ``repo_alias`` and ``host_alias``
+    columns say so. A host alias has no hyphen, so ``naming_prefix`` is this repo's
+    stem exactly when it is the row's repo alias plus one hyphen-free segment.
+    """
+    row = row or {}
+    title = str(row.get("title") or "")
+    if title.startswith(f"{naming_prefix}-"):
+        return True
+    repo_alias, host_alias = row.get("repo_alias"), row.get("host_alias")
+    if not repo_alias or not host_alias or not naming_prefix.startswith(f"{repo_alias}-"):
+        return False
+    if "-" in naming_prefix[len(repo_alias) + 1 :]:
+        return False
+    return title.startswith(f"{compose_session_name(repo_alias, host_alias)}-")
+
+
 def _host_refresh_phase():
     """A timed ``session`` phase for the host id refresh, during a launch only.
 
@@ -254,7 +364,8 @@ def resolve_host_alias() -> str:
     """Return this machine's host alias from the first source that names it.
 
     Raises :class:`HostAliasNotConfiguredError` naming every file checked, in order,
-    when none does, and :class:`HostAliasError` for an invalid entry or a conflict.
+    when none does, and :class:`HostAliasError` for an invalid entry, a conflict or a
+    malformed ``[former_host_ids]`` table.
     During a launch the host id refresh prints as a timed ``session`` phase.
     """
     from .host_env import refresh_host_env
@@ -265,14 +376,17 @@ def resolve_host_alias() -> str:
         host = host_id()
         if phase is not None:
             phase.outcome(f"host id {host}")
+    sources = alias_sources()
     try:
-        return _resolve_from(host, alias_sources())
+        alias = _resolve_from(host, sources)
     except HostAliasNotConfiguredError as exc:
         if inherited and inherited != host:
             raise HostAliasNotConfiguredError(
                 f"{exc}\n  Refreshed inherited host id {inherited!r} to {host!r} before alias lookup."
             ) from exc
         raise
+    check_former_host_ids(_sources_read_for(host, sources))
+    return alias
 
 
 def _in_git_checkout(path: Path) -> Path | None:
@@ -639,15 +753,10 @@ def validate_artifact_name(
     )
     _refuse_diagnostic("-".join(filter(None, (parsed.label, parsed.suffix))), title)
     if parsed.suffix in names and not label_only:
+        owner = machine_identity(machine or host_id())
         for row in snapshot.rows.values():
             token = row.get("name")
-            if (
-                row.get("machine") == (machine or host_id())
-                and row.get("host_alias") == host
-                and row.get("title") != title
-                and token
-                and one_edit_apart(parsed.suffix, token)
-            ):
+            if owner.holds(row) and row.get("title") != title and token and one_edit_apart(parsed.suffix, token):
                 raise naming_refusal(
                     "name distance", title, f"choose a name more than one edit from {token!r} on host {host!r}"
                 )
@@ -798,6 +907,7 @@ class PickRequest:
     letters: frozenset[str]
     pick_floor: int
     reserved_words: frozenset[str] = frozenset()
+    reserved_names: frozenset[str] = frozenset()
     denylist: frozenset[str] = frozenset()
     manual: frozenset[str] = frozenset()
     passes_static: Callable[[str], bool] | None = None
@@ -860,6 +970,7 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
             "held",
             f"within {request.max_edit_distance} edit of a held name",
             "equal to a repo or host alias",
+            "reserved in user config",
             "a strict-prefix title pair with a held title",
         ),
         0,
@@ -884,8 +995,10 @@ def name_candidates(request: PickRequest) -> tuple[list[str], dict[str, int]]:
             removed[keys[6]] += 1
         elif name in request.reserved_words:
             removed[keys[7]] += 1
-        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+        elif name in request.reserved_names:
             removed[keys[8]] += 1
+        elif _prefix_pair(f"{request.title_prefix}{name}", request.held_titles, request.stem):
+            removed[keys[9]] += 1
         else:
             candidates.append(name)
     return candidates, removed

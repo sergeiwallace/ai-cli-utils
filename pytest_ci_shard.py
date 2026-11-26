@@ -56,7 +56,9 @@ def pytest_configure(config: Any) -> None:
         _parse_shard(value)
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
+    # Select by the original node ID before xdist appends its worker group.
     value = config.getoption("--ci-shard")
     if value is None:
         return

@@ -539,7 +539,8 @@ def _audit_naming(*, repos, snapshot, state, claude_home, tmux_names):
     names = (snapshot.available if snapshot is not None else frozenset()) | {
         str(row["name"]) for row in rows if row.get("name")
     }
-    local_rows = [row for row in rows if row.get("machine") == machine]
+    here = naming.machine_identity(machine)
+    local_rows = [row for row in rows if here.holds(row)]
     canonical_path = canonical_worktrees.get_canonical_worktree_registry_path()
     try:
         canonical_rows = canonical_worktrees._load_registry(canonical_path)["worktrees"]
@@ -602,11 +603,13 @@ def _audit_naming(*, repos, snapshot, state, claude_home, tmux_names):
                         r
                         for r in rows
                         if r.get("title") == owner_title
-                        and (owner_machine is None or r.get("machine") == owner_machine)
+                        and (owner_machine is None or naming.machine_identity(owner_machine).holds(r))
                     ),
                     None,
                 )
-                if owner_row is None and not (owner_machine in (None, machine) and owner_title in canonical_titles):
+                if owner_row is None and not (
+                    (owner_machine is None or here.matches(owner_machine)) and owner_title in canonical_titles
+                ):
                     add(
                         "unregistered-container",
                         owner_title,
@@ -704,12 +707,13 @@ def _audit_naming(*, repos, snapshot, state, claude_home, tmux_names):
             add("host-alias", title, "name registry", str(exc))
         if row.get("worktree") and row["worktree"] != f".worktrees/{title}":
             add("worktree-agreement", title, "name registry", f"row worktree is {row['worktree']!r}")
+    identities = {str(row.get("machine")): naming.machine_identity(str(row.get("machine"))) for row in rows}
     for index, row in enumerate(rows):
         for other in rows[index + 1 :]:
             if (
                 row.get("name")
                 and other.get("name")
-                and row.get("machine") == other.get("machine")
+                and identities[str(row.get("machine"))].holds(other)
                 and naming.one_edit_apart(row["name"], other["name"])
             ):
                 add(

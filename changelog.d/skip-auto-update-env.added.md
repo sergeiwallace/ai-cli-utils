@@ -1,0 +1,1 @@
+- Add the `AI_CLI_SKIP_AUTO_UPDATE=1` environment switch to bypass launch-time auto-update checks, remote client checkout sync, and background `uv tool upgrade` during isolated canaries and tests.

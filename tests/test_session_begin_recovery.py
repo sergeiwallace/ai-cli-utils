@@ -11,6 +11,7 @@ import time
 
 import pytest
 from click.testing import CliRunner
+from legacy_run_state import legacy_child_generation
 from process_wait import scaled
 
 from ai_cli import config
@@ -107,7 +108,7 @@ def legacy_wrapper(tmp_path, request):
     if shell is None or os.name != "posix":
         pytest.skip("POSIX shell required")
     generated = get_engine_script("c", "session-1", "c-session-1", "c-session-", "myproject")
-    fragment = generated.split("# BEGIN RUN STATE legacy-child-generation\n", 1)[1].split("# END RUN STATE", 1)[0]
+    fragment = legacy_child_generation(generated)
     blocker = shlex.join(
         [
             sys.executable,
@@ -274,7 +275,7 @@ def test_given_generated_child_when_legacy_registry_is_missing_then_real_cli_rec
         worktree_dir=str(tmp_path),
         is_remote=True,
     )
-    fragment = generated.split("# BEGIN RUN STATE legacy-child-generation\n", 1)[1].split("# END RUN STATE", 1)[0]
+    fragment = legacy_child_generation(generated)
     binary = tmp_path / "ai"
     binary.write_text(
         f"#!{sys.executable}\n"

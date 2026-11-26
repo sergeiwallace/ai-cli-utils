@@ -8,6 +8,8 @@ source: project-template
 
 # Research Prompt Registry
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 Central registry for all research prompts for this project. Tracks prompt text,
 model, submission status, and links to result docs. Pending/ready prompts listed
 first (highest priority at top), completed below.

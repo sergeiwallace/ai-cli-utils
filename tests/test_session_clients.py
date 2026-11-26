@@ -55,6 +55,11 @@ def seed(client: str, home: Path, worktree: Path) -> Path:
             {"type": "session", "id": "p1", "cwd": str(worktree)},
             {"type": "session_info", "id": "x", "name": TITLE},
         )
+    if client == "agy":
+        cache = home / ".gemini" / "antigravity-cli" / "cache" / "last_conversations.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({str(worktree): "11111111-2222-4333-8444-555555555555"}), encoding="utf-8")
+        return cache
     project_id = "myrepo-box-3"
     (home / ".gemini").mkdir(parents=True, exist_ok=True)
     (home / ".gemini" / "projects.json").write_text(json.dumps({"projects": {str(worktree): project_id}}))
@@ -83,8 +88,10 @@ def test_given_a_record_for_the_worktree_when_probed_then_it_is_present(client, 
 @pytest.mark.parametrize("client", CLIENTS)
 def test_given_an_accessible_store_with_no_record_when_probed_then_it_is_absent(client, home, worktree):
     make_root(client, home)
+    adapter = sc.adapter(client, home)
+    expected = sc.ABSENT if adapter.can_probe_absence else sc.UNKNOWN
 
-    assert sc.adapter(client, home).probe_transcript(worktree, TITLE).state == sc.ABSENT
+    assert adapter.probe_transcript(worktree, TITLE).state == expected
 
 
 @pytest.mark.parametrize("client", CLIENTS)
@@ -129,7 +136,10 @@ def test_given_a_session_without_a_worktree_when_probed_then_its_title_finds_the
     assert sc.adapter("claude-code", home).probe_transcript(None, NEW_TITLE).state == sc.ABSENT
 
 
-@pytest.mark.parametrize("client", CLIENTS)
+RENAMEABLE_CLIENTS = [c for c in CLIENTS if c != "agy"]
+
+
+@pytest.mark.parametrize("client", RENAMEABLE_CLIENTS)
 def test_given_a_record_when_renamed_then_only_the_title_and_path_fields_change_and_the_id_stays(
     client, home, worktree, tmp_path
 ):
@@ -146,7 +156,15 @@ def test_given_a_record_when_renamed_then_only_the_title_and_path_fields_change_
     assert result.changed
 
 
-@pytest.mark.parametrize("client", CLIENTS)
+def test_given_an_agy_record_when_renamed_then_raises_value_error(home, worktree):
+    seed("agy", home, worktree)
+    adapter = sc.adapter("agy", home)
+    [record] = adapter.records_for(worktree)
+    with pytest.raises(ValueError, match="Antigravity"):
+        adapter.rename(record, TITLE, NEW_TITLE, worktree.parent / NEW_TITLE)
+
+
+@pytest.mark.parametrize("client", RENAMEABLE_CLIENTS)
 def test_given_a_rename_when_rolled_back_then_every_record_is_byte_for_byte_as_before(client, home, worktree):
     path = seed(client, home, worktree)
     adapter = sc.adapter(client, home)

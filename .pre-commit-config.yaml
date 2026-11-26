@@ -134,6 +134,12 @@ repos:
         entry: .githooks/commit-msg
         language: script
         stages: [commit-msg]
+      - id: changelog-fold
+        name: changelog fragments fold cleanly
+        entry: python3 scripts/fold_changelog.py -n
+        language: system
+        pass_filenames: false
+        files: ^changelog\.d/
       # Fail if any .claude/settings.json hook command points at a script that
       # no longer exists (e.g. a copier _exclude removed it but the
       # _skip_if_exists settings.json still references it). Cheap; runs every

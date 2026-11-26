@@ -11,7 +11,8 @@ import sys
 
 from . import config as _config
 from .background_attach import DAEMON_IDENTITY_ENV
-from .iterm2_restore import LAUNCH_REASON_VAR
+from .direnv_setup import PROJECT_ENV_REFUSED_EXIT
+from .iterm2_restore import INHERITED_LAUNCH_REASON_VAR, LAUNCH_REASON_VAR
 from .launch_logging import AGENT_DIAGNOSTIC_ENV, LAUNCH_LOG_ENV
 from .session_lifecycle_script import session_state_functions
 
@@ -125,6 +126,92 @@ while True:
 """
 
 
+# Where an MSYS2 or Cygwin shell (Git Bash) publishes the Windows pid of each of its processes.
+MSYS_PROC_ROOT = "/proc"
+
+# The agent launch in the child body. On POSIX the agent is a background job so the
+# INT trap can run while the agent holds the terminal, and the loop collects its exit.
+POSIX_AGENT_RUN = """      if [[ -t 0 && -r /dev/tty ]]; then
+        _agent_tty=$(tty 2>/dev/null)
+        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
+          "$@" <"$_agent_tty" &
+        else
+          "$@" </dev/tty &
+        fi
+      else
+        "$@" <&0 &
+      fi
+      active_agent_pid=$!
+    # BEGIN SHELL RETURN agent-wait
+      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
+      # its actual exit before resetting the terminal or replacing the body.
+      while true; do
+        wait "$active_agent_pid"
+        agent_exit_code=$?
+        kill -0 "$active_agent_pid" 2>/dev/null || break
+      done
+    # END SHELL RETURN
+"""
+# Native Windows: the agent runs as this shell's foreground command, as the
+# child body already does under the supervisor. Under Git Bash, `wait` on a backgrounded
+# native agent did not return once Ctrl+C presses arrived while the agent was exiting: the
+# agent was gone, the INT trap kept running, and the wait never ended, so the recorded stop
+# was never acted on and the pane could only be left by detaching. The console hands
+# Ctrl+C to the agent directly, so nothing needs a pid to forward it to, and a foreground
+# command defers the INT trap until the agent returns.
+WINDOWS_AGENT_RUN = """    # BEGIN SHELL RETURN agent-wait
+      "$@"
+      agent_exit_code=$?
+    # END SHELL RETURN
+"""
+# Native Windows: a Ctrl+C reaches this shell only when the agent is not reading the
+# console raw, which is while it exits after its own double Ctrl+C or once it is gone; a
+# lone Ctrl+C inside a running agent is a key the agent reads. So every press that gets
+# here is a request to stop. The double-press window below cannot work here anyway: the
+# trap waits behind each native helper (each a multi-second process start on a loaded
+# host), so the presses arrive coalesced and seconds apart, and every one counted as a
+# first press again. Builtins only, so a press costs no process start.
+WINDOWS_CHILD_INT = """    # BEGIN SHELL RETURN windows-interrupt
+      printf '%s\\n' "exit" > "$_child_int_exit_file"
+      return
+    # END SHELL RETURN
+"""
+
+
+def _native_windows_launcher() -> bool:
+    """Whether the script is generated for native Windows Python under a POSIX-emulating shell.
+
+    That pairing is what Git Bash gives: the shell is MSYS2, so its pids, process groups and
+    terminal are emulated, while ``ai`` and ``python3`` are native Windows programs that
+    see none of them. The script then translates every shell pid it hands Python, and runs
+    its child body without the terminal-foreground handoff, which has nothing to act on.
+    """
+    return sys.platform == "win32"
+
+
+def _native_pid_function(windows: bool) -> str:
+    """``_ai_native_pid <shell-pid>``: that pid as the Python this script calls sees it.
+
+    Every shell pid the script hands Python goes through it. On POSIX both sides share
+    one pid namespace and it prints its argument. Under Git Bash it reads MSYS2's
+    ``/proc/<pid>/winpid`` and fails, with the reason, when that cannot be read.
+    """
+    if not windows:
+        body = "      printf '%s\\n' \"$1\"\n"
+    else:
+        winpid = shlex.quote(MSYS_PROC_ROOT) + '"/$1/winpid"'
+        body = (
+            '      local _ai_native_pid_value=""\n'
+            f'      {{ read -r _ai_native_pid_value < {winpid}; }} 2>/dev/null || _ai_native_pid_value=""\n'
+            '      if [[ ! "$_ai_native_pid_value" =~ ^[1-9][0-9]*$ ]]; then\n'
+            f'        _ai_emit error session "cannot read the Windows pid of shell process $1 from "{winpid}\n'
+            "        return 1\n"
+            "      fi\n"
+            "      printf '%s\\n' \"$_ai_native_pid_value\"\n"
+        )
+    return f"    # BEGIN RUN STATE native-pid\n    _ai_native_pid() {{\n{body}    }}\n    # END RUN STATE\n"
+
+
 def resolve_session_shell() -> str | None:
     """Absolute path of the shell that should interpret the session script.
 
@@ -165,37 +252,27 @@ def resolve_session_shell() -> str | None:
     return None
 
 
-def _stop_epilogue(is_remote: bool) -> str:
-    """What the child body does once the launch loop has stopped relaunching the agent.
-
-    A local child exits with 77 so its supervisor hands the pane to a shell. A remote
-    failed launch offers a recovery shell where the human can log in again, and
-    that shell's banner is the only instruction they get. It used to name only how to
-    close the session, so after a forced ``/login`` exit there was no way back to the
-    agent: ``exit`` returns 79, which tears the session down, and ``ai c`` run inside
-    the pane would attach the session to itself (AI-CLI-tozg).
-
-    The restart route reuses the supervisor's existing contract: it relaunches any
-    child body that does not return 77 or 79, so the shell handing back 78 is an
-    in-place restart. The consecutive-exit count is cleared first, or the relaunched
-    agent would inherit a tripped breaker.
-    """
-    if not is_remote:
-        return "exit 77"
-    return (
-        "_ai_emit info exit \"Session ended. Type 'exit 78' to relaunch the agent here, or 'exit' to close this session.\"; "
-        '"$SHELL"; _recovery_status=$?; '
-        'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
-        "exit 79"
-    )
-
-
 def rendered_terminal_reset() -> str:
     """The transport's terminal restore as the session program's ``printf`` argument."""
     # Imported here: transport imports this module at load time.
     from .transport import _TERMINAL_RESTORE
 
     return shlex.quote(_TERMINAL_RESTORE.replace("\x1b", "\\033"))
+
+
+def emit_stamp_command() -> str:
+    """The shell command that stamps ``_ai_emit``'s plain fallback line like a rendered one.
+
+    The fallback runs only when ``ai internal emit`` cannot, so it cannot ask the renderer;
+    the configured ``[output.elements.datetime]`` format and zone are baked in instead,
+    read when the script is generated. ``local`` is the host's zone, so it runs ``date``
+    as it is; any other zone (an IANA name or ``UTC``) is passed to ``date`` as ``TZ``.
+    """
+    from . import output as _out
+
+    when = _out.settings().elements.datetime
+    command = f"date {shlex.quote('+' + when.format)}"
+    return command if when.timezone == "local" else f"TZ={shlex.quote(when.timezone)} {command}"
 
 
 def _current_update_commit() -> str:
@@ -232,15 +309,68 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    gemini_cmd: str = "gemini",
+    agy_cmd: str | None = None,
+    agy_args: list[str] | None = None,
+    resume: bool = False,
     pi_provider: str = "openai-codex",
     launch_log_path: str | None = None,
 ) -> str:
+    from . import agy_session as _agy_session
+
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
-    sandbox_flag = "-s" if sandbox else "--no-sandbox"
+    if engine == "g":
+        resolved_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
+        resolved_agy_args = list(agy_args or [])
+        agy_is_print = _agy_session.is_print_mode([*shlex.split(resolved_agy_cmd)[1:], *resolved_agy_args])
+    else:
+        resolved_agy_cmd = "agy"
+        resolved_agy_args = []
+        agy_is_print = False
+    shell_words = {
+        "__agy_record__": '"$_ai_state_dir/sessions/$tmux_session.agy.json"',
+        "__agy_cwd__": '"$PWD"',
+        "__agy_slot__": '"$tmux_session"',
+        "__agy_title__": '"$ai_name"',
+        "__agy_fresh__": '"$first_run"',
+    }
+    agy_argv = _agy_session.launch_command(
+        resolved_agy_cmd,
+        "__agy_record__",
+        "__agy_cwd__",
+        "__agy_slot__",
+        "__agy_title__",
+        fresh=False if resume else "__agy_fresh__",
+        route="paired-host-tmux" if is_remote else "local-tmux",
+        sandbox=sandbox,
+    )
+    agy_pane = " ".join(shell_words.get(word, shlex.quote(word)) for word in agy_argv)
+    agy_post_run = (
+        'exit "${agent_exit_code:-0}"' if agy_is_print else 'if [[ "${agent_exit_code:-0}" == 76 ]]; then exit 76; fi'
+    )
+    agy_supervisor_init = (
+        '      _supervisor_agy_signin_token="${AI_CLI_AGY_SIGN_IN_VERIFIED:-}"\n'
+        "      unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        '      if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '        tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true\n'
+        "      fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_before_child = (
+        '        if [[ -n "$_supervisor_agy_signin_token" ]]; then\n'
+        '          export AI_CLI_AGY_SIGN_IN_VERIFIED="$_supervisor_agy_signin_token"\n'
+        '          _supervisor_agy_signin_token=""\n'
+        "        else\n"
+        "          unset AI_CLI_AGY_SIGN_IN_VERIFIED\n"
+        "        fi\n"
+        if engine == "g"
+        else ""
+    )
+    agy_supervisor_after_child = "        unset AI_CLI_AGY_SIGN_IN_VERIFIED\n" if engine == "g" else ""
+    agy_extra_tokens = " ".join(shlex.quote(arg) for arg in resolved_agy_args)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
         raise ValueError("project_prefix has an invalid format")
     shell = {
@@ -267,6 +397,11 @@ def get_engine_script(
     # ``or "bash"`` only guards template *generation* on a host with neither shell;
     # the launch path itself refuses to start in that case, with a real message.
     _session_shell = resolve_session_shell() or "bash"
+    windows = _native_windows_launcher()
+    if windows:
+        # The MSYS2 shell runs this path itself (the child body below); forward slashes
+        # are the spelling both it and Windows accept.
+        _session_shell = _session_shell.replace("\\", "/")
     # The agent reset is the transport's restore sequence, rendered for printf, so the
     # two cannot drift apart again (AI-CLI-no36). Imported here: transport imports
     # this module at load time.
@@ -276,6 +411,7 @@ def get_engine_script(
     from .tmux_binary import shell_prelude
 
     _terminal_reset = rendered_terminal_reset()
+    _emit_stamp_command = emit_stamp_command()
     # Read the current policy from the owning registry, even after project
     # environment loading changes PATH or XDG_STATE_HOME. `[session] auto_restart` is read from
     # config.toml at the same moment (config.auto_restart_enabled), so an edit applies at the
@@ -307,26 +443,28 @@ def get_engine_script(
     _it2_show_status = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True) else "0"
 
     # Metadata baked into the template so `ai internal refresh-template` can regenerate it.
-    _meta = json.dumps(
-        {
-            "engine": engine,
-            "ai_name": ai_name,
-            "session": session,
-            "prefix": prefix,
-            "project_prefix": project_prefix,
-            "session_id_uuid": session_id_uuid or "",
-            "sandbox": sandbox,
-            "worktree_dir": worktree_dir or "",
-            "notify": notify,
-            "is_remote": is_remote,
-            "project_name": project_name,
-            "iterm2_slot": iterm2_slot or "",
-            "iterm2_cfg": iterm2_cfg or {},
-            "gemini_cmd": gemini_cmd,
-            "pi_provider": pi_provider,
-            "launch_log_path": launch_log_path or "",
-        }
-    )
+    _meta_dict = {
+        "engine": engine,
+        "ai_name": ai_name,
+        "session": session,
+        "prefix": prefix,
+        "project_prefix": project_prefix,
+        "session_id_uuid": session_id_uuid or "",
+        "sandbox": sandbox,
+        "worktree_dir": worktree_dir or "",
+        "notify": notify,
+        "is_remote": is_remote,
+        "project_name": project_name,
+        "iterm2_slot": iterm2_slot or "",
+        "iterm2_cfg": iterm2_cfg or {},
+        "pi_provider": pi_provider,
+        "launch_log_path": launch_log_path or "",
+    }
+    if engine == "g":
+        _meta_dict["agy_cmd"] = resolved_agy_cmd
+        if resolved_agy_args:
+            _meta_dict["agy_args"] = resolved_agy_args
+    _meta = json.dumps(_meta_dict)
     _generation_meta = json.dumps(
         {
             key: json.loads(_meta)[key]
@@ -344,9 +482,119 @@ def get_engine_script(
         }
     )
 
+    _posix_child_run = f"""        # With job control disabled, Bash backgrounds a command with SIGINT and
+        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
+        # dispositions in a short exec wrapper before the child shell starts,
+        # retain stdin explicitly, and then wait interruptibly in this shell.
+        python3 -c '{CHILD_BODY_SHIM}' \
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
+        _child_pid=$!
+        _supervisor_promote_child
+        _promotion_status=$?
+        if (( _promotion_status != 0 )); then
+          # Reported only once the child is gone and the terminal is back: rendering
+          # starts a process, and the stopped child must be released first.
+          if (( _promotion_status == 2 )); then
+            _promotion_failure="interrupted before the session shell reached the terminal foreground"
+          elif [[ -n "${{_child_pgid:-}}" ]]; then
+            _promotion_failure="could not promote the session shell's process group $_child_pgid to the terminal foreground"
+          else
+            _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
+          fi
+          # The child wrapper parks waiting for this promotion to succeed. It
+          # used to SIGSTOP itself, and a stopped process only records a SIGTERM
+          # as pending, so a bare SIGTERM here left the wait below blocked
+          # forever on a child that could never die (AI-CLI-jpnd). Continuing
+          # its whole process group after the TERM still wakes anything in that
+          # group that is stopped, so it sees the pending signal and exits.
+          #
+          # That CONT has to name the group the child REPORTED. It used to name
+          # "-$_child_pid", and when a spawning wrapper sits in between, that
+          # group has no members -- so the signal reached nothing and this wait
+          # blocked forever anyway, which is the wedge that was measured live.
+          kill -TERM "$_child_pid" 2>/dev/null || true
+          if [[ -n "${{_child_pgid:-}}" ]] && [[ "$_child_pgid" =~ ^[0-9]+$ ]]; then
+            kill -CONT -"$_child_pgid" 2>/dev/null || true
+            kill -TERM -"$_child_pgid" 2>/dev/null || true
+          fi
+          kill -CONT "$_child_pid" 2>/dev/null || true
+          _supervisor_wait_for_child || true
+          # Leave the terminal owned by this supervisor. Exiting with the
+          # foreground group pointing at something that never existed is why the
+          # wedged pane could not deliver Ctrl+C to anything.
+          _supervisor_restore_terminal || true
+          rm -f "$_supervisor_child_ready_path"
+          _ai_emit info terminal "$_promotion_failure"
+          # A Ctrl+C while a child is still starting (a reload, a restart) is a
+          # deliberate stop, so it ends the session the way a final exit does. An
+          # `exit 1` here skipped the fenced teardown below, and the window's
+          # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
+          # A real promotion failure still exits 1 and leaves its error on screen.
+    # BEGIN RUN STATE promotion-interrupt
+          (( _promotion_status == 2 )) && _ai_final_manual_exit
+    # END RUN STATE
+          (( _promotion_status == 2 )) && break
+          exit 1
+        fi
+        _supervisor_wait_for_child
+        _child_status=$?
+        _supervisor_restore_terminal
+        _supervisor_foreground=$?"""
+    # Git Bash: the shell's process groups and terminal are emulated and the Python it
+    # calls is native, so there is no group to hand the terminal to (AI-CLI-4bhw). The
+    # child body runs as the supervisor's foreground command on the pane's console.
+    _windows_child_run = f"""        # Native Windows: the child body runs as this shell's foreground command,
+        # on the pane's console, and its exit status drives the loop below. There
+        # is no process group to promote, and a foreground command keeps its SIGINT
+        # disposition, so the child's own double Ctrl+C handling still applies.
+        _child_pid=""
+        {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body
+        _child_status=$?
+        _supervisor_foreground=0"""
+    _child_run = _windows_child_run if windows else _posix_child_run
+    _agent_run = WINDOWS_AGENT_RUN if windows else POSIX_AGENT_RUN
+    _child_int_windows = WINDOWS_CHILD_INT if windows else ""
+    _windows_prelude = ""
+    _signal_model_windows = ""
+    _restore_terminal_windows = ""
+    _watcher_lock_pid = "echo $$"
+    _suspend_watchdog_start = f"""    if [[ -t 0 ]]; then
+      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
+      _suspend_watchdog_pid=$!
+    fi
+"""
+    if windows:
+        # `python3` on a Git Bash PATH is often missing or the Microsoft Store alias, and
+        # the generation token below needs one: run this script's own snippets on the
+        # launcher's interpreter.
+        _windows_prelude = f'python3() {{ {shlex.quote(sys.executable.replace(chr(92), "/"))} "$@"; }}\n'
+        # direnv is a native program, so `direnv export bash` hands this MSYS2 shell
+        # PATH in its Windows spelling (`C:\...;C:\...`), and after the eval the shell
+        # finds no command at all. Every export the script evaluates ends by putting
+        # PATH back in the shell's own spelling, through a cygpath named by the path it
+        # had before the eval, since the Windows spelling cannot find it.
+        _windows_prelude += (
+            "direnv() {\n"
+            '  if [[ "${1:-} ${2:-}" != "export bash" ]]; then command direnv "$@"; return; fi\n'
+            '  local _ai_cygpath=""\n'
+            "  _ai_cygpath=$(command -v cygpath) || _ai_cygpath=/usr/bin/cygpath\n"
+            '  command direnv "$@" || return\n'
+            '  printf \'[[ "$PATH" == *";"* ]] && PATH=$(%q -u -p "$PATH")\\n\' "$_ai_cygpath"\n'
+            "}\n"
+        )
+        _signal_model_windows = (
+            '        _supervisor_signal_model_reason="native Windows programs have no POSIX process groups"\n'
+            "        return 1\n"
+        )
+        # Nothing took the terminal from this shell, so there is nothing to restore.
+        _restore_terminal_windows = "        return 0\n"
+        _watcher_lock_pid = '_ai_native_pid "$$"'
+        # Ctrl+Z stops no process group on a Windows console, and the watchdog's
+        # os.kill(pid, 0) would send that pid a Ctrl+C there rather than probe it.
+        _suspend_watchdog_start = ""
     # The script's bare `tmux` calls run the configured `[tmux] binary` (empty when unset,
     # so PATH decides as before); baked in at generation like the session shell above.
-    return f"""{shell_prelude()}
+    return f"""{shell_prelude()}{_windows_prelude}
     # The pane leader is deliberately stable.  Replaceable session bodies run as
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.
@@ -403,8 +651,10 @@ def get_engine_script(
       # A Ctrl+C while the renderer runs must not cost the message.
       _ai_emit_line=$(trap '' INT; {LAUNCH_LOG_ENV}="$_ai_launch_log" ai internal emit session "$_ai_emit_level" "$_ai_emit_op" "$_ai_emit_target" "$*" 2>/dev/null) || _ai_emit_line=""
       if [[ -z "$_ai_emit_line" ]]; then
-        # The renderer's default datetime leads the plain line too.
-        _ai_emit_stamp=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null) || _ai_emit_stamp=""
+    # BEGIN EMIT STAMP
+        # The plain line leads with the configured datetime, as a rendered one does (emit_stamp_command).
+        _ai_emit_stamp=$({_emit_stamp_command} 2>/dev/null) || _ai_emit_stamp=""
+    # END EMIT STAMP
         _ai_emit_line="${{_ai_emit_stamp:+$_ai_emit_stamp }}$_ai_emit_plain"
         if [[ -n "$_ai_launch_log" ]]; then
           printf '%s\n' "$_ai_emit_line" 2>/dev/null >> "$_ai_launch_log"
@@ -431,7 +681,7 @@ def get_engine_script(
       fi
     }}
     {session_state_functions(session)}
-    if ! $_ai_cli_child_mode; then
+{_native_pid_function(windows)}    if ! $_ai_cli_child_mode; then
       # Preserve interactive stderr while recording supervisor-only diagnostics.
       # Child bodies restore fd 2 below so normal agent output does not grow this log.
       if [[ -n "$_ai_launch_log" ]]; then
@@ -469,7 +719,8 @@ def get_engine_script(
         "$_ai_state_dir/session-agent-exits-$tmux_session" \
         "$_ai_progress_marker" "$_ai_reload_reason_file" "$_ai_reload_run_file"
     # BEGIN RUN STATE supervisor-generation
-      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
+      _ai_supervisor_pid=$(_ai_native_pid "$$") || exit 1
+      AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$_ai_supervisor_pid" --launch-metadata {shlex.quote(_generation_meta)}) || exit 1
       export AI_CLI_RUN_GENERATION
     # END RUN STATE
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
@@ -489,7 +740,7 @@ def get_engine_script(
       _reaper_lease_fd=""
       _supervisor_signal_model_reason=""
       _verify_supervisor_signal_model() {{
-        # The supervisor must begin in the pane foreground group so it can
+{_signal_model_windows}        # The supervisor must begin in the pane foreground group so it can
         # promote each separately grouped child to the terminal foreground.
         if ! set +m 2>/dev/null; then
           _supervisor_signal_model_reason="could not disable shell job control"
@@ -555,9 +806,6 @@ def get_engine_script(
         fi
       fi
       _heartbeat_pid=""
-    # BEGIN SHELL RETURN state
-      _supervisor_return_to_shell=false
-    # END SHELL RETURN
       _supervisor_cleanup() {{
     # BEGIN RUN STATE cleanup-exit
         # EXIT also runs after terminal loss or an unexpectedly killed child.
@@ -589,13 +837,20 @@ def get_engine_script(
           "$_ai_state_dir/session-agent-exits-$tmux_session" "$_ai_reload_reason_file"
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
+    # BEGIN RUN STATE return-client
+        # A client `ai c` switched in from another tmux session goes back there before this
+        # session ends, rather than leaving tmux with it (tmux_ownership.return_switched_client).
+        if $_supervisor_tmux_ownership_established; then
+          ai internal return-tmux-client "$_supervisor_tmux_session_id" 2>/dev/null || true
+        fi
+    # END RUN STATE
     # BEGIN TMUX CLEANUP
-        if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then
+        if $_supervisor_tmux_ownership_established; then
           _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
           if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
             _ai_emit info cleanup "refusing to kill tmux session: ownership fence mismatch"
           fi
-        elif ! $_supervisor_return_to_shell; then
+        else
           _ai_emit info cleanup "skipping tmux session cleanup because supervisor ownership was not established"
         fi
     # END TMUX CLEANUP
@@ -702,26 +957,10 @@ def get_engine_script(
         return 1
       }}
       _supervisor_restore_terminal() {{
-        [[ -t 0 ]] || return 0
+{_restore_terminal_windows}        [[ -t 0 ]] || return 0
         trap '' TTOU
         python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
-    # BEGIN SHELL RETURN terminal
-      _supervisor_preserve_pane() {{
-        # Policy changes may leave a worktree shell. Interrupts end the tmux
-        # session so its attach client returns to the original calling shell.
-        [[ "$(cat "$_ai_state_dir/session-int-exit-$tmux_session" 2>/dev/null)" == stop ]] && return
-        # A script launched as tmux's pane command has no interactive shell
-        # parent to return to. Keep that pane and replace its supervisor below.
-        # Failed-start guards also return 77, but persist an unknown exit cause.
-        # Preserve the pane only for a deliberate stop, never a failed launch.
-        if [[ -t 0 ]] && \\
-          [[ "$(cat "$_ai_state_dir/session-final-exit-$tmux_session" 2>/dev/null)" == manual_exit ]] && \\
-          _supervisor_restore_terminal; then
-          _supervisor_return_to_shell=true
-        fi
-      }}
-    # END SHELL RETURN
       # Consecutive reloads share one in-place row (AI-CLI-zss5): the reason, the attempt
       # and the time since the first, rendered by `ai internal progress`, which escalates
       # past the configured thresholds so a reload loop gets louder rather than looking
@@ -799,7 +1038,7 @@ def get_engine_script(
         _heartbeat_pid=$!
         disown "$_heartbeat_pid" 2>/dev/null || true
       fi
-      while true; do
+{agy_supervisor_init}      while true; do
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
@@ -811,65 +1050,8 @@ def get_engine_script(
     # BEGIN RUN STATE promotion-int-baseline
         _supervisor_spawn_int_count=$_supervisor_int_count
     # END RUN STATE
-        # With job control disabled, Bash backgrounds a command with SIGINT and
-        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
-        # dispositions in a short exec wrapper before the child shell starts,
-        # retain stdin explicitly, and then wait interruptibly in this shell.
-        python3 -c '{CHILD_BODY_SHIM}' \
-          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
-        _child_pid=$!
-        _supervisor_promote_child
-        _promotion_status=$?
-        if (( _promotion_status != 0 )); then
-          # Reported only once the child is gone and the terminal is back: rendering
-          # starts a process, and the stopped child must be released first.
-          if (( _promotion_status == 2 )); then
-            _promotion_failure="interrupted before the session shell reached the terminal foreground"
-          elif [[ -n "${{_child_pgid:-}}" ]]; then
-            _promotion_failure="could not promote the session shell's process group $_child_pgid to the terminal foreground"
-          else
-            _promotion_failure="the session shell never reported a process group, so it was never promoted to the terminal foreground"
-          fi
-          # The child wrapper parks waiting for this promotion to succeed. It
-          # used to SIGSTOP itself, and a stopped process only records a SIGTERM
-          # as pending, so a bare SIGTERM here left the wait below blocked
-          # forever on a child that could never die (AI-CLI-jpnd). Continuing
-          # its whole process group after the TERM still wakes anything in that
-          # group that is stopped, so it sees the pending signal and exits.
-          #
-          # That CONT has to name the group the child REPORTED. It used to name
-          # "-$_child_pid", and when a spawning wrapper sits in between, that
-          # group has no members -- so the signal reached nothing and this wait
-          # blocked forever anyway, which is the wedge that was measured live.
-          kill -TERM "$_child_pid" 2>/dev/null || true
-          if [[ -n "${{_child_pgid:-}}" ]] && [[ "$_child_pgid" =~ ^[0-9]+$ ]]; then
-            kill -CONT -"$_child_pgid" 2>/dev/null || true
-            kill -TERM -"$_child_pgid" 2>/dev/null || true
-          fi
-          kill -CONT "$_child_pid" 2>/dev/null || true
-          _supervisor_wait_for_child || true
-          # Leave the terminal owned by this supervisor. Exiting with the
-          # foreground group pointing at something that never existed is why the
-          # wedged pane could not deliver Ctrl+C to anything.
-          _supervisor_restore_terminal || true
-          rm -f "$_supervisor_child_ready_path"
-          _ai_emit info terminal "$_promotion_failure"
-          # A Ctrl+C while a child is still starting (a reload, a restart) is a
-          # deliberate stop, so it ends the session the way a final exit does. An
-          # `exit 1` here skipped the fenced teardown below, and the window's
-          # remain-on-exit then kept a dead pane that took no input (AI-CLI-5t3j).
-          # A real promotion failure still exits 1 and leaves its error on screen.
-    # BEGIN RUN STATE promotion-interrupt
-          (( _promotion_status == 2 )) && _ai_final_manual_exit
-    # END RUN STATE
-          (( _promotion_status == 2 )) && break
-          exit 1
-        fi
-        _supervisor_wait_for_child
-        _child_status=$?
-        _supervisor_restore_terminal
-        _supervisor_foreground=$?
-        rm -f "$_supervisor_child_ready_path"
+{agy_supervisor_before_child}{_child_run}
+{agy_supervisor_after_child}        rm -f "$_supervisor_child_ready_path"
         if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
     # BEGIN RUN STATE supervisor-interrupt
           _ai_final_manual_exit
@@ -895,14 +1077,15 @@ def get_engine_script(
     # END RUN STATE
     # BEGIN SHELL RETURN policy
         # Template refreshes replace the body without starting another agent.
-        # All other replacements obey the current session policy.
+        # All other replacements obey the current session policy. A policy that stops
+        # restarts ends the session like any other final exit: the teardown below ends the
+        # tmux session, and the attached client returns to the shell that ran `ai c`.
         if (( _child_status != 78 )); then
           _relaunch_policy=$({_relaunch_policy_command} 2>/dev/null)
           if [[ "$_relaunch_policy" == never || "$_relaunch_policy" == auto_restart_off ]]; then
             [[ "$_relaunch_policy" == auto_restart_off ]] && \
               _ai_emit info exit {shlex.quote(f"not restarting: [session] auto_restart = false in {config_file_text()}")}
             _ai_final_manual_exit
-            _supervisor_preserve_pane
             break
           fi
         fi
@@ -929,28 +1112,9 @@ def get_engine_script(
           _reload_count=0
         fi
       done
-    # BEGIN SHELL RETURN interactive
-      if $_supervisor_return_to_shell; then
-        # Release supervisor resources before exec: an exec does not run EXIT.
-        # The shell must inherit neither the lease nor the supervisor's traps.
-        _supervisor_cleanup
-        # Keep INT caught through the shell return; exec resets caught dispositions.
-        trap - EXIT TERM WINCH TTOU
-        if [[ -n "$_ai_emit_terminal_fd" ]]; then exec 2>&3; fi
-        exec 3>&- 8>&- 9<&-
-        unset AI_CLI_SUPERVISOR_LEASE_FD AI_CLI_SUPERVISOR_TERMINAL_FD AI_CLI_SUPERVISOR_CHILD_READY_PATH AI_CLI_RUN_GENERATION
-        [[ -t 1 ]] && printf {_terminal_reset}
-        stty sane 2>/dev/null || true
-        {cd_cmd}
-        _ai_emit_terminal_fd=""
-        _ai_emit info exit "Auto-restart stopped. Returning to an interactive shell."
-        if [[ -n "${{SHELL:-}}" && -x "$SHELL" ]]; then exec "$SHELL" -i; fi
-        exec {shlex.quote(_session_shell)} -i
-      fi
     # BEGIN RUN STATE final-exit-message
       _ai_emit info exit "Auto-restart stopped. Returning to the calling shell."
     # END RUN STATE
-    # END SHELL RETURN
       exit 0
     fi
     # BEGIN RUN STATE child-stderr-restore
@@ -970,6 +1134,17 @@ def get_engine_script(
     if [[ -n "${{_ai_launch_log:-}}" ]]; then
       exec 2>&3
     fi
+    # BEGIN LAUNCH LOG child
+    # This body's stderr is the pane, not the supervisor's log relay, so every `ai internal`
+    # it runs (the resume lookup, the .envrc approval, migrations) records into the launch log
+    # itself, stamped as it emits: `ai internal` attaches the log this variable names. run_agent
+    # removes it again from the agent's environment.
+    if [[ -n "${{_ai_launch_log:-}}" ]]; then
+      export {LAUNCH_LOG_ENV}="$_ai_launch_log"
+    else
+      unset {LAUNCH_LOG_ENV}
+    fi
+    # END LAUNCH LOG
     {cd_cmd}
     direnv_root="$PWD"
     tmux_session={shell["session"]}
@@ -993,7 +1168,8 @@ def get_engine_script(
         printf 'session %s: %s; not retrying\\n' "$tmux_session" "$1" >&2
         exit 77
       }}
-      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$$" --launch-metadata {shlex.quote(_generation_meta)}); then
+      _ai_supervisor_pid=$(_ai_native_pid "$$") || _begin_stop "cannot name this shell to the session record"
+      if AI_CLI_RUN_GENERATION=$(ai sessions _begin "$tmux_session" --supervisor-pid "$_ai_supervisor_pid" --launch-metadata {shlex.quote(_generation_meta)}); then
         printf '0\\n' > "$_begin_failures_file" || _begin_stop "cannot reset generation failure counter"
       else
         _begin_failures=$((10#$_begin_failures + 1))
@@ -1071,7 +1247,7 @@ def get_engine_script(
     # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
     # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
     _child_record_int() {{
-      _child_int_now=$(date +%s)
+{_child_int_windows}      _child_int_now=$(date +%s)
       _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
       if [[ "$_child_saved_int_deadline" == "pending" ]] || \
         ( [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && (( _child_int_now <= _child_saved_int_deadline )) ); then
@@ -1178,6 +1354,13 @@ def get_engine_script(
         set -- {shlex.quote(sys.executable)} -m ai_cli.main internal restart-exec "$tmux_session" "$@"
       fi
     # END PINNED RESTART
+    # BEGIN LAUNCH LOG agent
+      # The launch log variable is for this body's own `ai internal` calls; the agent and the
+      # hooks it runs must not write into the session's launch log. Unset in the shell, not with
+      # `env -u`, so starting the agent needs no program beyond the agent itself; the agent is
+      # forked without it, and it is exported again once the agent has exited (below).
+      unset {LAUNCH_LOG_ENV}
+    # END LAUNCH LOG
     # BEGIN RUN STATE agent-start-clock
       # The quick-exit and healthy-run checks measure the agent's own run time. The setup
       # above (direnv, plugin refresh) can take seconds on a loaded host, so start the
@@ -1190,27 +1373,14 @@ def get_engine_script(
       # background PID used for signal forwarding. Prefer the resolved device:
       # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
       _reset_agent_terminal
-      if [[ -t 0 && -r /dev/tty ]]; then
-        _agent_tty=$(tty 2>/dev/null)
-        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
-          "$@" <"$_agent_tty" &
-        else
-          "$@" </dev/tty &
-        fi
-      else
-        "$@" <&0 &
+{_agent_run}      active_agent_pid=""
+    # BEGIN LAUNCH LOG agent-exit
+      # The agent is gone: this body's own `ai internal` calls after it (the version check,
+      # the template refresh) record into the launch log again.
+      if [[ -n "${{_ai_launch_log:-}}" ]]; then
+        export {LAUNCH_LOG_ENV}="$_ai_launch_log"
       fi
-      active_agent_pid=$!
-    # BEGIN SHELL RETURN agent-wait
-      # A trapped SIGINT interrupts wait even if the TUI kept running. Collect
-      # its actual exit before resetting the terminal or replacing the body.
-      while true; do
-        wait "$active_agent_pid"
-        agent_exit_code=$?
-        kill -0 "$active_agent_pid" 2>/dev/null || break
-      done
-    # END SHELL RETURN
-      active_agent_pid=""
+    # END LAUNCH LOG
     # BEGIN LAUNCH DIAGNOSTICS
       # Take the pane tail before the reset or a restart destroys its contents.
       # Measure the runtime before starting diagnostics so they cannot move the restart guard.
@@ -1265,6 +1435,17 @@ def get_engine_script(
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
+    # BEGIN RUN STATE launch-reason
+    # The launch reason belongs to the launch that set it, and only its first agent start reads
+    # it. That agent keeps it, marked as this session's, so an `ai c` run from inside the
+    # session starts fresh; a later agent and a new pane in this tmux session never get it.
+    if $first_run && [[ -n "${{{LAUNCH_REASON_VAR}:-}}" ]]; then
+      export {INHERITED_LAUNCH_REASON_VAR}="${LAUNCH_REASON_VAR}"
+    elif ! $first_run; then
+      unset {LAUNCH_REASON_VAR} {INHERITED_LAUNCH_REASON_VAR}
+    fi
+    tmux set-environment -t "=$tmux_session" -r {LAUNCH_REASON_VAR} 2>/dev/null || true
+    # END RUN STATE
     _template_version={shlex.quote(_template_version)}
     _template_commit={shlex.quote(_template_commit)}
     uuid={shell["uuid"]}
@@ -1337,7 +1518,7 @@ def get_engine_script(
       fi
       rm -f "$lock_file"
 
-      (echo $$ > "$lock_file"
+      ({_watcher_lock_pid} > "$lock_file"
       trap 'rm -f "$lock_file"' EXIT
       counter=0
       while true; do
@@ -1424,7 +1605,7 @@ def get_engine_script(
       local type_sym="" sym=""
       [[ "$_iterm2_show_type_sym" == "1" ]] && {{
         [[ "$stype" == "cc" ]]     && type_sym="* "
-        [[ "$stype" == "gemini" ]] && type_sym="✦ "
+        [[ "$stype" == "gemini" || "$stype" == "agy" ]] && type_sym="✦ "
         [[ "$stype" == "pi" ]]     && type_sym="π "
       }}
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
@@ -1458,7 +1639,7 @@ def get_engine_script(
     # END RUN STATE
     _session_num="${{_session_num:-1}}"
     _session_type="cc"
-    [[ "$engine" == "g" ]] && _session_type="gemini"
+    [[ "$engine" == "g" ]] && _session_type="agy"
     [[ "$engine" == "p" ]] && _session_type="pi"
 
     # Export for CC Notification hook to use
@@ -1485,11 +1666,7 @@ def get_engine_script(
     # Ctrl+Z stops this whole foreground group and nothing in the pane can continue
     # it (AI-CLI-y6el); see SUSPEND_WATCHDOG_SNIPPET. One per child body, so a hot
     # reload carries it into a running session at its next agent restart.
-    if [[ -t 0 ]]; then
-      python3 -c '{SUSPEND_WATCHDOG_SNIPPET}' "$$" </dev/null >/dev/null 2>>"${{_ai_launch_log:-/dev/null}}" &
-      _suspend_watchdog_pid=$!
-    fi
-
+{_suspend_watchdog_start}
     agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do
       # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
@@ -1721,14 +1898,14 @@ with open(path, 'w') as f:
       # 74: the [resume_restore] command failed for an archived transcript. Resuming
       # or starting fresh would both lose the conversation, so stop here.
       if [[ "$engine" == "c" && $resolve_status -eq 74 ]]; then
-        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+        _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name'."
         _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
         break
       fi
     # END TRANSCRIPT RESTORE
     # BEGIN BACKGROUND ATTACH parked
       if $_bg_gave_up; then
-        _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' or type 'exit 78' here to try again."
+        _ai_emit warning session "Relaunch parked: a live background copy of $ai_name stayed busy or unreadable for ${{_bg_held}}s, so it was not resumed beside it. Check 'claude agents', then run 'ai c $ai_name' to try again."
     # BEGIN RUN STATE background-parked
         _ai_persist_exit unknown '{{"reason":"relaunch parked beside a live background copy"}}'
     # END RUN STATE
@@ -1739,6 +1916,25 @@ with open(path, 'w') as f:
     # BEGIN PINNED RESTART resolver-end
       fi
     # END PINNED RESTART
+
+    # BEGIN PROJECT ENV prepare
+      # Every agent start, first and restart alike, approves this worktree's .envrc with the
+      # launcher's own policy before run_agent loads it: direnv keys an approval on the file's
+      # content, so a sync or merge since the last start leaves it blocked. The helper exits 0
+      # whenever there is nothing to approve (no direnv, no .envrc, a bypass), so any other
+      # status, its own refusal or a helper that could not run at all, ends the session like
+      # any other stop and never starts an agent without its environment.
+      _project_env_status=0
+      ai internal prepare-project-env "$PWD" "$tmux_session" || _project_env_status=$?
+      if (( _project_env_status == {PROJECT_ENV_REFUSED_EXIT} )); then
+        _ai_persist_exit unknown '{{"reason":"project environment not approved"}}'
+        break
+      elif (( _project_env_status != 0 )); then
+        _ai_emit error direnv "could not check the .envrc approval: 'ai internal prepare-project-env' exited $_project_env_status, so no agent was started. Run 'ai internal prepare-project-env $PWD' to see why, then 'ai c $ai_name'; or set AI_CLI_SKIP_DIRENV=1 to start without the check."
+        _ai_persist_exit unknown '{{"reason":"project environment check failed"}}'
+        break
+      fi
+    # END PROJECT ENV
 
     # BEGIN CODEX THREAD
       _run_codex() {{
@@ -1759,13 +1955,45 @@ with open(path, 'w') as f:
       }}
     # END CODEX THREAD
 
+    # BEGIN AGY THREAD
+      _run_agy() {{
+        if ! ${{agent_direnv_initialized:-false}}; then
+          agent_direnv_initialized=true
+          # Antigravity needs run_agent's environment before resolving native identity.
+          # Mark it initialized so run_agent retains that same environment.
+          if command -v direnv >/dev/null 2>&1; then
+            if _direnv_exports="$(direnv export bash)"; then
+              eval "$_direnv_exports"
+            else
+              _ai_emit warning direnv "direnv could not load $direnv_root/.envrc — starting without the project environment."
+            fi
+          fi
+        fi
+        local _agy_signin_token="${{AI_CLI_AGY_SIGN_IN_VERIFIED:-}}"
+        unset AI_CLI_AGY_SIGN_IN_VERIFIED
+        if [[ -n "$_agy_signin_token" ]]; then
+          tmux set-environment -t "=$tmux_session" -u AI_CLI_AGY_SIGN_IN_VERIFIED 2>/dev/null || true
+          if [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+          else
+            run_agent env "AI_CLI_AGY_SIGN_IN_VERIFIED=$_agy_signin_token" {agy_pane}
+          fi
+        elif [[ $# -gt 0 || -n {shlex.quote(agy_extra_tokens)} ]]; then
+          run_agent {agy_pane} -- {agy_extra_tokens}{" " if agy_extra_tokens else ""}"$@"
+        else
+          run_agent {agy_pane}
+        fi
+        {agy_post_run}
+      }}
+    # END AGY THREAD
+
     # BEGIN TRANSCRIPT RESTORE session
       # Every resume path below takes $matched_file. Restore the session's transcripts
       # (its sub-agents' included) first; a failed restore stops before claude starts.
       if [[ "$engine" == "c" && -z "$bg_target" && $resolve_status -eq 0 && -n "$matched_file" ]]; then
         _restore_id="${{matched_file##*/}}"
         if ! ai internal restore-transcript "${{_restore_id%.jsonl}}"; then
-          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name' or type 'exit 78' here."
+          _ai_emit error resume "Resume of $ai_name stopped: the transcript restore failed (output above). Fix it, then run 'ai c $ai_name'."
           _ai_persist_exit unknown '{{"reason":"transcript restore failed"}}'
           break
         fi
@@ -1790,10 +2018,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
         elif [[ "$engine" == "g" ]]; then
-          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          _run_agy --prompt-interactive "$resume_msg"
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -1818,9 +2043,7 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         elif [[ "$engine" == "g" ]]; then
-      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
-      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
-          fi
+          _run_agy
         elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
           else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
@@ -1836,8 +2059,7 @@ with open(path, 'w') as f:
     # BEGIN SHELL RETURN interrupt-exit
       # Status 130 is a deliberate stop. So is a clean exit inside the startup
       # guard: a raw-mode TUI consumes an early Ctrl+C and exits 0, and treating
-      # that as a failure opens a remote recovery shell whose prompt consumes all
-      # further interrupts.
+      # that as a failed start would record the stop as a crash.
       if $agent_attempted && (( agent_exit_code == 130 || \\
         (agent_exit_code == 0 && agent_elapsed < 3) )); then
         _ai_final_manual_exit
@@ -1926,14 +2148,6 @@ with open(path, 'w') as f:
 
       {notify_cmd}
 
-      if [[ "$engine" == "g" ]]; then
-        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
-        if [[ -n "$new_uuid" ]]; then
-          uuid="$new_uuid"
-          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
-        fi
-      fi
-
       first_run=false
       # Mark session as started so hot-reload exec skips first-run-only setup blocks.
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
@@ -1988,6 +2202,10 @@ with open(path, 'w') as f:
     # The old supervisor does not persist final exits. Failed-start paths have
     # already recorded their cause, which the final-exit marker preserves here.
     _ai_final_manual_exit
+    # A stopped child ends the session, local and remote alike: 77 tells the supervisor this is
+    # a final exit, and its teardown ends the tmux session so the attached client returns to the
+    # shell that ran `ai c`. No recovery shell is left in the pane; 79 and the `exit 78`
+    # relaunch named above came from the one a remote child used to run.
     # END RUN STATE
-    {_stop_epilogue(is_remote)}
+    exit 77
     """

@@ -11,6 +11,8 @@ template_version: "bug-1.0.0"
 
 # [historical-task] `ai ls` and `ai attach` crash on Windows — bare `tmux` calls, tmux unavailable on Windows
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** open — found during historical-task-ai-cli-bare-uv-popen-windows-crash audit, NOT fixed
 
 **Severity:** P2

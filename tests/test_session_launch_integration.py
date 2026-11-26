@@ -13,6 +13,7 @@ import dataclasses
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -182,7 +183,7 @@ def patched_subprocess(tmux_server, tmp_path):
                     after_list_panes()
                 return result
 
-            if sub in {"display-message", "if-shell"}:
+            if sub in {"display-message", "if-shell", "switch-client", "show-options", "list-clients", "set-hook"}:
                 return real_subprocess_run(
                     ["tmux", "-S", str(server.socket_path), *cmd[1:]],
                     capture_output=True,
@@ -190,7 +191,8 @@ def patched_subprocess(tmux_server, tmp_path):
                     check=False,
                 )
 
-            if sub == "set-window-option":
+            if "remain-on-exit" in cmd:
+                # The first configuration step; either form of it (pane or window option).
                 after_configuration_failure = getattr(server, "_after_configuration_failure", None)
                 if after_configuration_failure is not None:
                     return _FAIL_AFTER_RETURN_CODE_OBSERVED()
@@ -326,7 +328,6 @@ def test_given_new_session_when_launched_then_tmux_session_created(patched_subpr
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -354,7 +355,6 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -400,7 +400,6 @@ def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_mod
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -454,7 +453,6 @@ def test_given_no_remote_session_when_relaunched_by_hand_on_a_terminal_then_its_
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -502,7 +500,6 @@ def test_given_slot_10_live_when_free_slot_1_is_launched_then_slot_1_is_created_
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -542,7 +539,6 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
         patch("ai_cli.config.get_current_project_name", return_value="myhub"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -588,7 +584,6 @@ def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_in_o
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -671,7 +666,6 @@ def test_given_live_remote_worktree_when_launched_from_elsewhere_then_reuses_own
         patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
@@ -744,7 +738,6 @@ def test_given_dead_remote_session_when_relaunched_from_elsewhere_then_reuses_it
         patch("ai_cli.session._tmux_session_names", side_effect=lambda: [s.name for s in server.sessions]),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
@@ -832,7 +825,6 @@ def test_given_session_running_in_its_worktree_when_reattached_then_its_git_stat
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -977,7 +969,6 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1032,7 +1023,6 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1079,7 +1069,6 @@ def test_given_new_session_replaced_after_configuration_failure_when_cleanup_run
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1124,7 +1113,6 @@ def test_given_new_session_replaced_before_ownership_mark_when_launching_then_re
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1150,14 +1138,16 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
     server = patched_subprocess
     original_id = None
     original_name = None
+    original_pane = None
     replacement_id = None
     post_capture_command_index = None
 
     def replace_created_session_name() -> None:
-        nonlocal original_id, original_name, replacement_id, post_capture_command_index
+        nonlocal original_id, original_name, original_pane, replacement_id, post_capture_command_index
         original = next(iter(server.sessions))
         original_id = original.id
         original_name = original.name
+        original_pane = original.panes[0].id
         assert server.cmd("rename-session", "-t", original_id, f"{original_name}-renamed").returncode == 0
         replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         replacement_id = replacement.id
@@ -1169,7 +1159,6 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1191,8 +1180,13 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         for command in server._tmux_commands[post_capture_command_index:]
         if "-t" in command
     ]
+    # Every target is the captured session or its own pane, by opaque id, never the name.
     assert post_capture_targets == [
-        ("set-window-option", original_id),
+        ("display-message", f"{original_id}:"),
+        ("set-option", original_pane),
+        ("set-option", original_id),
+        ("set-hook", original_id),
+        ("set-hook", original_id),
         ("set-option", original_id),
         ("set-option", original_id),
         ("set-window-option", original_id),
@@ -1241,7 +1235,6 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1269,7 +1262,6 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
     with (
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.session.resolve_project_prefix", return_value="MYPROJECT"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
@@ -1330,7 +1322,6 @@ def test_given_uppercase_repo_prefix_when_bare_session_launches_then_real_artifa
         patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
         patch("ai_cli.main.detect_missing_tracked_symlinks", return_value=[]),
         patch("ai_cli.main.detect_phantom_deleted_files", return_value=[]),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
@@ -1455,7 +1446,6 @@ def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propaga
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
@@ -1510,7 +1500,6 @@ def _reattach_launch_with_rename(spawn, tmp_path):
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.icon_generator.generate_session_icon", return_value=None),
@@ -1579,3 +1568,264 @@ def test_given_an_iterm2_pane_when_launching_then_the_rename_is_started_detached
     # Only the rename's own warning is in scope: the launch may warn about the host
     # (no direnv on a CI runner), which says nothing about the rename.
     assert "Warning: iTerm2 pane rename" not in out, out
+
+
+_STANDARD_LAUNCH_PATCHES = (
+    ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
+    ("ai_cli.session.cleanup_stale_sessions", {}),
+    ("ai_cli.config.get_current_project_name", {"return_value": "myproject"}),
+    ("ai_cli.iterm2._load_iterm2_config", {"return_value": {}}),
+    ("ai_cli.iterm2._assign_iterm2_color_slot", {"return_value": None}),
+    ("ai_cli.iterm2._emit_iterm2_profile_setup", {}),
+    ("ai_cli.iterm2._configure_tmux_for_iterm2", {}),
+    ("ai_cli.session_script.get_engine_script", {"return_value": f"{_LIVE_CHILD_COMMAND}\n"}),
+    ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+)
+
+
+def _new_session_reason(server) -> str:
+    (created,) = [cmd for cmd in server._tmux_commands if cmd[1:2] == ["new-session"]]
+    values = [created[i + 1] for i, arg in enumerate(created) if arg == "-e"]
+    (reason,) = [value.partition("=")[2] for value in values if value.startswith("AI_CLI_LAUNCH_REASON=")]
+    return reason
+
+
+@pytest.mark.parametrize(("launch_reason", "expected"), [(None, ""), ("host_reboot", "host_reboot")])
+def test_given_stale_reason_in_the_callers_environment_when_launched_then_only_an_explicit_reason_reaches_the_pane(
+    patched_subprocess, monkeypatch, launch_reason, expected
+):
+    """A shell inside a session relaunched after a reboot still carries its reason.
+
+    ``ai c <new-name>`` run there must start the new session fresh, while the relaunch
+    that owns a reason (``ai iterm2 restore``, the reboot relaunch) still delivers it.
+    """
+    monkeypatch.setenv("AI_CLI_LAUNCH_REASON", "host_reboot")
+    kwargs = _base_launch_kwargs(name="1")
+    if launch_reason is not None:
+        kwargs["launch_reason"] = launch_reason
+    with contextlib.ExitStack() as stack:
+        for target, options in _STANDARD_LAUNCH_PATCHES:
+            stack.enter_context(patch(target, **options))
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    assert _new_session_reason(patched_subprocess) == expected
+
+
+@pytest.fixture
+def attached_caller(tmux_server):
+    """A caller session on the launch's tmux server, with a real client attached to it.
+
+    The client runs in a pane of a second server, standing in for the operator's
+    terminal; from the caller's pane, ``TMUX`` and ``TMUX_PANE`` name this server.
+    """
+    socket = str(tmux_server.socket_path)
+    outer = str(Path(socket).with_name("outer.sock"))
+    # Taken before the launch's tmux calls are patched, so these always reach the real server.
+    run = subprocess.run
+
+    def tmux(*args):
+        return run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False, timeout=10)
+
+    assert tmux("-f", os.devnull, "new-session", "-d", "-s", "caller", _LIVE_CHILD_COMMAND).returncode == 0
+    client = f"env -u TMUX tmux -S {socket} attach-session -t =caller"
+    started = run(
+        ["tmux", "-S", outer, "-f", os.devnull, "new-session", "-d", "-x", "120", "-y", "30", client],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert started.returncode == 0
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while not tmux("list-clients", "-t", "=caller").stdout and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pane = tmux("display-message", "-p", "-t", "=caller:", "#{pane_id}").stdout.strip()
+    caller_id = tmux("display-message", "-p", "-t", "=caller:", "#{session_id}").stdout.strip()
+    try:
+        yield {"socket": socket, "pane": pane, "session_id": caller_id, "tmux": tmux}
+    finally:
+        run(["tmux", "-S", outer, "kill-server"], capture_output=True, check=False, timeout=10)
+
+
+def _run_ai_c() -> object:
+    """Run ``ai c 1`` through its click command, past every step above the launch itself."""
+    from ai_cli import main
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(_tmux_versions_agreeing())
+        for target, options in _STANDARD_LAUNCH_PATCHES:
+            stack.enter_context(patch(target, **options))
+        for target in (
+            "ai_cli.main._ensure_dolt_server",
+            "ai_cli.main._ensure_wake_sidecar",
+            "ai_cli.main.trigger_background_update",
+            "ai_cli.main._tunnel._ensure_nats_tunnel",
+            "ai_cli.main._process_manager._start_stale_session_reaper_for_launch",
+            "ai_cli.main.run_launch_extensions",
+        ):
+            stack.enter_context(patch(target))
+        stack.enter_context(patch("ai_cli.main._auto_update_if_stale", return_value=False))
+        stack.enter_context(patch("ai_cli.config.load_config", return_value={"worktree": {"enabled": False}}))
+        # A launch with no terminal to attach reports the detached session and returns.
+        try:
+            main.cmd_c.main(["1", "--project-prefix", "myproject"], standalone_mode=False)
+        except SystemExit as exited:
+            return exited.code
+    return None
+
+
+@pytest.mark.parametrize(
+    ("inherited", "expected"),
+    [
+        pytest.param(None, "host_reboot", id="relaunch-sets-it-for-this-command"),
+        pytest.param("host_reboot", "", id="inherited-from-a-running-session"),
+        pytest.param("manual_exit", "host_reboot", id="set-again-over-an-inherited-one"),
+    ],
+)
+def test_given_a_launch_reason_in_the_environment_when_ai_c_runs_then_only_one_set_for_it_reaches_the_pane(
+    patched_subprocess, monkeypatch, inherited, expected
+):
+    """``ai iterm2 restore`` types ``AI_CLI_LAUNCH_REASON=<cause> ai c ...``; that reason is this launch's.
+
+    A shell or agent inside a relaunched session carries the reason its session was handed,
+    marked as inherited. ``ai c <new-name>`` run there must start the new session fresh.
+    """
+    from ai_cli import main
+
+    monkeypatch.setenv("AI_CLI_LAUNCH_REASON", "host_reboot")
+    if inherited is not None:
+        monkeypatch.setenv(main._INHERITED_LAUNCH_REASON_VAR, inherited)
+
+    _run_ai_c()
+
+    assert _new_session_reason(patched_subprocess) == expected
+    assert "AI_CLI_LAUNCH_REASON" not in os.environ
+
+
+def test_given_reinstall_continuation_inside_tmux_when_it_hands_off_then_the_client_switches_instead_of_refusing(
+    attached_caller, patched_subprocess, monkeypatch, capsys
+):
+    """The launcher's self-restart after a reinstall re-runs `ai c` in the same pane.
+
+    That continuation used to re-check the terminal, find TMUX set and refuse, leaving the
+    operator in the tmux shell. It must hand the terminal's client to the new session and
+    record where that client came from.
+    """
+    from ai_cli import main
+
+    tmux = attached_caller["tmux"]
+    monkeypatch.setenv("TMUX", f"{attached_caller['socket']},1,0")
+    monkeypatch.setenv("TMUX_PANE", attached_caller["pane"])
+    monkeypatch.setenv(main._LAUNCH_REEXEC_ENV, "1")
+    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True, raising=False)
+
+    code = _run_ai_c()
+
+    err = capsys.readouterr().err
+    assert code in (0, None), err
+    assert "Continuing Claude Code session" in err, err
+    assert "already inside a tmux session" not in err, err
+    assert patched_subprocess._execvp_calls == [], "the continuation tried to nest a tmux client"
+    (session,) = [s for s in patched_subprocess.sessions if s.name == "c-myproject-tst-1"]
+    assert tmux("list-clients", "-F", "#{session_id}").stdout.split() == [session.id]
+    shown = tmux("show-options", "-qv", "-t", session.id, "@ai_cli_return_session").stdout.strip()
+    assert shown == attached_caller["session_id"]
+
+
+_REAL_ENTRY_RUNNER = """\
+import sys
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import patch
+
+from ai_cli import main
+
+# Everything above the launch itself is stubbed, as in _run_ai_c. The launch, its tmux
+# session, its end-of-session configuration and the client handoff are the real ones; the
+# session's program is a stand-in that ends on its own, as a supervisor that dies would.
+stubs = [
+    # The suite's hermetic host identity, as conftest gives every in-process launch.
+    ("ai_cli.host_env.refresh_host_env", {"return_value": None}),
+    ("ai_cli.session_naming.host_id", {"return_value": "test-host"}),
+    ("ai_cli.session_naming.alias_sources", {"return_value": [Path(sys.argv[1])]}),
+    ("ai_cli.config.validate_registry_completeness", {"return_value": True}),
+    ("ai_cli.session.cleanup_stale_sessions", {}),
+    ("ai_cli.config.get_current_project_name", {"return_value": "myproject"}),
+    ("ai_cli.iterm2._load_iterm2_config", {"return_value": {}}),
+    ("ai_cli.iterm2._assign_iterm2_color_slot", {"return_value": None}),
+    ("ai_cli.iterm2._emit_iterm2_profile_setup", {}),
+    ("ai_cli.iterm2._configure_tmux_for_iterm2", {}),
+    ("ai_cli.session_script.get_engine_script", {"return_value": "sleep 4\\n"}),
+    ("ai_cli.session._resolve_is_remote", {"return_value": False}),
+    ("ai_cli.main._ensure_dolt_server", {}),
+    ("ai_cli.main._ensure_wake_sidecar", {}),
+    ("ai_cli.main.trigger_background_update", {}),
+    ("ai_cli.main._tunnel._ensure_nats_tunnel", {}),
+    ("ai_cli.main._process_manager._start_stale_session_reaper_for_launch", {}),
+    ("ai_cli.main.run_launch_extensions", {}),
+    ("ai_cli.main._auto_update_if_stale", {"return_value": False}),
+    ("ai_cli.config.load_config", {"return_value": {"worktree": {"enabled": False}}}),
+]
+with ExitStack() as stack:
+    for target, options in stubs:
+        stack.enter_context(patch(target, **options))
+    try:
+        main.cmd_c.main(["1", "--project-prefix", "myproject"], standalone_mode=False)
+    except SystemExit as exited:
+        sys.exit(exited.code)
+"""
+
+
+def test_given_ai_c_run_inside_tmux_when_its_session_ends_then_the_client_is_switched_and_returned(
+    attached_caller, tmp_path
+):
+    """The real `ai c` entry, typed into a tmux pane whose terminal is a client of that server."""
+    tmux = attached_caller["tmux"]
+    caller = attached_caller["session_id"]
+    runner = tmp_path / "ai_c.py"
+    runner.write_text(_REAL_ENTRY_RUNNER, encoding="utf-8")
+    aliases = tmp_path / "machine-host-aliases.toml"
+    aliases.write_text('[aliases]\ntest-host = "tst"\n', encoding="utf-8")
+    after = tmp_path / "after"
+    errors = tmp_path / "ai-c.err"
+    assert tmux("respawn-pane", "-k", "-t", "=caller:", "bash --norc -i").returncode == 0
+    # The launch runs in a project of its own, named like every other launch in this file.
+    project = tmp_path / "myproject"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myproject"\n', encoding="utf-8")
+    command = (
+        f"cd {shlex.quote(str(project))} && "
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(runner))} {shlex.quote(str(aliases))}"
+        f" 2> {shlex.quote(str(errors))}; "
+        f"printf '%s' \"$?\" > {shlex.quote(str(after))}"
+    )
+    assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
+
+    def sessions():
+        listed = tmux("list-sessions", "-F", "#{session_id} #{session_name}").stdout.splitlines()
+        return dict(line.split(" ", 1) for line in listed)
+
+    def client_on():
+        return tmux("list-clients", "-F", "#{session_id}").stdout.split()
+
+    def launched_session():
+        return next((sid for sid in sessions() if sid != caller and client_on() == [sid]), None)
+
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    launched = launched_session()
+    while launched is None and not after.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+        launched = launched_session()
+    shown = errors.read_text(encoding="utf-8", errors="replace") if errors.exists() else ""
+    assert launched is not None, (sessions(), client_on(), shown[-2000:])
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while not (after.exists() and after.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert after.read_text() == "0", "ai c did not hand off and exit cleanly"
+    assert tmux("show-options", "-qv", "-t", launched, "@ai_cli_return_session").stdout.strip() == caller
+
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
+    while launched in sessions() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert launched not in sessions(), "the ended session stayed up in tmux"
+    assert client_on() == [caller], "the client was not returned to the session it came from"

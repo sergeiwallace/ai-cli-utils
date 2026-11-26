@@ -122,7 +122,6 @@ def _launch_local(state_home, *, argv, name="1", is_remote=False):
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.session._resolve_is_remote", return_value=is_remote),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.trust.ensure_workspace_trusted"),
         patch("ai_cli.session_script.get_engine_script", return_value="true\n"),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),

@@ -252,9 +252,10 @@ def _pane_tail() -> str:
 
 
 def agent_program(command: list[str]) -> str:
-    """Return the program name past an optional ``direnv exec <dir>`` prefix."""
-    index = 3 if command[:2] == ["direnv", "exec"] and len(command) > 3 else 0
-    return Path(command[index]).name
+    """Return the program name past an optional direnv prefix."""
+    from .direnv_exec import program_index
+
+    return Path(command[program_index(command)]).name
 
 
 def record_agent_exit(

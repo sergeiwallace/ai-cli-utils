@@ -65,6 +65,13 @@ def test_given_shipped_default_config_when_reference_copy_read_then_it_is_identi
     assert reference == _DEFAULT_ITERM2_CONFIG
 
 
+def test_given_shipped_default_config_when_parsed_then_uses_agy_base_profile_key():
+    profiles = tomllib.loads(_DEFAULT_ITERM2_CONFIG)["iterm2"]["base_profiles"]
+
+    assert profiles["agy"] == "Default"
+    assert "gemini" not in profiles
+
+
 def test_given_toml_without_persistence_section_when_loaded_then_every_key_is_its_documented_default(iterm2_toml):
     iterm2_toml.write_text("[iterm2]\nenabled = true\n", encoding="utf-8")
 

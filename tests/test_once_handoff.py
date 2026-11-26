@@ -16,7 +16,10 @@ import pytest
 from test_session_registry import state_home  # noqa: F401
 from test_session_wake_watcher import launch  # noqa: F401
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="the tmux --once handoff is POSIX-only")
+pytestmark = [
+    pytest.mark.real_pty,
+    pytest.mark.skipif(os.name == "nt", reason="the tmux --once handoff is POSIX-only"),
+]
 
 _STUB = """#!{python}
 import json, os, sys

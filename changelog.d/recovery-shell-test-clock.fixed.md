@@ -1,0 +1,1 @@
+- Stabilized the remote recovery-shell test on busy runners by controlling the failed agent's elapsed time and waiting for the recovery prompt before typing `exit`.
