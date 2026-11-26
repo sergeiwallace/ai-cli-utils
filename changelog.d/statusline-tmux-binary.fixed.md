@@ -1,0 +1,1 @@
+- The statusline script queries the multiplexer named by `[tmux] binary`, which each session now exports as `AI_CLI_TMUX_BINARY`, instead of whatever `tmux` is first on PATH.

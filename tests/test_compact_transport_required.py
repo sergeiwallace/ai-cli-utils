@@ -228,7 +228,7 @@ def test_given_a_platform_with_no_pty_api_when_ai_c_launches_verbose_then_it_say
 def test_given_no_pty_api_when_the_transport_resolves_then_it_is_platform_limited_not_a_refusal():
     resolved = compact_transport.resolve(
         tmux_usable=False,
-        tmux_detail="no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)",
+        tmux_detail="no tmux runs here (on Windows: install psmux, or a tmux under WSL/MSYS2/Cygwin)",
         config={},
         probe=lambda: _NO_PTY_PLATFORM,
     )

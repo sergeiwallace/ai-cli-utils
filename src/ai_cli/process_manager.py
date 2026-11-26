@@ -20,7 +20,11 @@ _STALE_SESSION_REAPER_START_LOCK = threading.Lock()
 
 
 def _native_windows() -> bool:
-    """Native Windows has no tmux, so the stale-session reaper has nothing to watch."""
+    """The stale-session reaper does not run on native Windows.
+
+    Its watcher and its tmux termination path were built for POSIX hosts; a Windows
+    host with psmux has a tmux, but the reaper is not supported there.
+    """
     return sys.platform == "win32"
 
 
@@ -111,7 +115,7 @@ def _cmd_stale_session_reaper_start() -> bool:
     to reach Circus therefore leaves every tmux session untouched.
     """
     if _native_windows():
-        _out.emit(Tag.DAEMON, "start", "stale-session-reaper: no-op on native Windows (tmux is unavailable)")
+        _out.emit(Tag.DAEMON, "start", "stale-session-reaper: no-op on native Windows (not supported there)")
         return True
 
     state_dir = get_xdg_state_home()
