@@ -73,6 +73,25 @@ def register_launch(
             )
 
 
+def launched_with(name: str, option: str) -> bool:
+    """Whether session ``name`` was launched with ``option`` (a :func:`register_launch` options key).
+
+    For a process the session script starts long after its launch, which was handed
+    nothing but the session's name. An unreadable registry or an unregistered name
+    reads as "not launched with it".
+    """
+    try:
+        record = next(
+            record
+            for record in state.registry.load_registry()["sessions"]
+            if record.get("kind") == "local" and record.get("name") == name
+        )
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        return False
+    options = (record.get("boot_recipe") or {}).get("options") or {}
+    return bool(options.get(option)) if isinstance(options, dict) else False
+
+
 def single_run_command(name: str, command: list[str], launch_log: str | None = None) -> list[str]:
     log_args = ["--launch-log", launch_log] if launch_log else []
     return [sys.executable, "-m", "ai_cli.main", "sessions", "_run", *log_args, name, "--", *command]

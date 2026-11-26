@@ -338,7 +338,7 @@ class TestGetEngineScript:
         assert "cd -- /tmp/project-worktree" in script
         assert script.index('direnv_root="$PWD"') > script.index("cd -- /tmp/project-worktree")
         assert "-m ai_cli.agy_session launch" in script
-        assert '"$SHELL"' in script
+        assert '"$SHELL"' not in script
         assert "exit 79" in script
 
     def test_given_pi_engine_when_generating_script_then_launches_named_pi_session(self):
@@ -562,7 +562,7 @@ class TestGetEngineScript:
         out = self._run_attach_blocks(tmp_path, ai_body="return 76", resume=True)
 
         assert "LAUNCH_REACHED" not in out
-        assert "Relaunch parked" in out and "ai c x" in out and "exit 78" in out
+        assert "Relaunch parked" in out and "ai c x" in out and "exit 78" not in out
         assert "PERSIST: unknown" in out
         assert "gave_up=true" in out
 

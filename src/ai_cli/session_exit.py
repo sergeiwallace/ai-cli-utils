@@ -47,7 +47,14 @@ def _process(target: ProcessIdentity) -> psutil.Process | None:
             raise ValueError(f"process identity mismatch for pid {target.pid}")
         # A server can be shared by unrelated sessions. This is a refusal check,
         # never a way to discover or select signal targets by process name.
-        if proc.name().split(":", 1)[0] in tmux_binary.server_process_names():
+        try:
+            name = proc.name()
+        except SystemError as exc:
+            # On POSIX, name() reads argv for a name of 15 or more characters, and psutil on
+            # macOS can raise SystemError there (sysctl KERN_PROCARGS2). An unreadable name
+            # could be the tmux server's, so the target is refused.
+            raise ValueError(f"refusing to signal pid {target.pid}: process name unreadable") from exc
+        if name.split(":", 1)[0] in tmux_binary.server_process_names():
             raise ValueError("refusing to signal a tmux server process")
         if proc.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
             return None

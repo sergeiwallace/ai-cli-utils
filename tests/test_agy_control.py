@@ -15,7 +15,7 @@ from pathlib import Path
 import portalocker
 import pytest
 
-from ai_cli import agy_control, agy_session
+from ai_cli import agy_control, agy_session, config
 from ai_cli.agy_control import contract, request
 
 CONVERSATION = "11111111-2222-4333-8444-555555555555"
@@ -54,10 +54,41 @@ def agy_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def slot(agy_env):
+def register_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    log = tmp_path / "register.jsonl"
+    tool = tmp_path / "register.py"
+    tool.write_text(
+        "import hashlib, json, os, sys\n"
+        "from pathlib import Path\n"
+        "from ai_cli.agy_control import request\n"
+        "record = Path(os.environ['AI_CLI_AGY_SLOT_RECORD'])\n"
+        "generation = hashlib.sha256(os.environ['AI_CLI_AGY_LAUNCH_TOKEN'].encode()).hexdigest()\n"
+        "metadata = json.loads(record.with_name(f'{record.stem}.{generation}.control-v1.json').read_text())\n"
+        "snapshot = request(metadata['path'], {'method': 'get'})\n"
+        "with Path(sys.argv[1]).open('a', encoding='utf-8') as log:\n"
+        "    log.write(json.dumps([sys.argv[2], os.environ.get('AI_TMUX_SESSION'), snapshot['phase'],\n"
+        "                          snapshot['binding']['conversation_id']]) + '\\n')\n"
+        "sys.exit(int(os.environ.get('TEST_REGISTER_EXIT', '0')))\n",
+        encoding="utf-8",
+    )
+    config_path = config._config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [sys.executable, str(tool), str(log), "{client}"]
+    config_path.write_text(f"[session_register]\ncommand = {json.dumps(command)}\n", encoding="utf-8")
+
+    def calls():
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    return calls
+
+
+@pytest.fixture
+def slot(agy_env, monkeypatch):
     home, workdir = agy_env
     directory = home / "state/ai-cli-utils/sessions"
     record = directory / "test-slot.agy.json"
+    monkeypatch.setenv("AI_TMUX_SESSION", "test-slot")
     process = subprocess.Popen(
         [
             sys.executable,
@@ -107,16 +138,18 @@ def slot(agy_env):
         "so Windows is unsupported (no bridge starts)"
     ),
 )
-def test_given_launched_agy_slot_when_hook_confirms_then_live_bridge_binds_only_that_launch(slot):
+def test_given_launched_agy_slot_when_hook_confirms_then_live_bridge_binds_only_that_launch(register_calls, slot):
     process, reply, record, metadata = slot
     assert metadata["owner"]["pid"] == process.pid
     assert request(metadata["path"], {"method": "get"})["phase"] == "unconfirmed"
+    assert register_calls() == []
     process.stdin.write("confirm\n")
     process.stdin.flush()
     assert reply() == "confirmed"
     snapshot = request(metadata["path"], {"method": "get"})
     assert snapshot["binding"]["conversation_id"] == CONVERSATION
     assert snapshot["phase"] == "waiting"
+    assert register_calls() == [["agy", "test-slot", "waiting", CONVERSATION]]
     token = json.loads(record.read_text(encoding="utf-8"))["in_flight"]["token"]
     assert metadata["generation"] == hashlib.sha256(token.encode()).hexdigest()
     # Same-user callers outside the client tree cannot confirm, even with its token.
@@ -199,29 +232,35 @@ def test_given_bound_agy_bridge_when_record_is_rolled_back_then_get_discards_bin
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Live bridge requires Unix-domain sockets")
-def test_given_resumed_agy_slot_when_bridge_starts_then_corroborated_conversation_is_prebound(agy_env):
+@pytest.mark.parametrize("register_exit", [0, 3])
+def test_given_adopted_agy_slot_when_resumed_then_registers_before_client_starts(
+    agy_env, register_calls, monkeypatch, register_exit
+):
     home, workdir = agy_env
     directory = home / "state/ai-cli-utils/sessions"
     record = directory / "resumed-slot.agy.json"
-    _, _, tok = agy_session.prepare(
-        record, workdir, "resumed-slot", fresh=True, route="local-tmux", client_version="1.5.14"
-    )
-    agy_session.confirm(
-        record,
-        tok,
-        {"hookEventName": "SessionStart", "conversationId": CONVERSATION, "cwd": str(workdir), "transcriptPath": None},
-    )
-    # Persist native Antigravity store evidence as turn 1 would write before the resume launch.
+    # Persist the native store evidence used to adopt and resume the conversation.
     cache = home / ".gemini" / "antigravity-cli" / "cache" / "last_conversations.json"
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({str(workdir.resolve()): CONVERSATION}), encoding="utf-8")
     conv_db = home / ".gemini" / "antigravity-cli" / "conversations" / f"{CONVERSATION}.db"
     conv_db.parent.mkdir(parents=True, exist_ok=True)
     conv_db.write_bytes(b"")
+    agy_session.prepare(
+        record,
+        workdir,
+        "resumed-slot",
+        fresh=False,
+        route="local-tmux",
+        client_version="1.5.14",
+        adopt_conversation=(CONVERSATION, "resumed-slot"),
+    )
     # Mark previous writer dead so the resume launch takes ownership cleanly.
     doc = json.loads(record.read_text(encoding="utf-8"))
     doc["in_flight"]["writer"]["pid"] = 99999999
     record.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
+    monkeypatch.setenv("TEST_REGISTER_EXIT", str(register_exit))
 
     process = subprocess.Popen(
         [
@@ -255,6 +294,11 @@ def test_given_resumed_agy_slot_when_bridge_starts_then_corroborated_conversatio
         snapshot = request(metadata["path"], {"method": "get"})
         assert snapshot["phase"] == "waiting"
         assert snapshot["binding"]["conversation_id"] == CONVERSATION
+        assert register_calls() == [["agy", "resumed-slot", "waiting", CONVERSATION]]
+        _, stderr = process.communicate("exit\n", timeout=10)
+        assert process.returncode == 0
+        warnings = [line for line in stderr.splitlines() if "Session register skipped" in line]
+        assert len(warnings) == bool(register_exit)
     finally:
         if process.poll() is None:
             process.communicate("exit\n", timeout=10)

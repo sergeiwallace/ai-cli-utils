@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from ai_cli import config as _config
 from ai_cli.launch_logging import LAUNCH_LOG_ENV
 from ai_cli.main import _handle_internal
 from ai_cli.session_script import get_engine_script
@@ -300,6 +301,10 @@ def test_given_a_non_linux_host_when_resolving_the_codex_display_then_nothing_is
     monkeypatch.delenv("XAUTHORITY", raising=False)
     monkeypatch.setenv(LAUNCH_LOG_ENV, str(launch_log))
     monkeypatch.setattr(sys, "platform", platform)
+    # Every record an `ai internal` call emits reaches the launch log, and the patched
+    # platform is a machine profile this config has never seen, which the config load
+    # registers and announces. Register it first so the log can only show display output.
+    _config.load_config()
     with pytest.raises(SystemExit) as exited:
         _handle_internal(["resolve-codex-display"])
     assert exited.value.code == 0

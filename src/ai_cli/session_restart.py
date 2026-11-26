@@ -225,7 +225,9 @@ def _pane_attach_client(target: str | None) -> str | None:
         except (ValueError, psutil.Error):
             continue
         for process in processes:
-            with contextlib.suppress(psutil.Error):
+            # psutil on macOS can raise SystemError reading another process's argv (sysctl
+            # KERN_PROCARGS2); that process is unknown here and the others are still read.
+            with contextlib.suppress(psutil.Error, SystemError):
                 command_lines.append(process.cmdline())
     return attached_background_id(command_lines)
 
@@ -849,7 +851,9 @@ def descendants_gate(pid: int, cwd: Path) -> None:
                 raise Refusal("background-work", "unclassified live descendant")
         for root, matching in runtimes.items():
             _mcp_npx_descendants(helpers.get(root, []), matching, cwd)
-    except (OSError, psutil.Error, TypeError, ValueError) as exc:
+    # SystemError: psutil on macOS can raise it reading a descendant's argv (sysctl
+    # KERN_PROCARGS2). An unreadable descendant is unclassified, so the restart is refused.
+    except (OSError, psutil.Error, TypeError, ValueError, SystemError) as exc:
         raise Refusal("background-work", "process tree unavailable") from exc
 
 
@@ -1001,16 +1005,26 @@ def _compatible(source: str, expected: str) -> bool:
         if cleanup:
             text = text[: cleanup.start()] + text[cleanup.end() :]
             body = re.sub(r"(?m)^  ", "", cleanup[1])
-            ending = "      done\n      exit 0\n    fi\n"
-            if ending not in text:
-                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
+            # The supervisor loop's end, in each form a supported program has had.
+            ending = next(
+                (
+                    candidate
+                    for candidate in (
+                        "      done\n      exit 0\n    fi\n",
+                        "      done\n    # BEGIN SHELL RETURN interactive\n",
+                        "      done\n    # BEGIN RUN STATE final-exit-message\n",
+                    )
+                    if candidate in text
+                ),
+                "      done\n      exit 0\n    fi\n",
+            )
             text = text.replace(
                 ending,
                 "      done\n" + body + ending.removeprefix("      done\n"),
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE|PROJECT ENV|LAUNCH LOG|EMIT STAMP)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
@@ -1074,6 +1088,11 @@ def _compatible(source: str, expected: str) -> bool:
             text,
         )
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
+        # The fallback stamp is data for `date` with no control flow; before the EMIT STAMP
+        # insertion it was this fixed line, which certifies as the same program.
+        text = re.sub(r"(?m)^        _ai_emit_stamp=\$\(TZ=America/New_York date .*$", "", text)
+        # So was the comment above it, which named that fixed form; its successor is in the bracket.
+        text = re.sub(r"(?m)^        # The renderer's default datetime leads the plain line too\.$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
     normalized_source = normalize(source)
@@ -1139,10 +1158,6 @@ def _compatible(source: str, expected: str) -> bool:
     )
     earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
     earlier = earlier.replace(
-        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
-        "if $_supervisor_tmux_ownership_established; then",
-    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
-    earlier = earlier.replace(
         "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
         "if (( _child_status == 77 || _child_status == 79 )); then",
     )
@@ -1193,7 +1208,9 @@ def _restart_pin_gate(supervisor: int, cwd: Path, session: str) -> None:
         )
         if result.returncode or result.stdout.strip() != RESTART_PIN_PROTOCOL:
             raise Refusal("supervisor-upgrade-required", "supervisor ai lacks restart-pin support")
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+    # SystemError: psutil on macOS reads the environment through sysctl KERN_PROCARGS2,
+    # which can raise it; an unreadable supervisor environment proves no restart pin.
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error, SystemError) as exc:
         # Neither the pane environment nor executable output is safe to echo.
         raise Refusal("supervisor-upgrade-required", "restart-pin compatibility cannot be established") from exc
 
@@ -1283,7 +1300,9 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         )
     except Refusal:
         raise
-    except (OSError, ValueError, KeyError, psutil.Error, StopIteration) as exc:
+    # SystemError: psutil on macOS can raise it reading the child's argv (sysctl
+    # KERN_PROCARGS2). A child whose argv cannot be read is not proven replaceable.
+    except (OSError, ValueError, KeyError, psutil.Error, StopIteration, SystemError) as exc:
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 
@@ -1818,6 +1837,24 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
         "mobile": "UNVERIFIED",
         "message_delivery": "UNVERIFIED",
         **extra,
+    }
+
+
+def _upgrade_remedy(reason: str, record: dict | None) -> dict:
+    """What a refused in-place restart tells the user to do, when the cause is the session's own age.
+
+    ``supervisor-upgrade-required`` means the running session program was started by an
+    older ai-cli-utils than this one can certify, so only a relaunch moves it on: once.
+    """
+    if reason != "supervisor-upgrade-required":
+        return {}
+    name = (record or {}).get("name")
+    command = f"ai c {name}" if isinstance(name, str) and name else "ai c <name>"
+    return {
+        "remedy": (
+            "this session was started before the installed ai-cli-utils, so it cannot be restarted in "
+            f"place until it is relaunched once: exit it (/exit, or ai exit-session), then run: {command}"
+        )
     }
 
 
@@ -2410,6 +2447,7 @@ def restart(
     event_completion: bool = False,
 ) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
+    record: dict | None = None
     try:
         settings = config.read_restart_config(config.load_config())
         commands = load_commands()
@@ -2514,7 +2552,7 @@ def restart(
                             time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"]),
                         )
             except Refusal as exc:
-                report = _report(exc.reason, detail=exc.detail)
+                report = _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                 report = _report("verification-failed", detail="replacement evidence became unavailable")
             succeeded = report["reason"] == "restarted" or (event_completion and report["reason"] == "started")
@@ -2525,6 +2563,6 @@ def restart(
             _atomic_json(request_path, request)
             return report
     except Refusal as exc:
-        return _report(exc.reason, detail=exc.detail)
+        return _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
     except (OSError, ValueError, TypeError) as exc:
         return _report("unavailable", detail=type(exc).__name__)
