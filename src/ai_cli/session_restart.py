@@ -1001,16 +1001,26 @@ def _compatible(source: str, expected: str) -> bool:
         if cleanup:
             text = text[: cleanup.start()] + text[cleanup.end() :]
             body = re.sub(r"(?m)^  ", "", cleanup[1])
-            ending = "      done\n      exit 0\n    fi\n"
-            if ending not in text:
-                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
+            # The supervisor loop's end, in each form a supported program has had.
+            ending = next(
+                (
+                    candidate
+                    for candidate in (
+                        "      done\n      exit 0\n    fi\n",
+                        "      done\n    # BEGIN SHELL RETURN interactive\n",
+                        "      done\n    # BEGIN RUN STATE final-exit-message\n",
+                    )
+                    if candidate in text
+                ),
+                "      done\n      exit 0\n    fi\n",
+            )
             text = text.replace(
                 ending,
                 "      done\n" + body + ending.removeprefix("      done\n"),
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE|PROJECT ENV|LAUNCH LOG|EMIT STAMP)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
@@ -1074,6 +1084,11 @@ def _compatible(source: str, expected: str) -> bool:
             text,
         )
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
+        # The fallback stamp is data for `date` with no control flow; before the EMIT STAMP
+        # insertion it was this fixed line, which certifies as the same program.
+        text = re.sub(r"(?m)^        _ai_emit_stamp=\$\(TZ=America/New_York date .*$", "", text)
+        # So was the comment above it, which named that fixed form; its successor is in the bracket.
+        text = re.sub(r"(?m)^        # The renderer's default datetime leads the plain line too\.$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
     normalized_source = normalize(source)
@@ -1138,10 +1153,6 @@ def _compatible(source: str, expected: str) -> bool:
         expected,
     )
     earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
-    earlier = earlier.replace(
-        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
-        "if $_supervisor_tmux_ownership_established; then",
-    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
     earlier = earlier.replace(
         "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
         "if (( _child_status == 77 || _child_status == 79 )); then",
@@ -1821,6 +1832,24 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
     }
 
 
+def _upgrade_remedy(reason: str, record: dict | None) -> dict:
+    """What a refused in-place restart tells the user to do, when the cause is the session's own age.
+
+    ``supervisor-upgrade-required`` means the running session program was started by an
+    older ai-cli-utils than this one can certify, so only a relaunch moves it on: once.
+    """
+    if reason != "supervisor-upgrade-required":
+        return {}
+    name = (record or {}).get("name")
+    command = f"ai c {name}" if isinstance(name, str) and name else "ai c <name>"
+    return {
+        "remedy": (
+            "this session was started before the installed ai-cli-utils, so it cannot be restarted in "
+            f"place until it is relaunched once: exit it (/exit, or ai exit-session), then run: {command}"
+        )
+    }
+
+
 def _reconcile_failed_request(record: dict, check_lock: Callable[[], None]) -> bool:
     """Under the session lock, retire a failed fence only on positive local proof."""
     try:
@@ -2410,6 +2439,7 @@ def restart(
     event_completion: bool = False,
 ) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
+    record: dict | None = None
     try:
         settings = config.read_restart_config(config.load_config())
         commands = load_commands()
@@ -2514,7 +2544,7 @@ def restart(
                             time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"]),
                         )
             except Refusal as exc:
-                report = _report(exc.reason, detail=exc.detail)
+                report = _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                 report = _report("verification-failed", detail="replacement evidence became unavailable")
             succeeded = report["reason"] == "restarted" or (event_completion and report["reason"] == "started")
@@ -2525,6 +2555,6 @@ def restart(
             _atomic_json(request_path, request)
             return report
     except Refusal as exc:
-        return _report(exc.reason, detail=exc.detail)
+        return _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
     except (OSError, ValueError, TypeError) as exc:
         return _report("unavailable", detail=type(exc).__name__)

@@ -31,7 +31,6 @@ from . import (
 from . import session_registry as registry
 from . import session_run_state as state
 from .cli_help import HelpGroup
-from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_enrol import enrol, heal_live_sessions
@@ -765,16 +764,12 @@ def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migr
     argv = recipe["argv"]
     prefix = argv[argv.index("--project-prefix") + 1] if "--project-prefix" in argv else ""
     previous_cwd = Path.cwd()
-    previous_reason = os.environ.get(LAUNCH_REASON_VAR)
     # A replay writes a launch log like `ai c` does, so what it reported, such as the parts of
     # a partial migration it was told to start past, can be read after the fact.
     launch_log = create_launch_log(record["name"])
     previous_sink = output.attach_file_sink(launch_log.write_line)
     try:
         os.chdir(recipe["cwd"])
-        os.environ[LAUNCH_REASON_VAR] = (
-            cause or record.get("boot_decision", {}).get("cause") or state.cause(record, registry.current_boot_id())
-        )
         _do_session_launch(
             engine=recipe["engine"],
             name=recipe["session_name"],
@@ -794,15 +789,14 @@ def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migr
             detached=True,
             replay_recipe=recipe,
             allow_partial_migration=allow_partial_migration,
+            launch_reason=(
+                cause or record.get("boot_decision", {}).get("cause") or state.cause(record, registry.current_boot_id())
+            ),
         )
     finally:
         output.attach_file_sink(previous_sink)
         launch_log.close()
         os.chdir(previous_cwd)
-        if previous_reason is None:
-            os.environ.pop(LAUNCH_REASON_VAR, None)
-        else:
-            os.environ[LAUNCH_REASON_VAR] = previous_reason
 
 
 def _launch_failure(exc: BaseException) -> str:
@@ -1194,6 +1188,15 @@ def run_once(launch_log, name, command):
     ):
         output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
+    # A once-only session ends with this process. A client `ai c` switched into it from another
+    # tmux session goes back there first, rather than leaving tmux when the session closes.
+    pane = os.environ.get("TMUX_PANE", "")
+    if os.environ.get("TMUX") and pane:
+        from .tmux_ownership import return_switched_client, session_id_of
+
+        own_session = session_id_of(pane)
+        if own_session is not None:
+            return_switched_client(own_session)
     sys.exit(status)
 
 

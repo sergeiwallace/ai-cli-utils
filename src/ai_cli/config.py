@@ -846,9 +846,12 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Optional: a command that names the background session id. It is run as
 ## `<command> --session <ai session name> --pane-capture <file>`, where the file
 ## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
-## id on stdout is an answer; anything else is no answer. The id is only a hint:
-## it is attached only if `claude agents --json` lists it as a live background
-## session. Unset (the default) skips the command; ai then attaches only when exactly
+## id on stdout is an answer; anything else is no answer. Exit 3 is the command
+## saying nothing is pending for this session, which is recorded in the launch log,
+## not shown; any other non-zero exit, a timeout, a command that cannot run or one
+## that prints something other than one id is a warning, quoting its last stderr
+## line, and reaches the launch log too. The id is only a hint: it is attached only if
+## `claude agents --json` lists it as a live background session. Unset (the default) skips the command; ai then attaches only when exactly
 ## one live background session has this session's name and directory.
 # background_session_resolver = "/path/to/resolver-command"
 # background_session_resolver_timeout_seconds = 10
@@ -932,9 +935,14 @@ enabled = true
 ## package manager when running as root) and otherwise print per-OS remediation.
 ## A launch is never blocked by this -- direnv only supplies the project
 ## environment, so its absence degrades a session rather than ending it.
+## Before every agent start (launch and restart alike) the .envrc of a session
+## worktree is approved when its content matches the repository root's copy or
+## the one on origin/HEAD; one that cannot be approved stops the start and names
+## the `direnv allow` command to run after reviewing it.
 ##
-## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
-## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Set false to skip the preflight and the approval entirely on this machine.
+## Equivalent one-offs: AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv
+## on the launch.
 ## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
 ## additionally needs bash on PATH (Git for Windows supplies one).
 # enabled = true
