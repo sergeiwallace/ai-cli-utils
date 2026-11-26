@@ -3050,3 +3050,52 @@ def test_given_an_update_commit_when_it_is_made_then_it_ends_with_the_delegation
         ["git", "log", "-1", "--format=%B"], cwd=project, check=True, capture_output=True, text=True
     ).stdout.rstrip("\n")
     assert message.endswith("\n\nDelegated-to: none")
+
+
+@pytest.mark.parametrize("templated", [False, True], ids=["static", "jinja"])
+@pytest.mark.parametrize(
+    ("project_content", "committed", "passes"),
+    [
+        pytest.param(b"runner: myproject\n", True, True, id="identical-head"),
+        pytest.param(b"runner: myproject\n", False, True, id="identical-working-tree"),
+        pytest.param(b"runner: other\n", True, False, id="different"),
+        pytest.param(b"runner: myproject\nextra: true\n", True, False, id="extra-content"),
+        pytest.param(None, True, False, id="absent"),
+    ],
+)
+def test_given_new_template_file_when_verifying_existing_copy_then_requires_changes_only_for_different_content(
+    tmp_path, templated, project_content, committed, passes
+):
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "copier.yml").write_text("_subdirectory: files\n")
+    _init_git_repo(template)
+    previous = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=template, text=True).strip()
+    source = template / "files" / ".github" / ("actionlint.yaml.jinja" if templated else "actionlint.yaml")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"runner: {{ project_name }}\n" if templated else b"runner: myproject\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add config"], cwd=template, check=True, capture_output=True)
+    project = tmp_path / "myproject"
+    project.mkdir()
+    (project / "README.md").write_text("Example project\n")
+    target = project / ".github" / "actionlint.yaml"
+    if project_content is not None and committed:
+        target.parent.mkdir()
+        target.write_bytes(project_content)
+    _init_git_repo(project)
+    if project_content is not None and not committed:
+        target.parent.mkdir()
+        target.write_bytes(project_content)
+    porcelain = subprocess.check_output(["git", "status", "--porcelain"], cwd=project, text=True)
+    changes = _template_diff(str(template), previous, {"project_name": "myproject"})
+    assert changes is not None
+
+    error = _verify_update_parity(
+        project, porcelain, changes.paths, changes.hunks, new_file_contents=changes.new_file_contents
+    )
+
+    if passes:
+        assert error is None
+    else:
+        assert error == "template parity failed: missing changed file(s): .github/actionlint.yaml"

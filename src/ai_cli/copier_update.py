@@ -119,6 +119,7 @@ class TemplateChanges:
     # Questions the current template declares; None when its configuration could not be read.
     declared_questions: set[str] | None = None
     verified_render_paths: set[str] = field(default_factory=set)
+    new_file_contents: dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -499,7 +500,12 @@ def _parse_diff_hunks(diff: str) -> tuple[set[str], set[tuple[str, tuple[str, ..
     return paths, hunks
 
 
-def _template_config(template_dir: Path, revision: str = "HEAD") -> dict[str, object] | None:
+def _template_config(template_dir: Path, revision: str = "HEAD") -> dict[str, object]:
+    """Read Copier configuration, retaining the empty mapping fallback for callers."""
+    return _read_template_config(template_dir, revision) or {}
+
+
+def _read_template_config(template_dir: Path, revision: str = "HEAD") -> dict[str, object] | None:
     """Read the Copier configuration at a revision. An absent config uses defaults."""
     for config_name in ("copier.yml", "copier.yaml"):
         result = subprocess.run(
@@ -695,23 +701,39 @@ def _template_diff(
         )
         if result.returncode != 0:
             return None
-        current_config = _template_config(template_dir)
+        current_config = _read_template_config(template_dir)
         config = current_config or {}
         subdirectory = _template_subdirectory(config)
         paths, source_hunks = _parse_diff_hunks(result.stdout)
-        previous_config = _template_config(template_dir, previous_commit)
+        previous_config = _read_template_config(template_dir, previous_commit)
         same_subdirectory = _template_subdirectory(previous_config or {}) == subdirectory
         ignored_source_paths = set()
         rendered_source_paths = set()
+        new_file_contents = {}
         hunks = set()
         for path in paths:
-            if _rendered_template_path(path, subdirectory) is None:
+            rendered_path = _rendered_template_path(path, subdirectory)
+            if rendered_path is None:
                 continue
             try:
                 previous = _git_read(["-C", str(template_dir), "show", f"{previous_commit}:{path}"])
                 current = _git_read(["-C", str(template_dir), "show", f"HEAD:{path}"])
             except UnicodeDecodeError:
                 continue
+            if previous is None and current is not None:
+                if path.endswith(".jinja"):
+                    rendered = _render_template_text(current, current_config, answers)
+                    if rendered is not None:
+                        new_file_contents[rendered_path] = rendered.encode("utf-8")
+                else:
+                    content = subprocess.run(
+                        ["git", "-C", str(template_dir), "show", f"HEAD:{path}"],
+                        capture_output=True,
+                        env=_git_env(),
+                        check=False,
+                    )
+                    if content.returncode == 0 and isinstance(content.stdout, bytes):
+                        new_file_contents[rendered_path] = content.stdout
             if previous is None or current is None:
                 continue
             if same_subdirectory and path.endswith(".jinja"):
@@ -789,6 +811,7 @@ def _template_diff(
             for path in paths & rendered_source_paths
             if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
         },
+        {path: content for path, content in new_file_contents.items() if path not in previous_paths},
     )
 
 
@@ -820,6 +843,7 @@ def _verify_update_parity(
     previous_template_paths: set[str] | None = None,
     *,
     verified_render_paths: set[str] | None = None,
+    new_file_contents: dict[str, bytes] | None = None,
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
@@ -843,6 +867,23 @@ def _verify_update_parity(
         if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     )
     ignored_paths.update(excluded_on_update)
+    for path, expected in (new_file_contents or {}).items():
+        for candidate in _path_candidates(path):
+            try:
+                if (project_dir / candidate).read_bytes() == expected:
+                    ignored_paths.add(path)
+                    break
+            except OSError:
+                pass
+            committed = subprocess.run(
+                ["git", "-C", str(project_dir), "show", f"HEAD:{candidate}"],
+                capture_output=True,
+                env=_git_env(),
+                check=False,
+            )
+            if committed.returncode == 0 and committed.stdout == expected:
+                ignored_paths.add(path)
+                break
     # A file the old template shipped and the project no longer has was removed on purpose, and
     # Copier keeps a removed file removed, so a later template change to it is not a missing file.
     ignored_paths.update(
@@ -1551,6 +1592,7 @@ def _do_update_in_worktree(
         template_changes.excluded_on_update,
         template_changes.previous_paths,
         verified_render_paths=template_changes.verified_render_paths,
+        new_file_contents=template_changes.new_file_contents,
     )
     if parity_error is not None:
         return "parityfail", parity_error
@@ -2066,6 +2108,7 @@ def _run_direct_prepared(
                 template_changes.excluded_on_update,
                 template_changes.previous_paths,
                 verified_render_paths=template_changes.verified_render_paths,
+                new_file_contents=template_changes.new_file_contents,
             )
             if parity_error is not None:
                 _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED" + note)
