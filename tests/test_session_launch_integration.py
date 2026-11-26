@@ -1652,6 +1652,7 @@ def _run_ai_c() -> object:
     from ai_cli import main
 
     with contextlib.ExitStack() as stack:
+        stack.enter_context(_tmux_versions_agreeing())
         for target, options in _STANDARD_LAUNCH_PATCHES:
             stack.enter_context(patch(target, **options))
         for target in (
