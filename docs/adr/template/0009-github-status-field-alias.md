@@ -13,4 +13,4 @@ than create a new one, so it keeps its id and no item loses its Status. Removing
 would orphan every item still on `Todo`.
 
 The rest of the manifest's behaviour (what the setup creates, updates and never deletes)
-is documented in ai-harness's `docs/procedures/github-project-setup.md`.
+is documented in `docs/procedures/github-project-setup.md` in the platform repository.

@@ -10,9 +10,9 @@ pre-commit framework, and exits non-zero when it cannot.
 ## Why, and the constraints the code relies on
 
 - A bootstrap that cannot install hooks must not report success. `install.sh` fails when
-  `pre-commit` is missing, matching the loud-failure contract in ai-harness's
-  `docs/designs/aih-393-shared-hook-distribution-model.md`. `setup.sh` handles that
-  failure itself: it warns and carries on with the rest of the scaffold, because
+  `pre-commit` is missing, matching the loud-failure contract in the platform's
+  shared hook distribution design. `setup.sh` handles that failure itself: it warns and
+  carries on with the rest of the scaffold, because
   `install.sh` has already printed the remedy. So `install.sh`'s exit code stays truthful
   and a fresh scaffold stays usable.
 - `pre-commit install` refuses to run while `core.hooksPath` is set, so `install.sh` first
