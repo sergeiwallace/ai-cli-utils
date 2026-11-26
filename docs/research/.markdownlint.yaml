@@ -1,8 +1,3 @@
-# Research subdirectory overrides — auto-generated content (Gemini,
-# deep-research) doesn't cleanly conform to markdownlint defaults.
-# Extends the root .markdownlint.yaml via explicit path; relaxes the
-# rules that auto-generation commonly violates.
-
 extends: ../../.markdownlint.yaml
 
 MD034: false

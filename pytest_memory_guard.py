@@ -28,7 +28,6 @@ _WATCHDOG_LIMIT_ATTRIBUTE = "_pytest_memory_guard_watchdog_limit"
 _WATCHDOG_READY = b"r"
 _WATCHDOG_READY_TIMEOUT_S = 30.0
 _RSS_SETTLE_TIMEOUT_S = 10.0
-# Reads the watched process's resident bytes (None once it is gone), and kills it.
 _Probe = tuple[Callable[[], int | None], Callable[[], None]]
 
 
@@ -110,16 +109,11 @@ def _start_rss_watchdog(limit_bytes: int) -> subprocess.Popen[bytes]:
 
 
 def _wait_for_first_sample(watchdog: subprocess.Popen[bytes]) -> None:
-    # The ceiling is enforced only once the watchdog has sampled this process.
-    # On a loaded host its interpreter can take longer to start than the next
-    # test takes to run, so wait for its first sample rather than returning.
     stdout = watchdog.stdout
     if stdout is None:
         return
     received: list[bytes] = []
 
-    # A thread bounds the wait on every platform; select() cannot poll a pipe
-    # on Windows.
     def read_marker() -> None:
         received.append(stdout.read(1))
 
@@ -157,10 +151,6 @@ def pytest_configure(config: Any) -> None:
             f"pytest memory guard: limiting this process to {limit_mb} MiB\n".encode(),
         )
 
-    # RLIMIT_AS is not used anywhere: it caps reserved address space, which
-    # children inherit, so Go (gitleaks) and Chromium die reserving gigabytes
-    # they never touch. A separate process stays schedulable if a runaway test
-    # monopolizes the GIL.
     setattr(config, _WATCHDOG_LIMIT_ATTRIBUTE, limit_bytes)
     setattr(config, _WATCHDOG_ATTRIBUTE, _start_rss_watchdog(limit_bytes))
 
@@ -216,9 +206,6 @@ def _own_resident_bytes() -> int | None:
 
 
 def _wait_for_rss_below(limit_bytes: int) -> None:
-    # macOS keeps a large freed allocation in this process's RSS for about two
-    # seconds, so a watchdog restarted straight after an unconstrained test
-    # would kill the process for memory that test already released.
     deadline = time.monotonic() + _RSS_SETTLE_TIMEOUT_S
     while time.monotonic() < deadline:
         resident_bytes = _own_resident_bytes()
@@ -274,14 +261,10 @@ def _write_termination_notice(notice: bytes) -> None:
         finally:
             os.close(descriptor)
     except OSError:
-        # A reporting failure must never prevent the watchdog from enforcing
-        # the memory ceiling.
         return
 
 
 def _proc_resident_bytes(parent_pid: int) -> int | None:
-    # The watchdog is the parent's direct child, so a changed parent id means
-    # the parent exited and its pid may already belong to another process.
     if os.getppid() != parent_pid:
         return None
     try:
@@ -296,9 +279,6 @@ def _proc_resident_bytes(parent_pid: int) -> int | None:
 
 
 def _proc_probe(parent_pid: int) -> _Probe:
-    # Linux reads procfs, so Linux repositories adopt the guard without
-    # psutil, a dependency only macOS and Windows need. A pidfd names this
-    # exact process, so a reused pid is never signalled.
     try:
         parent_fd = os.pidfd_open(parent_pid)
     except OSError:
@@ -331,8 +311,6 @@ def _psutil_probe(parent_pid: int) -> _Probe:
 
 
 def _report_first_sample() -> None:
-    # The parent waits on this byte; closing stdout afterwards leaves the pipe
-    # with nothing more to carry.
     try:
         os.write(1, _WATCHDOG_READY)
         os.close(1)

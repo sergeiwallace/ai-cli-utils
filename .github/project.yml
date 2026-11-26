@@ -7,7 +7,6 @@
 # stay unless the run asks for --prune-labels.
 project:
   title: "ai-cli-utils"
-  # Set to the Project's number once it exists, so a later rename of its title cannot make the setup create a second.
   number: null
   short_description: "The work of {repo}: its issues, by status and sprint"
   link_repository: true
@@ -42,7 +41,6 @@ project:
     Open an issue in the repository from one of its forms: Story, Task, Bug or Epic. It joins this Project with Status
     To Do. An epic carries the `epic` label, and its stories and tasks are its sub-issues.
 
-# Repository files the setup checks, relative to .github/. Their source is project-template's template/.github.
 files:
   - ISSUE_TEMPLATE/story.yml
   - ISSUE_TEMPLATE/task.yml
@@ -50,7 +48,6 @@ files:
   - ISSUE_TEMPLATE/epic.yml
   - pull_request_template.md
 
-# Created when missing and updated when the color or description differs. GitHub's default labels stay.
 labels:
   - {name: epic, color: "3E4B9E", description: "A body of work delivered by its sub-issues"}
   - {name: accepted, color: "0E8A16", description: "An accepter other than the assignee passed the Acceptance review"}
@@ -61,8 +58,6 @@ labels:
   - {name: task, color: "C5DEF5", description: "A technical change with no user-story sentence"}
 
 fields:
-  # The built-in Status field: updated, never created. Todo is GitHub's default option; the alias keeps its id, so no
-  # item loses its Status when it is renamed.
   - name: Status
     type: SINGLE_SELECT
     builtin: true
@@ -73,8 +68,6 @@ fields:
       - {name: Acceptance, color: PURPLE, description: "Finished and waiting for an accepter's review"}
       - {name: Done, color: GREEN, description: "This has been completed"}
       - {name: Archive, color: GRAY, description: "This item is archived as not done."}
-  # Two-week sprints. With start_date null, the first run starts the first sprint on that week's Monday, and later runs
-  # read the start back from the live field. Titles are `title` with {n} replaced by the sprint number.
   - name: Iteration
     type: ITERATION
     start_date: null
@@ -85,7 +78,6 @@ fields:
     type: SINGLE_SELECT
     options:
       - {name: "ai-cli-utils 0.1.0", color: BLUE, description: "Release ai-cli-utils 0.1.0"}
-  # A personal account has no organization issue fields, so Priority is a Project field, with the Beads priorities.
   - name: Priority
     type: SINGLE_SELECT
     options:
@@ -95,11 +87,8 @@ fields:
       - {name: P3, color: BLUE, description: "Low"}
       - {name: P4, color: GRAY, description: "Backlog"}
 
-# The organization's issue fields, added to the Project. The value lives on the issue.
 issue_fields: []
 
-# The API sets each view's name, layout, filter and visible fields. `clicks` are the settings it cannot set; the
-# setup prints them as the checklist. A roadmap view takes no visible-field list.
 views:
   - name: Current sprint
     layout: BOARD
@@ -142,8 +131,6 @@ views:
     fields: [Title, Status, Iteration, Priority]
     clicks: ["Sort by Priority"]
 
-# Built-in workflows: the API can only read them, so each is a click step. `enabled` is the state to set; the
-# setup reads the live state and marks the ones already right.
 workflows:
   - {name: Item added to project, set: "Status: To Do", enabled: true}
   - {name: Item reopened, set: "Status: In Progress", enabled: true}
@@ -157,13 +144,11 @@ workflows:
   - {name: Auto-add sub-issues to project, enabled: true}
   - {name: Auto-archive items, set: "filter is:closed updated:<@today-30d", enabled: true}
 
-# The values this file was rendered with. The setup renders the .github files with them to check the repository's.
 template_vars:
   project_name: "ai-cli-utils"
   github_org_features: false
   use_jira: false
 
-# Click steps beyond views and workflows, printed last.
 click_steps:
   - "Settings, then Manage access: give each teammate who moves work on the board the Write role"
   - "Name who reviews work for Acceptance besides the owner, so the owner's own issues can reach Done"
