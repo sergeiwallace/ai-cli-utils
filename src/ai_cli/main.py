@@ -3125,7 +3125,7 @@ def build_tmux_env_flags(env: "Mapping[str, str]", *, launch_reason: str = "") -
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AIH_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
+    ``AI_CLI_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
     this launch gave it, and never a value read from ``env``: a shell or agent inside a
     session relaunched after a reboot still carries that session's reason, and a new
     session must not inherit it. It is always emitted, empty when there is none, so a
@@ -3146,7 +3146,7 @@ def _take_launch_reason(env: "MutableMapping[str, str]") -> str:
     """Remove the launch reason from ``env`` and return it when it was set for this launch.
 
     A relaunch hands ``ai c`` its reason in the environment of that one command
-    (``AIH_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
+    (``AI_CLI_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
     hands its reason to its first agent the same way, marked with
     ``AI_CLI_INHERITED_LAUNCH_REASON``, so an ``ai c`` run from inside that session sees a
     reason equal to the mark and starts fresh. Both are removed, so nothing this launch

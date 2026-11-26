@@ -1586,7 +1586,7 @@ _STANDARD_LAUNCH_PATCHES = (
 def _new_session_reason(server) -> str:
     (created,) = [cmd for cmd in server._tmux_commands if cmd[1:2] == ["new-session"]]
     values = [created[i + 1] for i, arg in enumerate(created) if arg == "-e"]
-    (reason,) = [value.partition("=")[2] for value in values if value.startswith("AIH_LAUNCH_REASON=")]
+    (reason,) = [value.partition("=")[2] for value in values if value.startswith("AI_CLI_LAUNCH_REASON=")]
     return reason
 
 
@@ -1599,7 +1599,7 @@ def test_given_stale_reason_in_the_callers_environment_when_launched_then_only_a
     ``ai c <new-name>`` run there must start the new session fresh, while the relaunch
     that owns a reason (``ai iterm2 restore``, the reboot relaunch) still delivers it.
     """
-    monkeypatch.setenv("AIH_LAUNCH_REASON", "host_reboot")
+    monkeypatch.setenv("AI_CLI_LAUNCH_REASON", "host_reboot")
     kwargs = _base_launch_kwargs(name="1")
     if launch_reason is not None:
         kwargs["launch_reason"] = launch_reason
@@ -1685,21 +1685,21 @@ def _run_ai_c() -> object:
 def test_given_a_launch_reason_in_the_environment_when_ai_c_runs_then_only_one_set_for_it_reaches_the_pane(
     patched_subprocess, monkeypatch, inherited, expected
 ):
-    """``ai iterm2 restore`` types ``AIH_LAUNCH_REASON=<cause> ai c ...``; that reason is this launch's.
+    """``ai iterm2 restore`` types ``AI_CLI_LAUNCH_REASON=<cause> ai c ...``; that reason is this launch's.
 
     A shell or agent inside a relaunched session carries the reason its session was handed,
     marked as inherited. ``ai c <new-name>`` run there must start the new session fresh.
     """
     from ai_cli import main
 
-    monkeypatch.setenv("AIH_LAUNCH_REASON", "host_reboot")
+    monkeypatch.setenv("AI_CLI_LAUNCH_REASON", "host_reboot")
     if inherited is not None:
         monkeypatch.setenv(main._INHERITED_LAUNCH_REASON_VAR, inherited)
 
     _run_ai_c()
 
     assert _new_session_reason(patched_subprocess) == expected
-    assert "AIH_LAUNCH_REASON" not in os.environ
+    assert "AI_CLI_LAUNCH_REASON" not in os.environ
 
 
 def test_given_reinstall_continuation_inside_tmux_when_it_hands_off_then_the_client_switches_instead_of_refusing(

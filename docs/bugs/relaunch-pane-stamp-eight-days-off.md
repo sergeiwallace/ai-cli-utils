@@ -24,7 +24,7 @@ and check every stamped pane line, and every launch-log line, against the clock 
 run, through both stamp sources the child body has:
 
 ```sh
-env -u AIH_LAUNCH_REASON uv run pytest -n 0 tests/test_worktree_envrc_approval.py -k "configured_timezone or fresh_unapproved or resume_notice"
+env -u AI_CLI_LAUNCH_REASON uv run pytest -n 0 tests/test_worktree_envrc_approval.py -k "configured_timezone or fresh_unapproved or resume_notice"
 ```
 
 ## Root Cause Analysis

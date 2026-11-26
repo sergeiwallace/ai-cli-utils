@@ -113,7 +113,7 @@ def pane_session(request, tmp_path, monkeypatch):
         "if mode == 'ignore': signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
         "if mode.startswith('raw'): tty.setraw(0)\n"
         f"with open({str(launches)!r}, 'a') as out: out.write(str(os.getpid()) + '\\n')\n"
-        f"with open({str(reasons)!r}, 'a') as out: out.write(repr(os.environ.get('AIH_LAUNCH_REASON')) + '\\n')\n"
+        f"with open({str(reasons)!r}, 'a') as out: out.write(repr(os.environ.get('AI_CLI_LAUNCH_REASON')) + '\\n')\n"
         "if mode.startswith('raw'):\n"
         "    while b'\\x03' not in os.read(0, 64): pass\n"
         "    sys.exit(0 if mode == 'raw-clean' else 130)\n"
@@ -223,7 +223,7 @@ def pane_session(request, tmp_path, monkeypatch):
             if begin_gate is not None:
                 env["TEST_BEGIN_GATE"] = str(begin_gate)
             if launch_reason is not None:
-                env["AIH_LAUNCH_REASON"] = launch_reason
+                env["AI_CLI_LAUNCH_REASON"] = launch_reason
             result = subprocess.run(
                 [
                     "tmux",
@@ -695,12 +695,12 @@ def test_given_relaunch_reason_when_agent_restarts_then_only_the_first_agent_car
     assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
     assert pane_session.reasons() == ["'host_reboot'", "None"]
     shown = subprocess.run(
-        ["tmux", "-S", pane_session.socket, "show-environment", "-t", f"={pane_session.name}", "AIH_LAUNCH_REASON"],
+        ["tmux", "-S", pane_session.socket, "show-environment", "-t", f"={pane_session.name}", "AI_CLI_LAUNCH_REASON"],
         capture_output=True,
         text=True,
         check=False,
     ).stdout.strip()
-    assert shown in ("-AIH_LAUNCH_REASON", ""), shown
+    assert shown in ("-AI_CLI_LAUNCH_REASON", ""), shown
 
 
 @pytest.mark.parametrize("remote", [False, True])
