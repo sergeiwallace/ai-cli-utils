@@ -99,10 +99,10 @@ def notify(record: Path, token: str) -> None:
         raise ValueError("live control confirmation refused")
 
 
-def start(record: Path) -> None:
-    """Start before exec, waiting for a bound listener before the client can run."""
+def start(record: Path) -> bool:
+    """Start the listener before exec and report whether it pre-bound the resume target."""
     if os.name != "posix" or not os.environ.get("TMUX_PANE"):
-        return
+        return False
     child = subprocess.Popen(
         [sys.executable, "-m", "ai_cli.agy_control", str(record)],
         stdin=subprocess.DEVNULL,
@@ -113,8 +113,10 @@ def start(record: Path) -> None:
     try:
         assert child.stdout is not None
         ready, _, _ = select.select([child.stdout], [], [], 5)
-        if not ready or child.stdout.readline(32) != b"ready\n":
+        reply = child.stdout.readline(32) if ready else b""
+        if reply not in {b"ready\n", b"ready bound\n"}:
             raise ValueError("live control bridge unavailable")
+        return reply == b"ready bound\n"
     except BaseException:
         if child.poll() is None:
             child.terminate()
@@ -163,7 +165,10 @@ def serve(record: Path) -> None:
             with published.open("x", encoding="utf-8") as handle:
                 published.chmod(0o600)
                 handle.write(encoded)
-            output.raw(Untagged.INTERNAL_REPLY, "ready")
+            prebound = (
+                binding is not None and binding["conversation_id"] == doc["in_flight"]["expected_conversation_id"]
+            )
+            output.raw(Untagged.INTERNAL_REPLY, "ready bound" if prebound else "ready")
             try:
                 while live(owner) and os.getppid() == owner["pid"]:
                     try:
