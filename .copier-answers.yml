@@ -1,10 +1,11 @@
-_commit: v1.18.0-241-g0749c6a
+_commit: v1.18.0-260-gef8a660
 _src_path: git@github.com:sergeiwallace/project-template.git
 dev_branch: main
 github_org_features: false
 include_ci: true
 include_python_tests: true
 include_session_config: true
+owns_installer_hooks: false
 project_description: Unified AI session manager for Claude Code and Antigravity (agy)
 project_name: ai-cli-utils
 project_vision: ''

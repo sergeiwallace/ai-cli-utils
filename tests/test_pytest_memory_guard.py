@@ -44,7 +44,6 @@ def memory_guard_mode(
     if request.param == "watchdog" and not _HAS_PSUTIL:
         pytest.skip(_NO_PSUTIL)
     if sys.platform.startswith("linux"):
-        # Reproduce allocators that retain freed heap pages, as on macOS.
         monkeypatch.setenv("MALLOC_MMAP_MAX_", "0")
         monkeypatch.setenv("MALLOC_TRIM_THRESHOLD_", "-1")
     return str(request.param)
@@ -70,8 +69,6 @@ def _memory_guard_args(
     if memory_guard_mode != "watchdog":
         return []
 
-    # Keep the host platform intact and override only this plugin's platform
-    # decision. The helper is loaded in the controller and every xdist worker.
     force_watchdog_plugin = tmp_path / f"{_FORCE_WATCHDOG_PLUGIN}.py"
     force_watchdog_plugin.write_text(
         """
@@ -386,9 +383,6 @@ def test_given_slow_watchdog_start_when_guard_is_restored_then_next_test_is_stil
     tmp_path: Path,
     memory_guard_mode: str,
 ):
-    # A loaded host can take longer to start the restarted watchdog than the
-    # next test takes to run. Delaying only the watchdog's interpreter makes
-    # that race certain instead of occasional.
     mixed_test = tmp_path / "test_synthetic_slow_watchdog.py"
     mixed_test.write_text(
         f"""

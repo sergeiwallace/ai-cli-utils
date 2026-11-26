@@ -15,16 +15,9 @@
 
 default_stages: [pre-commit]
 
-# Beads (bd) manages everything under .beads/ — machine-generated Dolt config +
-# JSONL exports + audit log. They must NOT be processed by the file-formatting
-# hooks (check-json/check-yaml/end-of-file-fixer/trailing-whitespace): bd's output
-# doesn't satisfy them, and the pre-push stash/auto-fix/restore dance conflicts on
-# the churning store files (SW-841 #73). Global-exclude the whole dir. Committed
-# .beads/issues.jsonl, in a repo that still tracks that mirror, is version-controlled but not linted.
 exclude: ^\.beads/
 
 repos:
-  # ── File-level sanity checks (D-03 Option 3c: maximal bundle) ────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -33,17 +26,10 @@ repos:
       - id: check-json
       - id: check-merge-conflict
       - id: end-of-file-fixer
-        # A Founding Ask Record under docs/asks/ stores a human's exact words and binds
-        # them with a body_sha256 and a content_sha256 over the whole file, so a fixer
-        # that normalizes one byte leaves a record that no longer hashes to its own
-        # digest. Verbatim means verbatim (same exclusion as ai-harness).
         exclude: ^docs/asks/
       - id: trailing-whitespace
         exclude: ^docs/asks/
       - id: check-added-large-files
-        # uv.lock is an expected, deterministic large generated artifact (AIH-v6kf9
-        # T-2.2 requires tracking it fleet-wide) -- exempt it rather than raising the
-        # ceiling for every other file type.
         args: [--maxkb=500]
         exclude: (^|/)uv\.lock$
       - id: detect-private-key
@@ -51,7 +37,6 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
 
-  # ── Markdown lint ────────────────────────────────────────────────────────
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.23.0
     hooks:
@@ -88,7 +73,6 @@ repos:
         exclude: ^\.githooks/
 
 
-  # ── Shell: shellcheck (warning+ only — suppress info/style noise) ───────
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:
@@ -150,6 +134,11 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: comment-ratchet
+        name: comment ratchet (no new code comments; comment-baseline.json only shrinks)
+        entry: python3 scripts/comment_ratchet.py
+        language: system
+
       # ruff-unification sweep (AIH-473, 2026-07-27): the ruff-pre-commit rev
       # above and pyproject.toml's ruff pin are two independent pins
       # provisioning two separate binaries. Nothing else keeps them equal, so
@@ -279,48 +268,20 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
-      # D-10 Layer 2 (bypass-proof dual-ID backstop, AIH-387): reject a commit
-      # whose staged .beads/issues.jsonl has an entry missing external_ref, or
-      # a duplicate (id-prefix, external_ref) pair. Replaces roadmap-guard
-      # (below, retired SW-1025): that hook grepped docs/roadmap/master-roadmap.md
-      # for duplicate PREFIX-N entries, and has silently checked nothing in every
-      # repo since T-12 moved every roadmap to docs/roadmap/archive/ (Beads is
-      # now the sole task system of record, SW-841). This is a strictly
-      # stronger replacement for the same underlying invariant — commit-time,
-      # not push-time, and it reads the live store's dual-ID data instead of a
-      # retired roadmap. The checker (scripts/bd_precommit_validate.py) lives
-      # in ai-harness, resolved via PATH (ai-harness install.sh symlinks
-      # ai-harness/.claude/bin/bd-precommit-validate into ~/.claude/bin/,
-      # same pattern as bd-new/bdx) rather than vendored per repo.
-      # Bypass: SKIP=bd-precommit-validate git commit
       - id: bd-precommit-validate
         name: bd dual-ID invariant (a staged .beads/issues.jsonl mirror, if tracked)
         entry: bd-precommit-validate
         language: system
         pass_filenames: false
         always_run: true
-      # Every blocked Beads issue carries its timestamped [blocked ...] transition
-      # comment, written by bd-block (ai-harness goal amendment riders design, the
-      # blocked-status contract). The checker lives in ai-harness and is resolved
-      # via PATH (~/.claude/bin/bd-blocked-check), like bd-precommit-validate.
-      # Issues already blocked when the hook arrived are exempt through
-      # .beads/blocked-legacy.tsv, written once by
-      # `bd-blocked-check --current-repo --capture-baseline`. `--stage` stages that
-      # file when a run shrinks it. Exit 2 (store unreadable) becomes 0 here, so a
-      # repo with no Beads store commits as before; a hand run still sees the 2.
       - id: bd-blocked-comment
         name: every blocked Beads issue carries its transition comment
-        entry: bash -c 'bd-blocked-check --current-repo --stage; rc=$?; if [ "$rc" -eq 2 ]; then exit 0; fi; exit "$rc"'
+        entry: bash -c 'if [ ! -d .beads ]; then exit 0; fi; bd-blocked-check --current-repo --stage; rc=$?; if [ "$rc" -eq 2 ]; then echo "bd-blocked-comment (.beads store exists but could not be read, exit 2)" >&2; fi; exit "$rc"'
         language: system
         stages: [pre-commit]
         pass_filenames: false
         always_run: true
 
-      # A public repo never names employer infrastructure (gateways, credential
-      # variables, internal tools). The checker and its name list live in
-      # ai-harness, resolved via PATH (~/.claude/bin/public-repo-name-check) like
-      # bd-blocked-check, so this repo never carries the list. docs/asks/ is
-      # skipped: a founding ask is recorded byte for byte.
       - id: public-repo-name-check
         name: no employer infrastructure names in a public repo
         entry: public-repo-name-check
