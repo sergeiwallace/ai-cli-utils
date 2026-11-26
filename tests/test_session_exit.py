@@ -398,3 +398,20 @@ def test_empty_tmux_probe_when_exiting_then_unknown_ownership_refuses_signals(ru
     monkeypatch.setattr(exit_lib.subprocess, "run", lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""))
     assert not finish(running, agent=identity(child), tmux=exit_lib.TmuxIdentity("$42", "token-1")).complete
     assert child.poll() is None
+
+
+def test_target_whose_name_read_raises_systemerror_when_exiting_then_no_signal(running, child, monkeypatch):
+    """On POSIX, psutil's name() reads argv for a name of 15 or more characters, and on macOS
+    that read can raise SystemError. A target whose name cannot be read might be the shared
+    tmux server, so it is never signalled and the exit reports an error instead of crashing."""
+    read = psutil.Process.name
+
+    def name(proc):
+        if proc.pid == child.pid:
+            raise SystemError("sysctl(KERN_PROCARGS2) failed")
+        return read(proc)
+
+    monkeypatch.setattr(psutil.Process, "name", name)
+    result = finish(running, agent=identity(child))
+    assert not result.complete and result.errors
+    assert child.poll() is None

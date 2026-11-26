@@ -1,10 +1,10 @@
-"""Run the configured ``[session_register]`` command when a Codex or agy session starts.
+"""Run the configured ``[session_register]`` command for a confirmed session.
 
 A deployment may keep a registry of live agent sessions so other tools can address one
-by name. The session-start hook calls :func:`register` once the launch is confirmed. The
-hook runs inside the client's own process tree, so the command can find the client among
-its ancestors. Registration is best effort: a failure prints one warning line and the
-session starts unregistered, so the hook's reply and exit status never depend on it.
+by name. The session-start hook runs inside the client's process tree. An agy tmux
+resume runs registration after the control bridge has pre-bound the conversation, with
+the slot name in ``AI_TMUX_SESSION``. A failure prints one warning line and the session
+still starts.
 """
 
 from __future__ import annotations

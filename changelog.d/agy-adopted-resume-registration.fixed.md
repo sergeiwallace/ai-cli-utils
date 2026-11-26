@@ -1,0 +1,1 @@
+- `ai g` now runs the configured session registration command for verified Antigravity conversation resumes before reporting the tmux launch ready. The command receives the tmux slot name through `AI_TMUX_SESSION`. Registration failures warn and the session still starts.

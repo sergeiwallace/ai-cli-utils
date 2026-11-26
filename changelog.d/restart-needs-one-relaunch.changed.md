@@ -1,0 +1,1 @@
+- Upgrading: an `ai c` session that was already running when you installed this release must be relaunched once (exit it, then run `ai c <name>`) before `ai -X` can restart it in place. Until then `ai -X` refuses it with supervisor-upgrade-required, and now says so plainly with the exact relaunch command.
