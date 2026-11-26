@@ -231,8 +231,8 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
             if {fixture_module!r} == "conftest":
                 tmux_socket = str(Path(tmux_socket) / f"tmux-{{os.getuid()}}" / "default")
                 Path(tmux_socket).parent.mkdir()
-            session = _RemoteSession(tmux_socket, tmp_path, "test-session", "/bin/bash")
-            session.wait_for_recovery_shell()
+            session = _RemoteSession(tmux_socket, tmp_path, "test-session", "/bin/bash", logged_in=True)
+            session.wait_for_agent()
             import subprocess
             server = subprocess.run(
                 ["tmux", "-S", tmux_socket, "display-message", "-p", "#{{pid}}"],
@@ -287,7 +287,7 @@ def test_given_a_remote_session_when_pytest_ends_then_its_entire_tree_and_socket
         runner = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
         try:
             assert _wait(lambda: ready.exists() or runner.poll() is not None, _READY_WAIT)
-            assert ready.exists(), "inner test did not reach its recovery shell"
+            assert ready.exists(), "inner test did not reach its running agent"
             record = json.loads(ready.read_text())
             sock = Path(record["socket"])
             processes = _identified(record["processes"])

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
@@ -379,6 +379,74 @@ def _exec_tmux(args: list[str]) -> NoReturn:
     _exec_handoff(args[0], args)
 
 
+def _tmux_client_here() -> "tuple[str, str] | str":
+    """The tmux client showing this process's pane, as ``(session id, client tty)``; else why there is none.
+
+    Asked only inside tmux (``TMUX`` set). The pane is the one ``TMUX_PANE`` names, on the
+    server ``TMUX`` names, which is the server every ``tmux`` call from here reaches.
+    """
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return "TMUX is set but TMUX_PANE is not, so tmux cannot say which pane this is"
+    try:
+        shown = subprocess.run(
+            tmux_binary.argv("display-message", "-p", "-t", pane, "#{session_id}\t#{client_tty}"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"tmux could not be asked which client shows this pane ({exc})"
+    session_id, _, client = (shown.stdout or "").strip().partition("\t")
+    if shown.returncode != 0 or not session_id.startswith("$"):
+        detail = _decode_tmux_stderr(shown.stderr or "").strip() or "no answer"
+        return f"the tmux server that TMUX names does not know pane {pane} ({detail})"
+    if not client:
+        return "no tmux client shows this pane's session, so there is no terminal to switch"
+    return session_id, client
+
+
+def _attach_terminal(target: str, *, detach_others: bool = False) -> NoReturn:
+    """Put this terminal on tmux session ``target``: the one way a launch enters a session.
+
+    Outside tmux the terminal becomes the session's client (``attach-session``, exec'd), so
+    when the session ends its client exits and the shell that ran ``ai`` has the terminal
+    again. Inside tmux a client cannot nest, so the client already showing this pane is
+    switched to ``target`` and ``target`` records where it came from: the session's
+    teardown sends it back there, to the shell that ran ``ai`` in its own pane
+    (:func:`tmux_ownership.return_switched_client`).
+    """
+    if os.environ.get("TMUX"):
+        _switch_tmux_client(target)
+    else:
+        _exec_tmux(tmux_binary.argv("attach-session", *(["-d"] if detach_others else []), "-t", target))
+
+
+def _switch_tmux_client(target: str) -> NoReturn:
+    """Switch the tmux client showing this pane to ``target``, recording where it came from; exit."""
+    here = _tmux_client_here()
+    refusal = here if isinstance(here, str) else ""
+    if not refusal:
+        origin, client = here
+        if not _tmux_ownership.record_return(target, origin, client):
+            refusal = f"this pane is already in {target}, or tmux would not record where its client came from"
+        else:
+            switched = subprocess.run(
+                tmux_binary.argv("switch-client", "-c", client, "-t", target),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if switched.returncode != 0:
+                refusal = _decode_tmux_stderr(switched.stderr or "").strip() or "tmux refused the switch"
+    if refusal:
+        _out.error(Tag.LAUNCH, "tmux", f"could not switch this terminal's tmux client to {target}: {refusal}")
+        sys.exit(1)
+    _out.flush_sinks()
+    sys.exit(0)
+
+
 def _refresh_claude_plugins() -> None:
     from .plugin_refresh import refresh_plugins
 
@@ -451,6 +519,26 @@ def _exec_with_direnv(
         handoff(command[0], command)
     except FileNotFoundError:
         _out.error(Tag.LAUNCH, "handoff", f"{command[0]} not found on PATH.")
+        sys.exit(1)
+
+
+def _prepare_project_environment(directory: Path, config: dict, *, no_direnv: bool, reporter: LaunchReporter) -> None:
+    """Approve the session worktree's ``.envrc`` before the handoff, or refuse the launch.
+
+    The launcher's half of :func:`ai_cli.session.prepare_project_environment`; the
+    session script's child body runs the same policy before every agent start through
+    ``ai internal prepare-project-env``. A refusal exits before anything is handed off.
+    """
+    if no_direnv:
+        reporter.detail("direnv", f"{directory / '.envrc'}: approval skipped (-D/--no-direnv)")
+        return
+    result = _session.prepare_project_environment(directory, config=config)
+    if result.level is _out.Level.DETAIL:
+        reporter.detail("direnv", result.message)
+    elif result.ready:
+        reporter.phase("direnv").outcome(result.message)
+    else:
+        reporter.error("direnv", result.message)
         sys.exit(1)
 
 
@@ -2219,22 +2307,12 @@ def _internal_emit(args: list[str]) -> int:
 def _store_session_records(records: list[_out.Record]) -> None:
     """Send a session-script reply's records to its launch log and to telemetry (AI-CLI-cuwe).
 
-    ``[output.sinks.*]`` decides what each sink keeps. The script names its
-    launch's log in ``AI_CLI_LAUNCH_LOG``; without one the records still reach
-    telemetry.
+    ``[output.sinks.*]`` decides what each sink keeps. The launch log is the one
+    :func:`_handle_internal` attached from ``AI_CLI_LAUNCH_LOG``; without one the
+    records still reach telemetry.
     """
-    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-    path = os.environ.get(LAUNCH_LOG_ENV, "")
-    log = open_launch_log(path) if path else None
-    previous = _out.attach_file_sink(log.write_line if log is not None else None)
-    try:
-        _out.store(records)
-        _out.flush_sinks()
-    finally:
-        _out.attach_file_sink(previous)
-        if log is not None:
-            log.close()
+    _out.store(records)
+    _out.flush_sinks()
 
 
 _RELOAD_REASONS = {
@@ -2310,8 +2388,33 @@ def _handle_internal(argv: list[str]) -> None:
 
     Kept out of Click so sub-millisecond startup is preserved for hot paths.
     Always calls ``sys.exit`` — never returns.
+
+    Every record any action emits also goes to the launch log the session script
+    names in ``AI_CLI_LAUNCH_LOG``, stamped as it is emitted. The script exports that
+    for its child body, whose stderr is the pane, so a relaunch's direnv, resume and
+    restart lines reach the log exactly as the launcher's own do. Attaching it here,
+    once, rather than per action is what stops an action from being added that
+    reports only to the pane.
     """
+    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
     _out.utf8_stdout_on_windows()
+    log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+    if not log_path:
+        _dispatch_internal(argv)
+        return
+    launch_log = open_launch_log(log_path)
+    previous_sink = _out.attach_file_sink(launch_log.write_line)
+    try:
+        _dispatch_internal(argv)
+    finally:
+        _out.flush_sinks()
+        _out.attach_file_sink(previous_sink)
+        launch_log.close()
+
+
+def _dispatch_internal(argv: list[str]) -> None:
+    """The actions of :func:`_handle_internal`; every one ends in ``sys.exit``."""
     if not argv:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
@@ -2359,22 +2462,30 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
+    if action == "prepare-project-env":
+        if len(argv) not in (2, 3):
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal prepare-project-env <directory> [<tmux_session>]", err=True
+            )
+            sys.exit(1)
+        if len(argv) == 3 and _session_launch_state.launched_with(argv[2], "no_direnv"):
+            _out.emit(Tag.SESSION, "direnv", "approval skipped (-D/--no-direnv)", err=True, level=_out.Level.DETAIL)
+            sys.exit(0)
+        prepared = _session.prepare_project_environment(_session.native_path(argv[1]), config=config)
+        _out.emit(
+            Tag.SESSION,
+            "direnv",
+            prepared.message,
+            err=True,
+            level=prepared.level,
+            terminal=prepared.level is not _out.Level.DETAIL,
+        )
+        sys.exit(0 if prepared.ready else _direnv_setup.PROJECT_ENV_REFUSED_EXIT)
     if action == "finish-migrations":
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-        launch_log = open_launch_log(log_path) if log_path else None
-        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-        try:
-            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
-        finally:
-            _out.flush_sinks()
-            _out.attach_file_sink(previous_sink)
-            if launch_log is not None:
-                launch_log.close()
+        _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
         sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
@@ -2384,20 +2495,10 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "resolve-codex-display":
         from .codex_display import resolve_codex_display
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
 
         resolution = resolve_codex_display(os.environ)
         if resolution.reason:
-            log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-            launch_log = open_launch_log(log_path) if log_path else None
-            previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-            try:
-                LaunchReporter().detail("display", resolution.reason)
-            finally:
-                _out.flush_sinks()
-                _out.attach_file_sink(previous_sink)
-                if launch_log is not None:
-                    launch_log.close()
+            LaunchReporter().detail("display", resolution.reason)
         for variable, value in resolution.values.items():
             _out.raw(Untagged.INTERNAL_REPLY, f"{variable}={value}")
         sys.exit(0)
@@ -2440,7 +2541,7 @@ def _handle_internal(argv: list[str]) -> None:
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
-            _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
+            _out.warning(Tag.INTERNAL, "resume", resolution.warning)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
         if resolution.timed_out:
@@ -2797,6 +2898,11 @@ def _handle_internal(argv: list[str]) -> None:
 
         schedule_auto(argv[1], config)
         sys.exit(0)
+    elif action == "return-tmux-client":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal return-tmux-client <tmux_session_id>", err=True)
+            sys.exit(1)
+        sys.exit(0 if _tmux_ownership.return_switched_client(argv[1]) else 1)
     elif action == "revoke-heartbeat":
         if len(argv) < 3:
             _out.emit(
@@ -2975,11 +3081,22 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: before this launch would otherwise hand the pane a stale environment.
 #: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
 #: both are forwarded only when set, so an ordinary launch is unchanged.
-_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
+#: AI_CLI_SKIP_DIRENV reaches the child body's .envrc approval the same way, so the
+#: documented bypass holds on a tmux server started before it was set.
+_TMUX_FORWARDED_VARS = (
+    "PATH",
+    "XDG_STATE_HOME",
+    "LC_TERMINAL",
+    "TERM_PROGRAM",
+    "FM_HOME",
+    "AI_SESSION_ROLE",
+    _direnv_setup.BYPASS_ENV,
+)
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
+_INHERITED_LAUNCH_REASON_VAR = _iterm2_restore.INHERITED_LAUNCH_REASON_VAR
 
 
-def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+def build_tmux_env_flags(env: "Mapping[str, str]", *, launch_reason: str = "") -> list[str]:
     """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
 
     ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
@@ -3005,9 +3122,11 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AI_CLI_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
-    forwarded, empty when unset: the first relaunch after a reboot starts the tmux
-    server, whose global environment then holds that reason for every later session.
+    ``AI_CLI_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
+    this launch gave it, and never a value read from ``env``: a shell or agent inside a
+    session relaunched after a reboot still carries that session's reason, and a new
+    session must not inherit it. It is always emitted, empty when there is none, so a
+    value left in a tmux server's global environment reaches no session either.
     """
     flags: list[str] = []
     for var in _TMUX_FORWARDED_VARS:
@@ -3016,8 +3135,23 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
             value = value or str(Path.home() / ".local" / "state")
         if value:
             flags += ["-e", f"{var}={value}"]
-    flags += ["-e", f"{_LAUNCH_REASON_VAR}={env.get(_LAUNCH_REASON_VAR, '')}"]
+    flags += ["-e", f"{_LAUNCH_REASON_VAR}={launch_reason}"]
     return flags
+
+
+def _take_launch_reason(env: "MutableMapping[str, str]") -> str:
+    """Remove the launch reason from ``env`` and return it when it was set for this launch.
+
+    A relaunch hands ``ai c`` its reason in the environment of that one command
+    (``AI_CLI_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
+    hands its reason to its first agent the same way, marked with
+    ``AI_CLI_INHERITED_LAUNCH_REASON``, so an ``ai c`` run from inside that session sees a
+    reason equal to the mark and starts fresh. Both are removed, so nothing this launch
+    starts, the tmux server included, inherits either.
+    """
+    reason = env.pop(_LAUNCH_REASON_VAR, "")
+    inherited = env.pop(_INHERITED_LAUNCH_REASON_VAR, None)
+    return "" if inherited is not None and reason == inherited else reason
 
 
 def _install_is_editable(venv: "Path") -> bool:
@@ -3868,7 +4002,7 @@ def _do_attach(session_name: str) -> NoReturn:
     elif client == "gemini":
         _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [legacy gemini]")
     _resume_suspended_panes(session_name)
-    _exec_tmux(tmux_binary.argv("attach-session", "-t", tmux_target))
+    _attach_terminal(tmux_target)
 
 
 def _do_ls(show_all: bool) -> None:
@@ -3974,7 +4108,7 @@ def _do_ls(show_all: bool) -> None:
             sys.exit(0)
         selected = result.stdout.strip().split("\t")[0]
         _resume_suspended_panes(selected)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", selected))
+        _attach_terminal(selected)
     else:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
@@ -4348,6 +4482,33 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
         reporter.error("tmux", f"session '{session_name}' has no live pane after launch")
         sys.exit(1)
     reporter.phase("session").outcome(f"{session_name} running detached")
+
+
+def _await_agy_resume_registration(
+    identity: _tmux_ownership.TmuxSessionIdentity, readiness: str, timeout: float
+) -> None:
+    """Wait for the new pane to finish its best-effort registration before reporting readiness."""
+    deadline = time.monotonic() + timeout
+    pane_format = "#{@ai_cli_session_generation}\t#{pane_dead}\t" + f"#{{{_agy_session.RESUME_READY_OPTION}}}"
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            result = subprocess.run(
+                tmux_binary.argv("list-panes", "-s", "-t", identity.session_id, "-F", pane_format),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=min(remaining, 5),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        live_prefix = f"{identity.generation}\t0\t"
+        live_panes = [row for row in result.stdout.splitlines() if row.startswith(live_prefix)]
+        if result.returncode != 0 or not live_panes:
+            break
+        if live_prefix + readiness in live_panes:
+            return
+        time.sleep(min(remaining, 0.1))
+    raise RuntimeError(f"Antigravity resume in '{identity.session_name}' did not report readiness")
 
 
 #: The launch override for a partial migration. Per invocation only: never read from
@@ -5628,6 +5789,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    launch_reason: str = "",
 ) -> None:
     agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
@@ -5950,14 +6112,19 @@ def _do_session_launch(
             )
             sys.exit(1)
 
-    # An attached tmux launch from inside a tmux pane ends in a tmux client that tmux
-    # refuses to nest ("sessions should be nested with care"). That refusal used to come
-    # at the very end, after a name was reserved and the worktree synchronized, leaving
-    # the name held by a session that never ran. Refuse here, above every write.
-    if not remote and not bare and attach and not detached and os.environ.get("TMUX"):
+    # tmux refuses to nest a client, so an attached launch from inside a tmux pane switches
+    # the client already showing this pane to the new session (_attach_terminal), and the
+    # session sends it back here when it ends. Where that switch cannot work, refuse here,
+    # above every write: refused at the handoff, a name would be held by a session that
+    # never ran, after the worktree was synchronized.
+    _tmux_here = (
+        _tmux_client_here() if not remote and not bare and attach and not detached and os.environ.get("TMUX") else None
+    )
+    if isinstance(_tmux_here, str):
         reporter.error(
             "tmux",
-            "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"
+            "this terminal is already inside a tmux session, and its tmux client cannot be switched to the new "
+            f"session: {_tmux_here}.\n"
             "  Nothing was reserved or created. Either:\n"
             "    - run the command from a terminal outside tmux (or detach this one first), or\n"
             "    - launch with -b/--bare to run the agent in this pane without tmux.",
@@ -6644,7 +6811,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", session))
+        _attach_terminal(session)
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -6712,6 +6879,7 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    _attaching_live = False
     saved_agy_no_worktree_cwd = (
         _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
         if engine == "g" and replay_recipe is None and resume_target is not None and resume_target.title
@@ -6931,6 +7099,10 @@ def _do_session_launch(
                     )
                 _sync_phase.outcome("ready")
 
+    if not _attaching_live:
+        # After the sync, which can change the .envrc a direnv approval is keyed on.
+        _prepare_project_environment(worktree_path or Path.cwd(), config, no_direnv=no_direnv, reporter=reporter)
+
     # Antigravity (engine "g") resolves its confirmed conversation ID inside agy_session.
     uuid = None
 
@@ -7044,11 +7216,24 @@ def _do_session_launch(
     # a server created before this launch cannot select a stale script or agent.
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
-    _tmux_env_flags = build_tmux_env_flags(os.environ)
+    _tmux_env_flags = build_tmux_env_flags(os.environ, launch_reason=launch_reason)
     if agent_diagnostic_path:
         _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
     if agy_sign_in_token:
         _tmux_env_flags += ["-e", f"{_agy_session.SIGN_IN_VERIFIED_ENV}={agy_sign_in_token}"]
+
+    agy_resume_ready = ""
+    agy_resume_timeout = 0.0
+    if engine == "g" and os.name == "posix" and not agy_print_mode:
+        record = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+        try:
+            registration = _config.read_session_register_config(config)
+            if registration and _agy_session.bound_slot_conversation(record, worktree_path or Path.cwd(), session_id):
+                agy_resume_ready = secrets.token_urlsafe(16)
+                agy_resume_timeout = registration["timeout_seconds"] + 30
+        except (OSError, ValueError):
+            pass  # The pane diagnoses invalid registration settings or slot state.
+        _tmux_env_flags += ["-e", f"{_agy_session.RESUME_READY_ENV}={agy_resume_ready}"]
 
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
@@ -7133,6 +7318,8 @@ def _do_session_launch(
                     once_pane_cmd,
                     pre_respawn=pre_respawn,
                 )
+                if agy_resume_ready:
+                    _await_agy_resume_registration(once_identity, agy_resume_ready, agy_resume_timeout)
             except RuntimeError as exc:
                 if detached:
                     raise
@@ -7177,7 +7364,7 @@ def _do_session_launch(
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-        if loop is None and attach:
+        if loop is None and attach and not os.environ.get("TMUX"):
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(once_argv)
         result = subprocess.run(
@@ -7193,7 +7380,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", f"={session_id}"))
+        _attach_terminal(f"={session_id}")
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -7328,7 +7515,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session_id, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", session_id))
+        _attach_terminal(session_id, detach_others=True)
     else:
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
@@ -7437,23 +7624,44 @@ def _do_session_launch(
             reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
             sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
+        # How the session ends when its supervisor cannot end it (tmux_ownership.configure_session_end).
+        # remain-on-exit is required, as it always was; the rest backs up the supervisor's own
+        # teardown, so a tmux that refuses it (one older than 2.2) is reported and the launch goes on.
+        # Captured before anything else can split it: the session's only pane is its supervisor's.
+        _supervisor_pane = _tmux_ownership.pane_id_of(f"{identity.session_id}:")
+        _end_refused = _tmux_ownership.configure_session_end(identity.session_id, _supervisor_pane)
         tmux_options = (
-            tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
             tmux_binary.argv("set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode),
             tmux_binary.argv("set-option", "-s", "set-clipboard", "on"),
         )
-        for tmux_option in tmux_options:
-            configured = subprocess.run(tmux_option, capture_output=True, check=False)
-            if configured.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
-                sys.exit(1)
+        configured_ok = "remain-on-exit" not in _end_refused and all(
+            subprocess.run(tmux_option, capture_output=True, check=False).returncode == 0
+            for tmux_option in tmux_options
+        )
+        if not configured_ok:
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
+            sys.exit(1)
+        if _end_refused:
+            reporter.warning(
+                "tmux",
+                f"tmux refused {', '.join(_end_refused)} for session '{session_id}': if its supervisor dies "
+                "without ending it, an attached terminal stays on the dead pane until it detaches",
+            )
         if engine == "g" and not _tmux_ownership.respawn_owned_tmux_pane(identity, (_session_shell, _script_path)):
             _tmux_ownership.kill_owned_tmux_session(identity)
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
             sys.exit(1)
+        if agy_resume_ready:
+            try:
+                _await_agy_resume_registration(identity, agy_resume_ready, agy_resume_timeout)
+            except RuntimeError as exc:
+                if detached:
+                    raise
+                reporter.error("session", str(exc))
+                sys.exit(1)
         if detached:
             reporter.phase("session").outcome(f"{session_id} running detached")
             return
@@ -7467,7 +7675,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", identity.session_id))
+        _attach_terminal(identity.session_id, detach_others=True)
 
 
 # --- Click command tree ---
@@ -7520,6 +7728,7 @@ def _session_command(engine: str):
         # process's stderr and log never outlives the launch that created it.
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
+        launch_reason = _take_launch_reason(os.environ)
         try:
             mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
@@ -7557,6 +7766,9 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_reason:
+                        # The continuation is this same launch, so it takes this reason again.
+                        os.environ[_LAUNCH_REASON_VAR] = launch_reason
                     if launch_log.mirror_path:
                         # The re-run launch is the one that may refuse, so it keeps the copy.
                         os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
@@ -7591,6 +7803,7 @@ def _session_command(engine: str):
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                launch_reason=launch_reason,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -7653,7 +7866,13 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None, *, 
     if restart_json:
         _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
     else:
-        _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
+        _out.emit(
+            Tag.SESSION,
+            "session",
+            "restart; " + "; ".join(f"{key}={value}" for key, value in report.items() if key != "remedy"),
+        )
+        if report.get("remedy"):
+            _out.emit(Tag.SESSION, "session", report["remedy"])
     raise SystemExit(
         0
         if report["reason"] in ("restarted", "ready", "detached")
@@ -7927,7 +8146,9 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
-    func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option(
+        "-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight, auto-install and .envrc approval"
+    )(func)
     func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
     func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
     # MUST be a declared option, not merely handled. SESSION_CONTEXT sets

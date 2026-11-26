@@ -1,9 +1,11 @@
 """Interrupt the full generated wrapper through an isolated tmux pane."""
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -61,13 +63,20 @@ def pane_session(request, tmp_path, monkeypatch):
     monkeypatch.setattr(session_lifecycle_script, "lifecycle_command", fixed_boot_command)
     monkeypatch.setattr("ai_cli.session_script.resolve_session_shell", lambda: shell)
     launches = tmp_path / "launches"
+    reasons = tmp_path / "launch-reasons"
     action = tmp_path / "action"
     binaries = tmp_path / "bin"
     binaries.mkdir()
     # All project/engine services are fakes; terminal, signals, wrapper, lifecycle
     # persistence and tmux remain real. No inherited login files or direnv run.
     (binaries / "ai").write_text(
-        '#!/bin/sh\nif [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
+        "#!/bin/sh\n"
+        # A gated _begin blocks until the test releases it, then fails: the supervisor's
+        # earliest exit, before it holds any session ownership or teardown.
+        'if [ "$2" = _begin ] && [ -n "${TEST_BEGIN_GATE:-}" ]; then '
+        'while [ ! -e "$TEST_BEGIN_GATE" ]; do sleep 0.05; done; exit 1; fi\n'
+        'if [ "$2" = _begin ]; then echo "$TEST_GENERATION"; fi\n'
+        f'if [ "$1" = internal ] && [ "$2" = return-tmux-client ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f'if [ "$1" = internal ] && [ "$2" = codex-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         f'if [ "$1" = internal ] && [ "$2" = agy-session-confirm ]; then exec {shlex.quote(sys.executable)} -m ai_cli.main "$@"; fi\n'
         "exit 0\n"
@@ -104,6 +113,7 @@ def pane_session(request, tmp_path, monkeypatch):
         "if mode == 'ignore': signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
         "if mode.startswith('raw'): tty.setraw(0)\n"
         f"with open({str(launches)!r}, 'a') as out: out.write(str(os.getpid()) + '\\n')\n"
+        f"with open({str(reasons)!r}, 'a') as out: out.write(repr(os.environ.get('AI_CLI_LAUNCH_REASON')) + '\\n')\n"
         "if mode.startswith('raw'):\n"
         "    while b'\\x03' not in os.read(0, 64): pass\n"
         "    sys.exit(0 if mode == 'raw-clean' else 130)\n"
@@ -132,8 +142,21 @@ def pane_session(request, tmp_path, monkeypatch):
 
     class Pane:
         name = "c-session-1"
+        socket = None
+        launches_path = launches
 
-        def start(self, *, engine="c", remote=False, mode="signal", policy="auto", caller=False, quick_exit=False):
+        def start(
+            self,
+            *,
+            engine="c",
+            remote=False,
+            mode="signal",
+            policy="auto",
+            caller=False,
+            quick_exit=False,
+            begin_gate=None,
+            launch_reason=None,
+        ):
             if engine == "g":
                 token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
                 token.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +220,10 @@ def pane_session(request, tmp_path, monkeypatch):
                 TEST_GENERATION=generation,
                 TEST_AGENT_MODE=mode,
             )
+            if begin_gate is not None:
+                env["TEST_BEGIN_GATE"] = str(begin_gate)
+            if launch_reason is not None:
+                env["AI_CLI_LAUNCH_REASON"] = launch_reason
             result = subprocess.run(
                 [
                     "tmux",
@@ -221,7 +248,8 @@ def pane_session(request, tmp_path, monkeypatch):
                 check=False,
             )
             assert result.returncode == 0, result.stderr
-            assert _wait(lambda: self.count() > 0), self.capture()
+            if begin_gate is None:
+                assert _wait(lambda: self.count() > 0), self.capture()
             self.output = tmp_path / "pane-output"
             self.output_done = tmp_path / "pane-output-done"
             pipe = f"cat > {shlex.quote(str(self.output))}; touch {shlex.quote(str(self.output_done))}"
@@ -229,7 +257,23 @@ def pane_session(request, tmp_path, monkeypatch):
             if caller:
                 self.attach_caller(remote=remote)
 
-        def attach_caller(self, *, remote):
+        def configure_end(self):
+            # The launcher's own end-of-session configuration, applied to this session.
+            from ai_cli import tmux_ownership
+
+            shown = tmux("display-message", "-p", "-t", f"={self.name}:", "#{session_id} #{pane_id}").stdout.split()
+            session_id, self.supervisor_pane = shown
+            assert (
+                tmux_ownership.configure_session_end(
+                    session_id, self.supervisor_pane, tmux_command=["tmux", "-S", socket]
+                )
+                == []
+            )
+
+        def tmux(self, *args):
+            return tmux(*args)
+
+        def attach_caller(self, *, remote, wait=True):
             local_dir = tmp_path / "local"
             local_dir.mkdir()
             self.before = tmp_path / "before"
@@ -263,7 +307,38 @@ def pane_session(request, tmp_path, monkeypatch):
                 + shlex.quote(str(self.after))
             )
             assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
-            assert _wait(lambda: bool(tmux("list-clients", "-t", f"={self.name}").stdout)), self.capture()
+            if wait:
+                assert _wait(lambda: bool(tmux("list-clients", "-t", f"={self.name}").stdout)), self.capture()
+
+        def attach_from_inside_tmux(self):
+            # The operator's terminal is a client of another tmux server, attached to a
+            # session whose shell runs the handoff `ai c` performs, so TMUX is set there.
+            local_dir = tmp_path / "local"
+            local_dir.mkdir()
+            self.before = tmp_path / "before"
+            self.after = tmp_path / "after"
+            outer_socket = str(sock_dir / "outer.sock")
+            assert tmux("new-session", "-d", "-s", "caller", "-c", str(local_dir), shell, "-i").returncode == 0
+            client = shlex.join(["env", "-u", "TMUX", "tmux", "-S", socket, "attach-session", "-t", "=caller"])
+            outer = ["tmux", "-S", outer_socket, "-f", os.devnull, "new-session", "-d", "-x", "120", "-y", "30"]
+            assert subprocess.run([*outer, client], capture_output=True, check=False, timeout=10).returncode == 0
+            assert _wait(lambda: bool(tmux("list-clients", "-t", "=caller").stdout)), self.capture()
+            runner = tmp_path / "switch.py"
+            runner.write_text(f"from ai_cli.main import _attach_terminal\n_attach_terminal({'=' + self.name!r})\n")
+            stamp = 'printf \'%s\\n%s\\n\' "$$" "$PWD" > '
+            command = (
+                stamp
+                + shlex.quote(str(self.before))
+                + "; "
+                + shlex.join([sys.executable, str(runner)])
+                + "; "
+                + stamp
+                + shlex.quote(str(self.after))
+            )
+            assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
+
+        def client_sessions(self):
+            return tmux("list-clients", "-F", "#{session_name}").stdout.split()
 
         def assert_caller(self):
             assert _wait(lambda: self.after.exists() and self.after.read_text() == self.before.read_text()), (
@@ -313,6 +388,9 @@ def pane_session(request, tmp_path, monkeypatch):
         def count(self):
             return len(launches.read_text().splitlines()) if launches.exists() else 0
 
+        def reasons(self):
+            return reasons.read_text().splitlines() if reasons.exists() else []
+
         def capture(self):
             return tmux("capture-pane", "-p", "-J", "-S", "-", "-t", self.name).stdout
 
@@ -324,6 +402,9 @@ def pane_session(request, tmp_path, monkeypatch):
         def alive(self):
             return tmux("has-session", "-t", f"={self.name}").returncode == 0
 
+        def pane_dead(self):
+            return tmux("list-panes", "-t", f"={self.name}:", "-F", "#{pane_dead}").stdout
+
         def interrupt(self):
             target = "=caller:" if hasattr(self, "before") else self.name
             assert tmux("send-keys", "-t", target, "C-c").returncode == 0
@@ -334,32 +415,18 @@ def pane_session(request, tmp_path, monkeypatch):
             pending.write_text(command)
             pending.replace(action)
 
-        def type_line(self, command):
-            assert tmux("send-keys", "-t", "=caller:", command, "Enter").returncode == 0
-
-        def assert_shell(self):
-            assert _wait(lambda: "test-shell>" in self.capture()), self.capture()
-            assert tmux("has-session", "-t", self.name).returncode == 0
-            # Execute a command: an alive/dead pane or an echoed keystroke is not a shell.
-            proof = tmp_path / "shell-proof"
-            pending = shlex.quote(str(proof.with_suffix(".tmp")))
-            command = f"printf '%s' interactive > {pending} && mv {pending} {shlex.quote(str(proof))}"
-            assert tmux("send-keys", "-t", self.name, command, "Enter").returncode == 0
-            assert _wait(proof.exists), self.capture()
-            assert proof.read_text() == "interactive"
-            before = self.count()
-            self.interrupt()
-            time.sleep(0.2)
-            assert self.count() == before, "Ctrl+C at the returned shell restarted the agent"
-            assert tmux("has-session", "-t", self.name).returncode == 0
-            record = registry.load_registry()["sessions"][0]
-            assert record["run_state"] == "exited", json.dumps(record)
-
+    Pane.socket = socket
     with watch_tmux_directory(sock_dir):
         try:
             yield Pane()
         finally:
             tmux("kill-server")
+            subprocess.run(
+                ["tmux", "-S", str(sock_dir / "outer.sock"), "kill-server"],
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
 
 
 @pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
@@ -424,15 +491,16 @@ def test_given_unregistered_session_when_interrupted_then_original_shell_survive
     assert pane_session.count() == 1
 
 
+@pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("engine", ["c", "cx"])
-def test_given_remote_recovery_shell_when_exited_then_original_shell_survives(pane_session, engine):
-    # Exercise the quick-failure path even if launching and attaching the caller takes seconds.
-    pane_session.start(engine=engine, remote=True, caller=True, quick_exit=True)
+def test_given_failed_start_when_launch_loop_stops_then_original_shell_returns(pane_session, engine, remote):
+    # An agent that exits inside the startup guard stops the loop. Local and remote alike,
+    # the session then ends: no recovery shell is left in the tmux pane. The clock is pinned
+    # so a loaded host cannot stretch the run past the guard and turn it into a restart.
+    pane_session.start(engine=engine, remote=remote, caller=True, quick_exit=True)
     pane_session.exit_agent("1")
-    assert _wait(lambda: "close this session" in pane_session.capture()), pane_session.capture()
-    assert _wait(lambda: "test-shell>" in pane_session.capture()), pane_session.capture()
-    pane_session.type_line("exit")
     pane_session.assert_caller()
+    assert "close this session" not in pane_session.output.read_text()
     assert pane_session.count() == 1
 
 
@@ -517,13 +585,122 @@ def test_given_stop_window_set_while_running_when_agent_exits_cleanly_then_the_w
 
 
 @pytest.mark.parametrize("remote", [False, True])
-def test_given_policy_changed_to_never_when_engine_exits_then_same_pane_returns_to_shell(pane_session, remote):
-    pane_session.start(remote=remote)
-    pane_session.set_policy("never")
+@pytest.mark.parametrize("stop", ["never", "auto_restart_off"])
+def test_given_restarts_turned_off_when_engine_exits_then_original_shell_returns(pane_session, remote, stop):
+    pane_session.start(remote=remote, caller=True)
+    if stop == "never":
+        pane_session.set_policy("never")
+    else:
+        path = Path(config.config_file_text())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[session]\nauto_restart = false\n", encoding="utf-8")
     time.sleep(3.2)
     pane_session.exit_agent("1")
-    pane_session.assert_shell()
+    pane_session.assert_caller()
+    assert "Returning to an interactive shell" not in pane_session.output.read_text()
     assert pane_session.count() == 1
+    record = registry.load_registry()["sessions"][0]
+    assert record["run_state"] == "exited", json.dumps(record)
+
+
+def test_given_supervisor_that_cannot_begin_when_its_pane_dies_then_original_shell_returns(pane_session, tmp_path):
+    # The supervisor's earliest exit runs before it owns the session or any teardown, so
+    # only the launcher's end-of-session configuration can end the session for it.
+    gate = tmp_path / "begin-gate"
+    pane_session.start(begin_gate=gate)
+    pane_session.attach_caller(remote=False)
+    pane_session.configure_end()
+    gate.touch()
+    pane_session.assert_caller()
+    assert pane_session.count() == 0
+
+
+def test_given_dead_pane_kept_while_detached_when_a_client_attaches_then_original_shell_returns(pane_session, tmp_path):
+    # remain-on-exit keeps a dead pane for diagnosis only while nobody is looking at it.
+    gate = tmp_path / "begin-gate"
+    pane_session.start(begin_gate=gate)
+    pane_session.configure_end()
+    gate.touch()
+    assert _wait(lambda: "1" in pane_session.pane_dead()), pane_session.capture()
+    assert pane_session.alive(), "a detached dead pane was not kept for diagnosis"
+    pane_session.attach_caller(remote=False, wait=False)
+    pane_session.assert_caller()
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_launch_from_inside_tmux_when_session_ends_then_client_returns_to_its_session(pane_session):
+    pane_session.start(policy="never")
+    pane_session.configure_end()
+    pane_session.attach_from_inside_tmux()
+    assert _wait(lambda: pane_session.client_sessions() == [pane_session.name]), pane_session.client_sessions()
+    time.sleep(3.2)
+    pane_session.exit_agent("1")
+    assert _wait(lambda: pane_session.client_sessions() == ["caller"]), pane_session.client_sessions()
+    # The caller's shell had its prompt back as soon as the client switched away, so its
+    # stamp says nothing about the session's end: wait for that end itself.
+    assert _wait(lambda: not pane_session.alive()), pane_session.capture()
+    pane_session.assert_caller()
+    assert pane_session.client_sessions() == ["caller"], "the client left its own session"
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_a_split_pane_when_it_exits_then_the_session_and_its_agent_survive(pane_session):
+    # A pane the user splits off is theirs: its exit must not end the session it sits in.
+    pane_session.start(caller=True)
+    pane_session.configure_end()
+    split = pane_session.tmux("split-window", "-P", "-F", "#{pane_id}", "-t", f"={pane_session.name}:", "sleep 1")
+    assert split.returncode == 0, split.stderr
+    split_pane = split.stdout.strip()
+
+    def panes():
+        return pane_session.tmux("list-panes", "-t", f"={pane_session.name}:", "-F", "#{pane_id}").stdout.split()
+
+    assert _wait(lambda: split_pane not in panes()), panes()
+    time.sleep(1)
+    assert pane_session.alive(), "a split pane's exit ended the session"
+    assert panes() == [pane_session.supervisor_pane]
+    assert pane_session.client_sessions() == [pane_session.name]
+    agent = int(pane_session.launches_path.read_text().split()[0])
+    os.kill(agent, 0)
+    assert pane_session.count() == 1
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_client_switched_in_when_the_supervisor_is_killed_then_tmux_returns_it_and_ends_the_session(
+    pane_session,
+):
+    pane_session.start()
+    pane_session.configure_end()
+    pane_session.attach_from_inside_tmux()
+    assert _wait(lambda: pane_session.client_sessions() == [pane_session.name]), pane_session.client_sessions()
+    supervisor = int(
+        pane_session.tmux("display-message", "-p", "-t", pane_session.supervisor_pane, "#{pane_pid}").stdout
+    )
+    agent = int(pane_session.launches_path.read_text().split()[0])
+    try:
+        os.kill(supervisor, signal.SIGKILL)
+        assert _wait(lambda: not pane_session.alive()), pane_session.capture()
+        assert _wait(lambda: pane_session.client_sessions() == ["caller"]), pane_session.client_sessions()
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(agent, signal.SIGKILL)
+    pane_session.assert_caller()
+
+
+@pytest.mark.parametrize("pane_session", ["bash"], indirect=True)
+def test_given_relaunch_reason_when_agent_restarts_then_only_the_first_agent_carries_it(pane_session):
+    pane_session.start(launch_reason="host_reboot")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+    assert pane_session.reasons() == ["'host_reboot'", "None"]
+    shown = subprocess.run(
+        ["tmux", "-S", pane_session.socket, "show-environment", "-t", f"={pane_session.name}", "AI_CLI_LAUNCH_REASON"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    assert shown in ("-AI_CLI_LAUNCH_REASON", ""), shown
 
 
 @pytest.mark.parametrize("remote", [False, True])

@@ -13,8 +13,9 @@ and a worktree registered from anywhere else are all directories the tool did no
 create, and auto-approving unreviewed shell in one of those would be worse than the
 nagging it replaces.
 
-Provenance of the CONTENT: the file is byte-identical to the repository root's.
-Directory provenance alone is not file provenance -- git writes whatever the
+Provenance of the CONTENT: the file is byte-identical to the repository root's
+working copy or to the ``.envrc`` on ``origin/HEAD``, which is what a freshly synced
+worktree carries. Directory provenance alone is not file provenance -- git writes whatever the
 checked-out branch carries, and anything with write access to the slot can rewrite it
 afterwards, including the agent session running there. Since approval runs again on
 every relaunch, a session could otherwise have its own ``.envrc`` edit approved for
@@ -26,16 +27,22 @@ is approved at all -- the host that needs it most, and the one that reported it
 broken. Identity with the root is a claim about content, not about approval state.
 """
 
+import contextlib
 import json
+import os
+import re
 import shutil
 import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from ai_cli.direnv_setup import BYPASS_ENV
-from ai_cli.session import _authorize_session_worktree_envrc
+from ai_cli.launch_reporter import LaunchReporter
+from ai_cli.main import _prepare_project_environment
 
 _BODY = "export PROJECT_ENV=1\n"
 
@@ -113,19 +120,28 @@ def _which(*, have_direnv: bool):
 
 
 def _authorize(root: Path, directory: Path, fake: FakeDirenv, *, have_direnv: bool = True) -> None:
+    """The launcher's approval step for ``directory``; a refusal's exit is part of what is observed."""
     with (
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=have_direnv)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=fake),
+        contextlib.suppress(SystemExit),
     ):
-        _authorize_session_worktree_envrc(root, directory)
+        _prepare_project_environment(directory, {}, no_direnv=False, reporter=LaunchReporter())
+
+
+def _git_worktree(root: Path, directory: Path) -> None:
+    _git("worktree", "add", "-q", "--detach", str(directory), cwd=root)
 
 
 @pytest.fixture
 def repo(tmp_path):
     """A repo root and one of its session worktree slots, both carrying an .envrc."""
     root = tmp_path / "myproject"
+    root.mkdir()
+    _git("init", "-q", "-b", "main", cwd=root)
+    _git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init", cwd=root)
     worktree = root / ".worktrees" / "myproject-1"
-    worktree.mkdir(parents=True)
+    _git_worktree(root, worktree)
     (root / ".envrc").write_text(_BODY)
     (worktree / ".envrc").write_text(_BODY)
     return root, worktree
@@ -246,18 +262,16 @@ def test_given_the_repository_root_when_authorized_then_nothing_is_allowed(repo)
     assert fake.calls == []
 
 
-def test_given_a_worktree_outside_the_slot_directory_when_authorized_then_nothing_is_allowed(tmp_path):
+def test_given_a_worktree_outside_the_slot_directory_when_authorized_then_nothing_is_allowed(repo, tmp_path):
     """AC-6: a worktree registered somewhere else was created by someone else.
 
     Worktrees living outside ``<repo>/.worktrees`` are a real and common layout,
     so this is the case that decides whether the boundary is "did the tool create
     it" or merely "is it a worktree".
     """
-    root = tmp_path / "myproject"
-    root.mkdir()
-    (root / ".envrc").write_text(_BODY)
+    root, _worktree = repo
     outside = tmp_path / "myproject-worktrees" / "feature"
-    outside.mkdir(parents=True)
+    _git_worktree(root, outside)
     (outside / ".envrc").write_text(_BODY)
     fake = FakeDirenv()
 
@@ -279,14 +293,14 @@ def test_given_a_worktree_envrc_differing_from_the_root_when_authorized_then_not
 
     _authorize(root, worktree, fake)
 
-    assert fake.calls == [], "auto-approved .envrc content that differs from the repository root's"
+    assert fake.allowed_paths == [], "auto-approved .envrc content that differs from the repository root's"
 
 
 def test_given_a_session_that_edited_its_own_envrc_when_relaunched_then_it_is_not_reapproved(repo):
     """Approval runs again on every relaunch, so a self-edit must not approve itself.
 
-    ``_authorize_session_worktree_envrc`` is called from ``_initialize_worktree``,
-    which runs for a REUSED worktree too. Anything with write access to the slot --
+    Approval runs before every agent start, a REUSED worktree's included. Anything
+    with write access to the slot --
     including the agent session running inside it -- can rewrite the file, and that
     edit invalidates direnv's existing approval, so the next launch would re-approve
     it. This needs no push access to ``origin`` and no operator action, which makes
@@ -302,7 +316,7 @@ def test_given_a_session_that_edited_its_own_envrc_when_relaunched_then_it_is_no
 
     _authorize(root, worktree, relaunch)
 
-    assert relaunch.calls == [], "a session's own .envrc edit was approved on relaunch"
+    assert relaunch.allowed_paths == [], "a session's own .envrc edit was approved on relaunch"
 
 
 def test_given_no_root_envrc_to_compare_against_when_authorized_then_nothing_is_allowed(repo):
@@ -313,7 +327,7 @@ def test_given_no_root_envrc_to_compare_against_when_authorized_then_nothing_is_
 
     _authorize(root, worktree, fake)
 
-    assert fake.calls == []
+    assert fake.allowed_paths == []
 
 
 def test_given_a_nested_path_under_a_slot_when_authorized_then_nothing_is_allowed(repo):
@@ -368,7 +382,7 @@ def test_given_direnv_vanishing_mid_call_when_authorized_then_it_does_not_raise(
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=True)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=OSError("direnv vanished")),
     ):
-        _authorize_session_worktree_envrc(root, worktree)
+        _prepare_project_environment(worktree, {}, no_direnv=False, reporter=LaunchReporter())
 
 
 def test_given_a_direnv_too_old_for_status_json_when_authorized_then_it_still_allows(repo):
@@ -389,7 +403,7 @@ def test_given_a_direnv_too_old_for_status_json_when_authorized_then_it_still_al
         patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=True)),
         patch("ai_cli.direnv_setup.subprocess.run", side_effect=run),
     ):
-        _authorize_session_worktree_envrc(root, worktree)
+        _prepare_project_environment(worktree, {}, no_direnv=False, reporter=LaunchReporter())
 
     assert [call[2] for call in calls if call[:2] == ["direnv", "allow"]] == [str(worktree)]
 
@@ -438,9 +452,9 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
     direnv is held blocked for the whole launch -- artificial, since a successful
     approval would silence the warning -- precisely so both lines are emitted and
     their order can be read off one stream. The launcher decides that order: the
-    authorization happens inside worktree creation, and the blocked-directory
-    warning comes from the direnv preflight that create_worktree returns into.
-    Move the authorization after the preflight and this test fails.
+    authorization happens once the worktree is synchronized, and the blocked-directory
+    warning comes from the bare handoff's direnv check after it. Move the
+    authorization after that check and this test fails.
     """
     from ai_cli.main import _do_session_launch
 
@@ -478,7 +492,6 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
             project_prefix_override="myapp",
             extra_args=[],
             config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
-            no_direnv=True,
         )
 
     worktree = committed_envrc_repo / ".worktrees" / "myapp-tst-1"
@@ -491,3 +504,624 @@ def test_given_a_launch_whose_envrc_stays_blocked_then_the_notice_precedes_the_w
     assert err.index(_NOTICE) < err.index(_BLOCKED_WARNING), (
         f"the authorization notice must precede the blocked-directory warning; got:\n{err}"
     )
+
+
+# --- Every agent start approves the worktree .envrc, and says so in the launch log ----
+#
+# The paths below are the ones a session actually takes: the session script's child body
+# as the supervisor runs it (``<shell> <script> --ai-cli-child-body``), for the first start
+# and every restart alike, and the launcher after it has resolved AND synchronized the
+# worktree. direnv is a stand-in program on PATH that keeps approvals the way direnv does,
+# keyed by the file's path and content, so an edit or a sync that changes the file leaves it
+# blocked until it is approved again.
+
+_STUB_DIRENV = """\
+import hashlib, json, os, sys
+from pathlib import Path
+
+store = Path(os.environ["FAKE_DIRENV_STORE"])
+
+
+def nearest(start):
+    for directory in (start, *start.parents):
+        if (directory / ".envrc").is_file():
+            return directory / ".envrc"
+    return None
+
+
+def key(rc):
+    return hashlib.sha256(str(rc).encode() + b"\\n" + rc.read_bytes()).hexdigest()
+
+
+def variables(rc):
+    pairs = {}
+    for line in rc.read_text().splitlines():
+        if line.startswith("export ") and "=" in line:
+            name, _, value = line[len("export "):].partition("=")
+            pairs[name] = value
+    return pairs
+
+
+args = sys.argv[1:]
+if args[:1] == ["allow"]:
+    target = Path(args[1] if len(args) > 1 else os.getcwd()).resolve()
+    rc = nearest(target)
+    if (store / "allow-fails").exists() or rc is None:
+        print("direnv: error allow failed", file=sys.stderr)
+        sys.exit(1)
+    store.mkdir(parents=True, exist_ok=True)
+    (store / key(rc)).write_text(str(rc))
+    sys.exit(0)
+rc = nearest(Path.cwd().resolve())
+if args[:1] == ["status"]:
+    if rc is not None:
+        print(f"Found RC path {rc}")
+        print(f"Found RC allowed {'true' if (store / key(rc)).exists() else 'false'}")
+    sys.exit(0)
+if args[:1] == ["export"]:
+    if rc is None:
+        sys.exit(0)
+    if not (store / key(rc)).exists():
+        print(f"direnv: error {rc} is blocked. Run `direnv allow` to approve its content", file=sys.stderr)
+        sys.exit(1)
+    pairs = variables(rc)
+    if args[1:2] == ["json"]:
+        print(json.dumps(pairs))
+    else:
+        print("".join(f"export {name}={value};" for name, value in pairs.items()))
+    sys.exit(0)
+sys.exit(0)
+"""
+
+# Each stand-in agent records the project environment it was started with, then exits.
+_STUB_AGENT = """\
+import json, os, sys
+from pathlib import Path
+
+if sys.argv[1:2] in (["agents"], ["plugin"], ["mcp"], ["--version"]):
+    print("[]" if sys.argv[1:2] == ["agents"] else "")
+    sys.exit(0)
+if os.environ.get("FAKE_AGENT_SECONDS"):
+    import time
+    time.sleep(float(os.environ["FAKE_AGENT_SECONDS"]))
+with open(os.environ["FAKE_AGENT_STARTS"], "a") as out:
+    started = {"agent": Path(sys.argv[0]).name, "PROJECT_ENV": os.environ.get("PROJECT_ENV")}
+    started["launch_log"] = os.environ.get("AI_CLI_LAUNCH_LOG")
+    out.write(json.dumps(started) + "\\n")
+"""
+
+# The real `ai` for the commands these tests are about; every other service the child body
+# calls (events, iTerm2, heartbeats) is a no-op, so nothing outside the test is reached.
+_STUB_AI = """\
+import json, os, sys
+real = ("prepare-project-env", "emit", "progress", "resolve-background-target")
+if os.environ.get("FAKE_AI_CALLS") and sys.argv[1:2] == ["internal"]:
+    with open(os.environ["FAKE_AI_CALLS"], "a") as out:
+        out.write(json.dumps({"action": sys.argv[2:3], "launch_log": os.environ.get("AI_CLI_LAUNCH_LOG")}) + "\\n")
+broken = os.environ.get("FAKE_AI_PREPARE_EXIT")
+if broken and sys.argv[1:3] == ["internal", "prepare-project-env"]:
+    sys.exit(int(broken))
+if os.environ.get("FAKE_AI_NO_RENDERER") and sys.argv[1:3] == ["internal", "emit"]:
+    sys.exit(127)
+if sys.argv[1:2] == ["internal"] and sys.argv[2:3] and sys.argv[2] in real:
+    os.execv(sys.executable, [sys.executable, "-m", "ai_cli.main", *sys.argv[1:]])
+sys.exit(0)
+"""
+
+_LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
+
+
+@pytest.fixture
+def session_repo(tmp_path):
+    """A clone with a tracked ``.envrc``, its remote, and one session worktree slot.
+
+    The clone records ``origin/HEAD``, as every clone does, so the upstream default
+    branch's ``.envrc`` blob is there to compare against.
+    """
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True, capture_output=True)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git("init", "-q", "-b", "main", cwd=seed)
+    _git("config", "user.email", "t@example.com", cwd=seed)
+    _git("config", "user.name", "T", cwd=seed)
+    (seed / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "myapp"\n')
+    (seed / ".envrc").write_text("export PROJECT_ENV=v1\n")
+    _git("add", "-A", cwd=seed)
+    _git("commit", "-q", "-m", "init", cwd=seed)
+    _git("push", "-q", str(remote), "main", cwd=seed)
+    root = tmp_path / "myproject"
+    subprocess.run(["git", "clone", "-q", str(remote), str(root)], check=True, capture_output=True)
+    _git("config", "user.email", "t@example.com", cwd=root)
+    _git("config", "user.name", "T", cwd=root)
+    worktree = root / ".worktrees" / "myapp-tst-1"
+    _git("worktree", "add", "-q", "-b", "wt-myapp-tst-1", str(worktree), "origin/main", cwd=root)
+    _git("branch", "-q", "--set-upstream-to=origin/main", "wt-myapp-tst-1", cwd=root)
+    return {"remote": remote, "seed": seed, "root": root, "worktree": worktree}
+
+
+def _land_on_main(repo: dict, body: str) -> None:
+    """Change ``.envrc`` on the remote's default branch, as another session's merge would."""
+    (repo["seed"] / ".envrc").write_text(body)
+    _git("commit", "-q", "-am", "change envrc", cwd=repo["seed"])
+    _git("push", "-q", str(repo["remote"]), "main", cwd=repo["seed"])
+
+
+@pytest.fixture
+def stub_direnv(tmp_path, monkeypatch):
+    """The stand-in direnv program and its approval store."""
+    store = tmp_path / "direnv-approvals"
+    store.mkdir()
+    program = tmp_path / "direnv-stub.py"
+    program.write_text(_STUB_DIRENV)
+    monkeypatch.setenv("FAKE_DIRENV_STORE", str(store))
+
+    class Stub:
+        def run(self, *args, cwd):
+            return subprocess.run(
+                [sys.executable, str(program), *args], cwd=cwd, capture_output=True, text=True, check=False
+            )
+
+        def allow(self, directory: Path) -> None:
+            assert self.run("allow", str(directory), cwd=directory).returncode == 0
+
+        def approved(self, directory: Path) -> bool:
+            return "Found RC allowed true" in self.run("status", cwd=directory).stdout
+
+    stub = Stub()
+    stub.program = program
+    stub.store = store
+    return stub
+
+
+@pytest.fixture
+def child_body(tmp_path, monkeypatch, stub_direnv):
+    """Run one child body of a real session script, the way its supervisor runs it."""
+    if sys.platform == "win32":
+        pytest.skip("the session script runs under a POSIX shell")
+    shell = shutil.which("bash")
+    if shell is None:
+        pytest.skip("bash is unavailable")
+    from ai_cli import session_lifecycle_script
+    from ai_cli import session_run_state as run_state
+    from ai_cli.session_script import get_engine_script
+
+    lifecycle_command = session_lifecycle_script.lifecycle_command
+
+    def fixed_boot_command(path):
+        command = lifecycle_command(path)
+        command[-1] = command[-1].replace(
+            "from ai_cli.main import cli",
+            "registry.current_boot_id = lambda: 'test-boot-0000'; from ai_cli.main import cli",
+        )
+        return command
+
+    monkeypatch.setattr(session_lifecycle_script, "lifecycle_command", fixed_boot_command)
+    monkeypatch.setattr("ai_cli.session_script.resolve_session_shell", lambda: shell)
+    binaries = tmp_path / "child-bin"
+    binaries.mkdir()
+    (binaries / "direnv").write_text(f"#!{sys.executable}\n" + _STUB_DIRENV)
+    (binaries / "ai").write_text(f"#!{sys.executable}\n" + _STUB_AI)
+    for agent in ("claude", "gemini", "pi"):
+        (binaries / agent).write_text(f"#!{sys.executable}\n" + _STUB_AGENT)
+    (binaries / "python3").symlink_to(sys.executable)
+    for program in binaries.iterdir():
+        if not program.is_symlink():
+            program.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    starts = tmp_path / "agent-starts"
+
+    class Run:
+        def __init__(self, completed, log):
+            self.returncode = completed.returncode
+            self.stderr = completed.stderr
+            self.log = log.read_text(encoding="utf-8") if log.exists() else ""
+            self.starts = [json.loads(line) for line in starts.read_text().splitlines()] if starts.exists() else []
+
+    def run(worktree: Path, *, engine: str = "c", direnv: bool = True, options: dict | None = None, env=None):
+        name = f"{engine}-myapp-tst-1"
+        recipe = {"argv": ["ai", engine, "1"], "cwd": str(worktree), "options": options or {}}
+        run_state.register(name, recipe=recipe, host="host-a")
+        generation = run_state.begin(name)
+        log = tmp_path / f"{name}.log"
+        log.write_text("2026-01-01 00:00:00 EST launch log started for session test\n", encoding="utf-8")
+        script = tmp_path / f"{name}.sh"
+        script.write_text(
+            get_engine_script(
+                engine,
+                "myapp-tst-1",
+                name,
+                f"{engine}-myapp-tst-",
+                "myapp",
+                worktree_dir=str(worktree),
+                launch_log_path=str(log),
+            ),
+            encoding="utf-8",
+        )
+        if not direnv:
+            (binaries / "direnv").unlink()
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("DIRENV_")}
+        environment.update(
+            PATH=str(binaries) + os.pathsep + environment["PATH"],
+            HOME=str(home),
+            AI_HOST="host-a",
+            AI_CLI_RUN_GENERATION=generation,
+            FAKE_AGENT_STARTS=str(starts),
+            **(env or {}),
+        )
+        environment.pop("TMUX", None)
+        completed = subprocess.run(
+            [shell, str(script), "--ai-cli-child-body"],
+            cwd=worktree,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        return Run(completed, log)
+
+    return run
+
+
+def _session_lines(log: str, op: str) -> list[str]:
+    return [line for line in log.splitlines() if f"[session] {op}:" in line]
+
+
+def _stamp_within(line: str, started: datetime, finished: datetime) -> bool:
+    """The line leads with the clock of its own emit, not some other instant."""
+    from ai_cli import output as _out
+
+    match = _LOG_STAMP.match(line)
+    assert match, f"log line carries no datetime: {line!r}"
+    when = _out.settings().elements.datetime
+    fmt = "%Y-%m-%d %H:%M:%S"
+    earliest = _out.format_datetime(started - timedelta(seconds=1), fmt, when.timezone)
+    latest = _out.format_datetime(finished + timedelta(seconds=1), fmt, when.timezone)
+    return earliest <= match.group(1) <= latest
+
+
+@pytest.mark.parametrize("engine", ["c", "p"])
+def test_given_a_fresh_unapproved_worktree_envrc_when_the_child_body_starts_then_the_agent_gets_its_environment(
+    session_repo, stub_direnv, child_body, engine
+):
+    """The defect as reported: a restart child came up with direnv's ``is blocked`` refusal.
+
+    The worktree's ``.envrc`` is the tracked one, byte-identical to the repository root's
+    and to ``origin/HEAD``'s, and nothing has approved it. Every engine must start with the
+    project environment, and the child body's own direnv outcome must reach the launch log,
+    stamped with the clock of its emit.
+    """
+    worktree = session_repo["worktree"]
+    assert not stub_direnv.approved(worktree), "precondition: the fresh worktree's .envrc is unapproved"
+    started = datetime.now(UTC)
+
+    run = child_body(worktree, engine=engine)
+
+    finished = datetime.now(UTC)
+    assert run.starts, f"no agent started: {run.stderr}"
+    assert run.starts[0]["PROJECT_ENV"] == "v1", f"agent started without the project environment: {run.stderr}"
+    assert "is blocked" not in run.stderr
+    direnv_lines = _session_lines(run.log, "direnv")
+    assert any("authorized" in line and str(worktree / ".envrc") in line for line in direnv_lines), run.log
+    assert all(_stamp_within(line, started, finished) for line in direnv_lines), direnv_lines
+
+
+def test_given_a_reused_worktree_whose_envrc_changed_on_sync_when_the_child_body_restarts_then_it_is_approved(
+    session_repo, stub_direnv, child_body
+):
+    """A sync that changes ``.envrc`` invalidates its approval: direnv keys it by content.
+
+    The worktree was approved at v1. main then moved to v2 and the worktree synchronized,
+    while the repository root's working copy still holds v1, so the root is no longer a
+    witness. ``origin/HEAD`` is: the content is exactly the upstream default branch's.
+    """
+    worktree = session_repo["worktree"]
+    stub_direnv.allow(worktree)
+    _land_on_main(session_repo, "export PROJECT_ENV=v2\n")
+    _git("pull", "-q", "--ff-only", cwd=worktree)
+    assert (session_repo["root"] / ".envrc").read_text() == "export PROJECT_ENV=v1\n"
+    assert not stub_direnv.approved(worktree), "precondition: the synced content is unapproved"
+
+    run = child_body(worktree)
+
+    assert [start["PROJECT_ENV"] for start in run.starts] == ["v2"], run.stderr
+    assert any("authorized" in line for line in _session_lines(run.log, "direnv")), run.log
+
+
+def test_given_an_envrc_the_session_edited_when_the_child_body_starts_then_no_agent_starts_and_the_fix_is_named(
+    session_repo, stub_direnv, child_body
+):
+    """D-A3: an .envrc matching no trusted copy is a hard stop, never an agent without its environment."""
+    worktree = session_repo["worktree"]
+    envrc = worktree / ".envrc"
+    envrc.write_text("export PROJECT_ENV=edited-by-the-session\n")
+
+    run = child_body(worktree)
+
+    assert run.starts == [], "an agent started although its .envrc could not be approved"
+    assert run.returncode == 77, f"the child body must end the way any other stop does: {run.stderr}"
+    assert not stub_direnv.approved(worktree), "content nobody reviewed was approved"
+    errors = [line for line in _session_lines(run.log, "direnv") if "Error:" in line]
+    assert errors, run.log
+    assert str(envrc) in errors[0] and f"direnv allow {worktree}" in errors[0], errors
+    assert f"direnv allow {worktree}" in run.stderr
+
+
+def test_given_direnv_is_absent_when_the_child_body_starts_then_the_agent_still_starts(session_repo, child_body):
+    """D-A3's other half: direnv absent is never fatal (an earlier regression made it so)."""
+    run = child_body(session_repo["worktree"], direnv=False)
+
+    assert len(run.starts) == 1, run.stderr
+
+
+@pytest.mark.parametrize(
+    ("options", "env"),
+    [({}, {BYPASS_ENV: "1"}), ({"no_direnv": True}, {})],
+    ids=["AI_CLI_SKIP_DIRENV", "launched-with-no-direnv"],
+)
+def test_given_a_direnv_bypass_when_an_untrusted_envrc_is_present_then_the_child_body_does_not_refuse(
+    session_repo, stub_direnv, child_body, options, env
+):
+    worktree = session_repo["worktree"]
+    (worktree / ".envrc").write_text("export PROJECT_ENV=edited-by-the-session\n")
+
+    run = child_body(worktree, options=options, env=env)
+
+    assert len(run.starts) == 1, run.stderr
+    assert not stub_direnv.approved(worktree)
+
+
+def _launch_in(repo_root: Path, tmp_path: Path, monkeypatch, stub_direnv):
+    """``ai c 1 -b`` in ``repo_root``, up to its handoff, against the stand-in direnv."""
+    from ai_cli.main import _do_session_launch
+
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    passthrough = subprocess.run
+
+    def direnv_run(argv, **kwargs):
+        if argv and argv[0] == "direnv":
+            return passthrough([sys.executable, str(stub_direnv.program), *argv[1:]], **kwargs)
+        return passthrough(argv, **kwargs)
+
+    handoffs: list[list[str]] = []
+
+    def fake_execvp(file, args):
+        handoffs.append(list(args))
+        raise SystemExit(0)
+
+    with (
+        patch("ai_cli.direnv_setup.shutil.which", side_effect=_which(have_direnv=True)),
+        patch("ai_cli.direnv_setup.subprocess.run", side_effect=direnv_run),
+        patch("ai_cli.main._direnv_installed", return_value=True),
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._pty_handoff", return_value=fake_execvp),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        pytest.raises(SystemExit) as exited,
+    ):
+        _do_session_launch(
+            engine="c",
+            name="1",
+            resume=False,
+            once=False,
+            bare=True,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            remote=False,
+            project="",
+            is_remote=False,
+            project_prefix_override="myapp",
+            extra_args=[],
+            config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
+        )
+    return exited.value.code, handoffs
+
+
+def test_given_a_reused_worktree_whose_envrc_changes_on_sync_when_launched_then_the_synced_content_is_approved(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    """The launcher approves AFTER the sync, so what is approved is what the agent will load."""
+    worktree = session_repo["worktree"]
+    stub_direnv.allow(worktree)
+    _land_on_main(session_repo, "export PROJECT_ENV=v2\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert (worktree / ".envrc").read_text() == "export PROJECT_ENV=v2\n", "precondition: the launch synced"
+    assert code == 0 and handoffs, "the launch did not reach its handoff"
+    assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
+
+
+def test_given_a_checkout_that_converts_line_endings_when_a_synced_envrc_is_launched_then_it_is_approved(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    """Git for Windows checks files out with ``core.autocrlf=true``: the synced worktree file has
+    CRLF line endings while the ``origin/HEAD`` blob has LF, and it is still the reviewed content."""
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    stub_direnv.allow(worktree)
+    _land_on_main(session_repo, "export PROJECT_ENV=v2\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert (worktree / ".envrc").read_bytes() == b"export PROJECT_ENV=v2\r\n", "precondition: CRLF checkout"
+    assert code == 0 and handoffs, "the launch did not reach its handoff"
+    assert stub_direnv.approved(worktree), "the launch handed off with the synced .envrc still blocked"
+
+
+def test_given_a_converting_checkout_and_a_session_edit_when_launched_then_the_edit_is_still_refused(
+    session_repo, stub_direnv, tmp_path, monkeypatch
+):
+    worktree = session_repo["worktree"]
+    _git("config", "core.autocrlf", "true", cwd=session_repo["root"])
+    (worktree / ".envrc").write_bytes(b"export PROJECT_ENV=edited-by-the-session\r\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert handoffs == [], "the agent was handed off with content no reviewed copy carries"
+    assert not stub_direnv.approved(worktree)
+
+
+def test_given_an_untrusted_envrc_when_launched_then_the_launch_fails_before_the_handoff_and_names_the_fix(
+    session_repo, stub_direnv, tmp_path, monkeypatch, capsys
+):
+    worktree = session_repo["worktree"]
+    envrc = worktree / ".envrc"
+    envrc.write_text("export PROJECT_ENV=edited-by-the-session\n")
+
+    code, handoffs = _launch_in(session_repo["root"], tmp_path, monkeypatch, stub_direnv)
+
+    assert handoffs == [], "the agent was handed off without its project environment"
+    assert code not in (0, None)
+    assert not stub_direnv.approved(worktree)
+    err = capsys.readouterr().err
+    assert "[launch] direnv: Error:" in err, err
+    assert str(envrc) in err and f"direnv allow {worktree}" in err, err
+
+
+def test_given_a_relaunch_with_a_resume_notice_when_the_child_body_starts_then_the_notice_reaches_the_launch_log(
+    session_repo, stub_direnv, child_body
+):
+    """The relaunch path's resume outcome is logged as the launch path's is, not left on the pane."""
+    from ai_cli import config
+
+    config_file = config.get_xdg_config_home() / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text('[relaunch]\nbackground_session_resolver = "/bin/false"\n', encoding="utf-8")
+    started = datetime.now(UTC)
+
+    run = child_body(session_repo["worktree"])
+
+    finished = datetime.now(UTC)
+    resume = [line for line in run.log.splitlines() if "[internal] resume:" in line]
+    assert resume, f"the resume notice never reached the launch log: {run.stderr}"
+    assert all(_stamp_within(line, started, finished) for line in resume), resume
+
+
+def test_given_an_edited_envrc_the_operator_approved_when_the_child_body_starts_then_the_agent_starts_with_it(
+    session_repo, stub_direnv, child_body
+):
+    """An approval the operator gave by hand stands, also on a direnv that predates ``status --json``.
+
+    The stand-in answers ``status`` with the text report direnv 2.32 and earlier print
+    whatever the flags, so reading only the JSON would take this approved file for an
+    unapproved one and refuse to start.
+    """
+    worktree = session_repo["worktree"]
+    (worktree / ".envrc").write_text("export PROJECT_ENV=reviewed-by-the-operator\n")
+    stub_direnv.allow(worktree)
+
+    run = child_body(worktree)
+
+    assert [start["PROJECT_ENV"] for start in run.starts] == ["reviewed-by-the-operator"], run.stderr
+
+
+@pytest.mark.parametrize("status", [1, 127], ids=["helper-crashed", "helper-missing"])
+def test_given_an_approval_helper_that_cannot_run_when_the_child_body_starts_then_no_agent_starts(
+    session_repo, stub_direnv, child_body, status
+):
+    """D-A3 fails closed: a helper that crashed or is missing never starts an agent beside a blocked .envrc."""
+    worktree = session_repo["worktree"]
+
+    run = child_body(worktree, env={"FAKE_AI_PREPARE_EXIT": str(status)})
+
+    assert run.starts == [], "an agent started although the .envrc check never ran"
+    assert run.returncode == 77, run.stderr
+    assert f"exited {status}" in run.stderr and "ai internal prepare-project-env" in run.stderr, run.stderr
+    errors = [line for line in _session_lines(run.log, "direnv") if "Error:" in line]
+    assert errors and f"exited {status}" in errors[0], run.log
+
+
+def test_given_a_child_body_with_a_launch_log_when_the_agent_starts_then_the_agent_cannot_write_to_it(
+    session_repo, stub_direnv, child_body
+):
+    """The log variable reaches the child body's own `ai internal` calls, never the agent or its hooks."""
+    run = child_body(session_repo["worktree"])
+
+    assert run.starts and run.starts[0]["launch_log"] is None, run.starts
+    assert _session_lines(run.log, "direnv"), "the child body's own records must still reach the log"
+
+
+@pytest.mark.parametrize(
+    ("platform", "text", "expected"),
+    [
+        ("win32", "/c/Users/user/myproject/.worktrees/myproject-1", "c:/Users/user/myproject/.worktrees/myproject-1"),
+        ("win32", "/D/work", "D:/work"),
+        ("win32", "C:/Users/user/myproject", "C:/Users/user/myproject"),
+        ("linux", "/c/Users/user/myproject", "/c/Users/user/myproject"),
+        ("darwin", "/c/Users/user/myproject", "/c/Users/user/myproject"),
+    ],
+)
+def test_given_a_shell_working_directory_when_it_reaches_the_approval_step_then_it_is_a_native_path(
+    platform, text, expected, monkeypatch
+):
+    """The child body passes its shell's ``$PWD``, which an MSYS shell on Windows spells ``/c/...``."""
+    from ai_cli import session as _session
+    from ai_cli.main import _handle_internal
+
+    received: list[Path] = []
+
+    def prepare(directory, *, config=None):
+        received.append(directory)
+        return _session.ProjectEnvironment(True, _session.Level.DETAIL, "nothing to approve")
+
+    monkeypatch.setattr(_session, "prepare_project_environment", prepare)
+    monkeypatch.setattr(sys, "platform", platform)
+    with pytest.raises(SystemExit) as exited:
+        _handle_internal(["prepare-project-env", text])
+
+    assert exited.value.code == 0
+    assert received == [Path(expected)]
+
+
+@pytest.mark.parametrize("renderer", [True, False], ids=["rendered", "plain-fallback"])
+def test_given_a_configured_timezone_when_the_child_body_prints_to_the_pane_then_every_stamp_uses_it(
+    session_repo, stub_direnv, child_body, renderer
+):
+    """Every pane stamp honours `[output.elements.datetime] timezone`, the renderer's and the fallback's.
+
+    `_ai_emit` falls back to a plain line when `ai internal emit` cannot run, and that line
+    was stamped with a hard-coded `TZ=America/New_York`, whatever the configured zone. Both
+    stamp sources must show the configured zone, at the clock of the line.
+    """
+    from ai_cli import config
+
+    config_file = config.get_xdg_config_home() / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("[output.elements.datetime]\ntimezone = 'UTC'\n", encoding="utf-8")
+    started = datetime.now(UTC) - timedelta(seconds=1)
+
+    run = child_body(session_repo["worktree"], env={} if renderer else {"FAKE_AI_NO_RENDERER": "1"})
+
+    finished = datetime.now(UTC) + timedelta(seconds=1)
+    stamped = [line for line in run.stderr.splitlines() if _LOG_STAMP.match(line)]
+    # The direnv line comes from the approval helper, the host line from `_ai_emit`.
+    assert any("[session] direnv:" in line for line in stamped), run.stderr
+    host = [line for line in stamped if "[session] host:" in line]
+    assert host, run.stderr
+    for line in stamped:
+        stamp, zone = line.split(" [", 1)[0].rsplit(" ", 1)
+        assert zone == "UTC", f"pane line not in the configured zone: {line!r}"
+        assert started.strftime("%Y-%m-%d %H:%M:%S") <= stamp <= finished.strftime("%Y-%m-%d %H:%M:%S"), line
+
+
+def test_given_an_agent_that_ran_when_it_exits_then_the_child_bodys_own_calls_log_again(
+    session_repo, stub_direnv, child_body, tmp_path
+):
+    """The agent is started without the launch log variable; the calls after it still carry it."""
+    calls = tmp_path / "ai-calls"
+
+    run = child_body(session_repo["worktree"], env={"FAKE_AI_CALLS": str(calls), "FAKE_AGENT_SECONDS": "4"})
+
+    assert run.starts and run.starts[0]["launch_log"] is None, run.starts
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    after = [call for call in recorded if call["action"] == ["get-version"]]
+    assert after, f"the child body never reached its post-agent calls: {run.stderr}"
+    assert all(call["launch_log"] for call in after), after

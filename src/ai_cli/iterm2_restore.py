@@ -38,6 +38,9 @@ MENU_PATH = "Window > Restore Window Arrangement"
 #: Set on every relaunch of a session whose exit cause is known, so the launch on the far
 #: end can record why it was relaunched.
 LAUNCH_REASON_VAR = "AI_CLI_LAUNCH_REASON"
+#: Set beside ``LAUNCH_REASON_VAR`` in a session's first agent, to the same value: the reason
+#: belongs to that session, so an ``ai c`` run from inside it does not treat it as its own.
+INHERITED_LAUNCH_REASON_VAR = "AI_CLI_INHERITED_LAUNCH_REASON"
 
 _SECTION = "[iterm2.persistence.restore]"
 _SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "xonsh"})
