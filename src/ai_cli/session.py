@@ -220,16 +220,20 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
         return False
 
     target = str(worktree_dir)
-    for proc in psutil.process_iter(["name", "cmdline"]):
+    # Each process's name and arguments are read here, not by process_iter, so a failing read skips
+    # that process instead of ending the scan. psutil on macOS can raise SystemError reading another
+    # process's arguments (sysctl KERN_PROCARGS2), and name() reads them too for a name of 15 or
+    # more characters.
+    for proc in psutil.process_iter():
         try:
-            name = (proc.info.get("name") or "").lower()
+            name = proc.name().lower()
             if not any(tok in name for tok in ("claude", "agy", "codex", "gemini", "pi", "node")):
-                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                cmdline = " ".join(proc.cmdline()).lower()
                 if not any(tok in cmdline for tok in ("claude", "agy", "codex", "gemini")):
                     continue
             if proc.cwd() == target:
                 return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        except (psutil.Error, OSError, SystemError):
             continue
     return False
 

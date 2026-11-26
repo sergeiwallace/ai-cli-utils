@@ -473,7 +473,10 @@ def _tmux_absent_without_binary() -> bool | None:
                 return None
             if info["name"].split(":", 1)[0].removesuffix(".exe") == "tmux":
                 return None
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, SystemError):
+        # SystemError: on POSIX, process_iter's name() reads the argv of a process named 15 or
+        # more characters, and psutil on macOS can raise SystemError reading another process's
+        # argv (sysctl KERN_PROCARGS2). The scan then cannot prove tmux gone.
         return None
     return False
 
@@ -881,16 +884,28 @@ def _remote_candidates(parse_launch: Callable[[list[str]], dict], remote_config:
     except psutil.Error:
         user = None
     lines: list[AdoptLine] = []
-    procs = psutil.process_iter(["pid", "name", "cmdline", "terminal", "username", "create_time"])
+    # Arguments and name are read below, not by process_iter, so a failing read affects only that
+    # process instead of ending the scan. psutil on macOS can raise SystemError reading another
+    # process's arguments (sysctl KERN_PROCARGS2), and name() reads them too for a name of 15 or
+    # more characters.
+    procs = psutil.process_iter(["pid", "terminal", "username", "create_time"])
     for proc in sorted(procs, key=lambda p: p.info["pid"]):
         info = proc.info
         if info["pid"] == me:
             continue
-        cmdline = info.get("cmdline")
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.AccessDenied, psutil.ZombieProcess, OSError, SystemError):
+            cmdline = None
+        except psutil.NoSuchProcess:
+            continue
         if cmdline is None:
             # Unreadable argv. Reported only where it could be a launcher (this user's
             # python or ai process on a terminal), and never guessed at.
-            name = str(info.get("name") or "").lower()
+            try:
+                name = proc.name().lower()
+            except (psutil.Error, OSError, SystemError):
+                name = ""
             if info.get("terminal") and info.get("username") == user and ("python" in name or name == "ai"):
                 lines.append(AdoptLine("skipped", f"pid {info['pid']}", "argv cannot be read"))
             continue

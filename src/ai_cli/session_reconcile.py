@@ -69,7 +69,9 @@ def _process_alive(record: dict) -> bool | None:
                         return True
                 try:
                     argv = process.cmdline()
-                except psutil.AccessDenied:
+                except (psutil.AccessDenied, SystemError):
+                    # psutil on macOS can raise SystemError reading another process's
+                    # arguments (sysctl KERN_PROCARGS2); that is unreadable argv too.
                     argv = None
                 if not argv:
                     # Missing arguments on a possible agent or wrapper are unknown;
@@ -120,7 +122,8 @@ def _process_alive(record: dict) -> bool | None:
                 continue
             except (psutil.Error, OSError, ValueError, KeyError):
                 return None
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, SystemError):
+        # SystemError: process_iter's name() reads argv for a long name (see above).
         return None
     return False
 

@@ -12,10 +12,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from time import monotonic, sleep
 from unittest.mock import patch
 
+import psutil
 import pytest
-from process_ownership import spawn_owned_python
+from process_ownership import reap, spawn_owned_python
 
 from ai_cli import direnv_exec
 from ai_cli.main import (
@@ -749,6 +751,41 @@ def test_given_live_bare_codex_worktree_when_finding_index_then_skips_to_next(tm
         patch("ai_cli.session._worktree_has_live_session", side_effect=_live),
     ):
         assert find_next_index("cx-kg-", use_tmux=False) == 2
+
+
+def test_given_other_processes_argv_raising_system_error_when_finding_index_then_the_live_slot_is_still_seen(
+    tmp_path, monkeypatch
+):
+    """psutil on macOS can raise SystemError, not AccessDenied, reading another process's argv
+    (``sysctl(KERN_PROCARGS2)``); one such process must not end the scan for the engine."""
+    repo = tmp_path.resolve()
+    slot = repo / ".worktrees" / "myproject-1"
+    slot.mkdir(parents=True)
+    engine = spawn_owned_python("import time; time.sleep(60)", "claude", cwd=str(slot))
+    try:
+        deadline = monotonic() + 10
+        while monotonic() < deadline:
+            try:
+                process = psutil.Process(engine.pid)
+                if process.cmdline()[-1:] == ["claude"] and process.cwd() == str(slot):
+                    break
+            except psutil.Error:
+                pass
+            sleep(0.01)
+        real_cmdline = psutil.Process.cmdline
+
+        def cmdline(self):
+            if self.pid != engine.pid:
+                raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+            return real_cmdline(self)
+
+        monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+        with patch("ai_cli.session.detect_repo_root", return_value=repo):
+            index = find_next_index("c-myproject-", use_tmux=False)
+    finally:
+        reap(engine)
+
+    assert index == 2
 
 
 def test_given_bare_mode_when_building_session_name_then_no_tmux_call():
