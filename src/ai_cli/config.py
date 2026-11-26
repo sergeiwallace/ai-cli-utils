@@ -704,10 +704,9 @@ DEFAULT_SESSION_REGISTER_TIMEOUT = 15.0
 
 
 def read_session_register_config(config: dict) -> dict | None:
-    """``[session_register]``: the command a Codex or agy session-start hook runs, or ``None``.
+    """``[session_register]``: the optional command for a confirmed Codex or agy launch.
 
-    Raises ``ValueError`` for a setting that is present but unusable; the hook reports it
-    and starts the session unregistered.
+    Raises ``ValueError`` for a setting that is present but unusable.
     """
     section = config.get("session_register", {})
     if not isinstance(section, dict):
@@ -847,9 +846,12 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Optional: a command that names the background session id. It is run as
 ## `<command> --session <ai session name> --pane-capture <file>`, where the file
 ## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
-## id on stdout is an answer; anything else is no answer. The id is only a hint:
-## it is attached only if `claude agents --json` lists it as a live background
-## session. Unset (the default) skips the command; ai then attaches only when exactly
+## id on stdout is an answer; anything else is no answer. Exit 3 is the command
+## saying nothing is pending for this session, which is recorded in the launch log,
+## not shown; any other non-zero exit, a timeout, a command that cannot run or one
+## that prints something other than one id is a warning, quoting its last stderr
+## line, and reaches the launch log too. The id is only a hint: it is attached only if
+## `claude agents --json` lists it as a live background session. Unset (the default) skips the command; ai then attaches only when exactly
 ## one live background session has this session's name and directory.
 # background_session_resolver = "/path/to/resolver-command"
 # background_session_resolver_timeout_seconds = 10
@@ -933,9 +935,14 @@ enabled = true
 ## package manager when running as root) and otherwise print per-OS remediation.
 ## A launch is never blocked by this -- direnv only supplies the project
 ## environment, so its absence degrades a session rather than ending it.
+## Before every agent start (launch and restart alike) the .envrc of a session
+## worktree is approved when its content matches the repository root's copy or
+## the one on origin/HEAD; one that cannot be approved stops the start and names
+## the `direnv allow` command to run after reviewing it.
 ##
-## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
-## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Set false to skip the preflight and the approval entirely on this machine.
+## Equivalent one-offs: AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv
+## on the launch.
 ## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
 ## additionally needs bash on PATH (Git for Windows supplies one).
 # enabled = true
@@ -993,12 +1000,14 @@ stale_session_timeout = 15
 # timeout_seconds = 300
 
 [session_register]
-## A command the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks run once the
-## launch is confirmed, for a deployment that keeps a registry of live agent sessions.
-## "{client}" in any argument is replaced by "codex" or "agy". It runs without a shell,
-## inside the client's own process tree, so the command can find the client among its
-## ancestors. Its output is captured. A failure or timeout prints one warning line and the
-## session starts unregistered. Read at every session start. Unset: nothing runs.
+## A command run by the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks
+## after launch confirmation, for deployments with a registry of live agent sessions.
+## Session-start hooks run inside the client's process tree.
+## On an Antigravity tmux resume, the launcher runs it after the control bridge binds
+## the conversation and sets AI_TMUX_SESSION to the tmux slot name.
+## "{client}" in any argument is replaced by "codex" or "agy". The command runs without
+## a shell, and its output is captured. A failure or timeout prints one warning line
+## and the session starts unregistered. Unset: nothing runs.
 # command = ["register-session", "--client", "{client}"]
 ## Seconds the command may run before it is stopped. Default 15.
 # timeout_seconds = 15
