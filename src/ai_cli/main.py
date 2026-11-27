@@ -92,8 +92,10 @@ from .git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
+    operation_in_progress,
     pull_rebase_autostash,
     repair_bare_worktree_config,
+    sync_worktree_branch,
     unmerged_paths,
 )
 from .iterm2 import (  # noqa: F401
@@ -3377,7 +3379,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     # "Pulling is not possible because you have unmerged files", and the repo
     # never advances again. That is how the remote build host sat 50 commits
     # behind for five days while its disk filled — docs/bugs/stranded-autostash.md.
-    pull, stranded = pull_rebase_autostash(project_path)
+    pull, stranded = pull_rebase_autostash(project_path, autostash_if_clean=True)
     # A conflicted index means the pull could not advance the checkout — whether
     # this run caused it or a previous one did. Either way the source tree is
     # stale and cannot be built from, and every later pull will refuse too, so
@@ -7021,8 +7023,17 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
+            try:
+                _in_progress_before: str | None = operation_in_progress(worktree_path)
+            except GitProbeError:
+                _in_progress_before = "unknown"
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
-                pull, stranded = pull_rebase_autostash(worktree_path)
+                _sync = sync_worktree_branch(
+                    worktree_path,
+                    published_mode=_config.get_worktree_published_branch_sync(),
+                    pull_fn=pull_rebase_autostash,
+                )
+                pull, stranded = _sync.process, _sync.stranded
                 _detail = ""
                 if pull.returncode and not stranded:
                     _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
@@ -7030,7 +7041,27 @@ def _do_session_launch(
                     _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
                     if _lines:
                         _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
-                if pull.returncode != 0 and not stranded and not _conflicted_before:
+                if pull.returncode == 0 and not stranded and _sync.summary:
+                    _sync_phase.outcome(_sync.summary)
+                if pull.returncode != 0 and not stranded and _sync.arm == "published-fetch-failed":
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and _sync.arm == "published-merge-failed":
+                    if not _conflicted_before and not _in_progress_before:
+                        subprocess.run(
+                            ["git", "merge", "--abort"],
+                            capture_output=True,
+                            cwd=worktree_path,
+                            env=_git_env(),
+                            check=False,
+                        )
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and not _conflicted_before and not _in_progress_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
                     # would abort a rebase the user is part-way through and wipe their

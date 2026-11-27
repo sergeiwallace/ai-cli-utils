@@ -916,6 +916,7 @@ notify_on_exit = true
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
+published_branch_sync = "report"
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
 ## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
@@ -1947,8 +1948,19 @@ def get_worktree_marker_prefix() -> str:
 
 #: ``[worktree] venv`` values: a private ``uv sync`` environment per worktree, or a link to main's.
 WORKTREE_VENV_MODES = ("private", "link")
+WORKTREE_PUBLISHED_BRANCH_SYNC_MODES = ("report", "merge")
 #: Seconds a new worktree's ``uv sync`` may take before the launch stops and says so.
 DEFAULT_WORKTREE_VENV_SYNC_TIMEOUT = 900.0
+
+
+def get_worktree_published_branch_sync() -> str:
+    """``[worktree] published_branch_sync``, read at call time: "report" (default) or "merge"."""
+    try:
+        value = load_config().get("worktree", {}).get("published_branch_sync")
+    except Exception:
+        return "report"
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return value if value in WORKTREE_PUBLISHED_BRANCH_SYNC_MODES else "report"
 
 
 def get_worktree_venv_mode() -> str:

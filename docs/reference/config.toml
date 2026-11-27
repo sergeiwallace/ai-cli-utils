@@ -157,6 +157,7 @@ notify_on_exit = true
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
+published_branch_sync = "report"
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
 ## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
