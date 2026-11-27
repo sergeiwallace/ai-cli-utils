@@ -55,6 +55,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 
 import jinja2
@@ -117,6 +118,8 @@ class TemplateChanges:
     previous_paths: set[str] = field(default_factory=set)
     # Questions the current template declares; None when its configuration could not be read.
     declared_questions: set[str] | None = None
+    verified_render_paths: set[str] = field(default_factory=set)
+    new_file_contents: dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -497,11 +500,16 @@ def _parse_diff_hunks(diff: str) -> tuple[set[str], set[tuple[str, tuple[str, ..
     return paths, hunks
 
 
-def _template_config(template_dir: Path) -> dict[str, object]:
-    """Return the current Copier configuration, or an empty mapping on failure."""
+def _template_config(template_dir: Path, revision: str = "HEAD") -> dict[str, object]:
+    """Read Copier configuration, retaining the empty mapping fallback for callers."""
+    return _read_template_config(template_dir, revision) or {}
+
+
+def _read_template_config(template_dir: Path, revision: str = "HEAD") -> dict[str, object] | None:
+    """Read the Copier configuration at a revision. An absent config uses defaults."""
     for config_name in ("copier.yml", "copier.yaml"):
         result = subprocess.run(
-            ["git", "-C", str(template_dir), "show", f"HEAD:{config_name}"],
+            ["git", "-C", str(template_dir), "show", f"{revision}:{config_name}"],
             capture_output=True,
             text=True,
             env=_git_env(),
@@ -510,13 +518,13 @@ def _template_config(template_dir: Path) -> dict[str, object]:
         if result.returncode != 0:
             continue
         if not isinstance(result.stdout, str):
-            return {}
+            return None
         try:
             config = yaml.safe_load(result.stdout) or {}
         except yaml.YAMLError:
-            return {}
+            return None
         if not isinstance(config, dict):
-            return {}
+            return None
         return config
     return {}
 
@@ -643,25 +651,25 @@ def _comparable_template_text(text: str) -> str:
     return " ".join(plain.split())
 
 
-def _whitespace_only_change(template_dir: Path, previous_commit: str, path: str) -> bool:
-    """Whether a template file differs between two commits only in whitespace or Jinja whitespace control.
-
-    A project whose own formatter already produced the new whitespace gets no file change from Copier,
-    which is correct, so parity must not demand one. A file missing at either commit is not a match.
-    """
-    versions = []
-    for revision in (previous_commit, "HEAD"):
-        shown = subprocess.run(
-            ["git", "-C", str(template_dir), "show", f"{revision}:{path}"],
-            capture_output=True,
-            text=True,
-            env=_git_env(),
-            check=False,
+def _render_template_text(
+    source: str, config: dict[str, object] | None, answers: dict[str, object] | None
+) -> str | None:
+    """Render self-contained Jinja with known answers, or keep the source expectations."""
+    if config is None or config.get("_jinja_extensions") or config.get("_templates_suffix", ".jinja") != ".jinja":
+        return None
+    envops = config.get("_envops", {})
+    if not isinstance(envops, dict) or {"loader", "extensions"} & envops.keys():
+        return None
+    context = _question_defaults(config)
+    context.update({name: value for name, value in (answers or {}).items() if not name.startswith("_")})
+    try:
+        environment = SandboxedEnvironment(
+            **{"keep_trailing_newline": True, **envops, "undefined": jinja2.StrictUndefined}
         )
-        if shown.returncode != 0:
-            return False
-        versions.append(shown.stdout)
-    return _comparable_template_text(versions[0]) == _comparable_template_text(versions[1])
+        return environment.from_string(source).render(context)
+    except Exception:
+        # Jinja can propagate Python errors from filters and expressions as well as TemplateError.
+        return None
 
 
 def _template_diff(
@@ -687,19 +695,67 @@ def _template_diff(
             ["git", "-C", str(template_dir), "diff", "--no-ext-diff", "--unified=0", previous_commit, "HEAD", "--"],
             capture_output=True,
             text=True,
+            errors="surrogateescape",
             env=_git_env(),
             check=False,
         )
-        config = _template_config(template_dir)
+        if result.returncode != 0:
+            return None
+        current_config = _read_template_config(template_dir)
+        config = current_config or {}
         subdirectory = _template_subdirectory(config)
-        whitespace_only = (
-            {
-                path
-                for path in _parse_diff_hunks(result.stdout)[0]
-                if _whitespace_only_change(template_dir, previous_commit, path)
-            }
-            if result.returncode == 0
-            else set()
+        paths, source_hunks = _parse_diff_hunks(result.stdout)
+        previous_config = _read_template_config(template_dir, previous_commit)
+        same_subdirectory = _template_subdirectory(previous_config or {}) == subdirectory
+        ignored_source_paths = set()
+        rendered_source_paths = set()
+        new_file_contents = {}
+        hunks = set()
+        for path in paths:
+            rendered_path = _rendered_template_path(path, subdirectory)
+            if rendered_path is None:
+                continue
+            try:
+                previous = _git_read(["-C", str(template_dir), "show", f"{previous_commit}:{path}"])
+                current = _git_read(["-C", str(template_dir), "show", f"HEAD:{path}"])
+            except UnicodeDecodeError:
+                continue
+            if previous is None and current is not None:
+                if path.endswith(".jinja"):
+                    rendered = _render_template_text(current, current_config, answers)
+                    if rendered is not None:
+                        new_file_contents[rendered_path] = rendered.encode("utf-8")
+                else:
+                    content = subprocess.run(
+                        ["git", "-C", str(template_dir), "show", f"HEAD:{path}"],
+                        capture_output=True,
+                        env=_git_env(),
+                        check=False,
+                    )
+                    if content.returncode == 0 and isinstance(content.stdout, bytes):
+                        new_file_contents[rendered_path] = content.stdout
+            if previous is None or current is None:
+                continue
+            if same_subdirectory and path.endswith(".jinja"):
+                old_render = _render_template_text(previous, previous_config, answers)
+                new_render = _render_template_text(current, current_config, answers)
+                if old_render is not None and new_render is not None:
+                    previous, current = old_render, new_render
+                    rendered_source_paths.add(path)
+            if _comparable_template_text(previous) == _comparable_template_text(current):
+                ignored_source_paths.add(path)
+            elif path in rendered_source_paths:
+                old_lines, new_lines = previous.splitlines(), current.splitlines()
+                hunks.update(
+                    (path, tuple(old_lines[i:j]), tuple(new_lines[k:l]))
+                    for tag, i, j, k, l in SequenceMatcher(None, old_lines, new_lines, autojunk=False).get_opcodes()
+                    if tag != "equal"
+                )
+        paths -= ignored_source_paths
+        hunks.update(
+            hunk
+            for hunk in source_hunks
+            if hunk[0] not in ignored_source_paths and hunk[0] not in rendered_source_paths
         )
         head_files = subprocess.run(
             ["git", "-C", str(template_dir), "ls-tree", "-r", "--name-only", "HEAD"],
@@ -715,11 +771,8 @@ def _template_diff(
             env=_git_env(),
             check=False,
         )
-    if result.returncode != 0 or head_files.returncode != 0 or previous_files.returncode != 0:
+    if head_files.returncode != 0 or previous_files.returncode != 0:
         return None
-    paths, hunks = _parse_diff_hunks(result.stdout)
-    paths -= whitespace_only
-    hunks = {hunk for hunk in hunks if hunk[0] not in whitespace_only}
     rendered_paths = {
         rendered_path for path in paths if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
     }
@@ -753,6 +806,12 @@ def _template_diff(
         _excluded_on_update(config, answers),
         previous_paths,
         {name for name in config if not name.startswith("_")} if config else None,
+        {
+            rendered_path
+            for path in paths & rendered_source_paths
+            if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+        },
+        {path: content for path, content in new_file_contents.items() if path not in previous_paths},
     )
 
 
@@ -782,6 +841,9 @@ def _verify_update_parity(
     deleted_template_paths: set[str] | None = None,
     excluded_on_update: set[str] | None = None,
     previous_template_paths: set[str] | None = None,
+    *,
+    verified_render_paths: set[str] | None = None,
+    new_file_contents: dict[str, bytes] | None = None,
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
@@ -792,6 +854,7 @@ def _verify_update_parity(
     skip_if_exists = skip_if_exists or set()
     deleted_template_paths = deleted_template_paths or set()
     excluded_on_update = excluded_on_update or set()
+    verified_render_paths = verified_render_paths or set()
     ignored_paths = {
         path
         for path in {*skip_if_exists, *template_paths}
@@ -804,6 +867,23 @@ def _verify_update_parity(
         if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
     )
     ignored_paths.update(excluded_on_update)
+    for path, expected in (new_file_contents or {}).items():
+        for candidate in _path_candidates(path):
+            try:
+                if (project_dir / candidate).read_bytes() == expected:
+                    ignored_paths.add(path)
+                    break
+            except OSError:
+                pass
+            committed = subprocess.run(
+                ["git", "-C", str(project_dir), "show", f"HEAD:{candidate}"],
+                capture_output=True,
+                env=_git_env(),
+                check=False,
+            )
+            if committed.returncode == 0 and committed.stdout == expected:
+                ignored_paths.add(path)
+                break
     # A file the old template shipped and the project no longer has was removed on purpose, and
     # Copier keeps a removed file removed, so a later template change to it is not a missing file.
     ignored_paths.update(
@@ -824,8 +904,10 @@ def _verify_update_parity(
         hunk
         for hunk in template_hunks
         if hunk[0] not in ignored_paths
-        and "{{" not in "\n".join((*hunk[1], *hunk[2]))
-        and "{%" not in "\n".join((*hunk[1], *hunk[2]))
+        and (
+            hunk[0] in verified_render_paths
+            or all(marker not in line for line in (*hunk[1], *hunk[2]) for marker in ("{{", "{%"))
+        )
     }
     # Compare tracked changes to HEAD even if Copier staged part of the update.
     base = ["HEAD"] if any(_path_candidates(path) - untracked_paths for path, _, _ in expected_static_hunks) else []
@@ -871,8 +953,7 @@ def _verify_update_parity(
                 still_present = Counter(line for line in removed if line not in added and line in contents)
                 if still_present <= removed_by_path[candidate]:
                     break
-            # A missing pure addition has no old lines to establish that a section was omitted.
-            elif removed and contents.keys().isdisjoint(added):
+            elif path not in verified_render_paths and removed and contents.keys().isdisjoint(added):
                 before = head_lines(candidate)
                 if before is not None and before.isdisjoint(removed):
                     break
@@ -1509,6 +1590,8 @@ def _do_update_in_worktree(
         template_changes.deleted_paths,
         template_changes.excluded_on_update,
         template_changes.previous_paths,
+        verified_render_paths=template_changes.verified_render_paths,
+        new_file_contents=template_changes.new_file_contents,
     )
     if parity_error is not None:
         return "parityfail", parity_error
@@ -2023,6 +2106,8 @@ def _run_direct_prepared(
                 template_changes.deleted_paths,
                 template_changes.excluded_on_update,
                 template_changes.previous_paths,
+                verified_render_paths=template_changes.verified_render_paths,
+                new_file_contents=template_changes.new_file_contents,
             )
             if parity_error is not None:
                 _out.cont(Tag.COPIER, "update", "✗ TEMPLATE PARITY FAILED" + note)
