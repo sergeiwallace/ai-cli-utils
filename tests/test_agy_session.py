@@ -3302,3 +3302,81 @@ def test_given_multiple_unmetadated_g_sessions_when_ls_runs_then_batches_into_si
 
     monkeypatch.setattr(main.subprocess, "run", raise_timeout)
     assert main._probe_all_g_session_clients_from_tmux() == {}
+
+
+def test_given_stopped_no_worktree_agy_slot_in_subdir_when_resuming_with_explicit_no_worktree_flag_via_cli_then_keeps_caller_cwd(
+    tmp_path, monkeypatch
+):
+    from click.testing import CliRunner
+
+    repo_root = tmp_path / "repo"
+    subdir = repo_root / "subdir"
+    subdir.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    _setup_agy_cli_tmux_env(repo_root, monkeypatch)
+    monkeypatch.setattr(main._config, "load_config", lambda **_kw: {"worktree": {"enabled": True}})
+    monkeypatch.setattr(main._session, "detect_repo_root", lambda: str(repo_root))
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+    monkeypatch.setattr(main._tmux_setup, "tmux_present", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "tmux_runs", lambda: True)
+    monkeypatch.setattr(main._tmux_setup, "formats_expand", lambda: True)
+    monkeypatch.setattr(
+        main._tmux_setup,
+        "probe",
+        lambda **_kw: main._tmux_setup.TmuxReport(
+            present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="3.7c"
+        ),
+    )
+    monkeypatch.setattr(main._session, "_tmux_session_names", list)
+    monkeypatch.setattr(main._session.subprocess, "run", _fake_tmux_has_session([]))
+    monkeypatch.setattr(
+        main._session_naming,
+        "resolve_launch_naming",
+        lambda repo_alias, _cfg, **_kw: main._session_naming.LaunchNaming(
+            f"{repo_alias}-box", repo_alias, "box", False
+        ),
+    )
+    monkeypatch.setattr(main._session_naming, "validate_script_metadata", lambda *_a, **_kw: None)
+    monkeypatch.setattr(main._session, "cleanup_stale_sessions", lambda _cfg: None)
+    monkeypatch.setattr(main, "_finish_recorded_migrations", lambda *_a, **_kw: None)
+
+    slot = "g-myproject-box-1"
+    _write_agy_slot_record(state_dir, slot, subdir.resolve())
+
+    created_worktrees: list[str] = []
+    monkeypatch.setattr(main._session, "create_worktree", lambda *a, **kw: created_worktrees.append(str(a)))
+
+    seen_script_worktree: list[str | None] = []
+
+    def fake_get_engine_script(*args, **kwargs):
+        seen_script_worktree.append(args[7] if len(args) > 7 else kwargs.get("worktree_dir"))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main._session_script, "get_engine_script", fake_get_engine_script)
+
+    res = CliRunner().invoke(main._cli_group, ["g", "myproject-box-1", "-r", "-W", "--no-direnv"])
+    assert res.exit_code == 0, res.output
+    assert created_worktrees == []
+    assert seen_script_worktree == [None]
+
+
+def test_given_agy_slot_record_with_embedded_nul_cwd_when_checking_evidence_or_saved_cwd_then_returns_none(
+    tmp_path, monkeypatch
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    state_dir = tmp_path / "state"
+    sessions_dir = state_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    monkeypatch.setattr(main._config, "get_xdg_state_home", lambda: state_dir)
+
+    slot = "g-myproject-box-1"
+    bad_cwd = f"{repo_root.resolve()}\x00corrupt"
+    (sessions_dir / f"{slot}.agy.json").write_text(
+        json.dumps({"slot": slot, "cwd": bad_cwd, "conversation_id": "conv-1"}),
+        encoding="utf-8",
+    )
+
+    assert main._session_evidence("g", repo_root, "myproject-box-1") is None
+    assert main._saved_agy_no_worktree_cwd(slot, repo_root) is None

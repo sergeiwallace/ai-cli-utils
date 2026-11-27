@@ -5292,7 +5292,10 @@ def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str 
                 continue
             if not isinstance(doc, dict) or not isinstance(doc.get("cwd"), str):
                 continue
-            record_cwd = Path(doc["cwd"]).resolve()
+            try:
+                record_cwd = Path(doc["cwd"]).resolve()
+            except (OSError, ValueError):
+                continue
             if record_cwd == resolved_root or resolved_root in record_cwd.parents:
                 return title
     return None
@@ -5320,7 +5323,7 @@ def _saved_agy_no_worktree_cwd(session_id: str, repo_root: "Path | None") -> "Pa
     try:
         saved_cwd = saved_path.resolve()
         resolved_root = Path(repo_root).resolve()
-    except OSError:
+    except (OSError, ValueError):
         return None
     if not saved_cwd.is_dir():
         return None
@@ -6759,6 +6762,7 @@ def _do_session_launch(
             sys.exit(1)
         _dry_run_saved_no_worktree = (
             engine == "g"
+            and not no_worktree
             and resume_target is not None
             and bool(resume_target.title)
             and _saved_agy_no_worktree_cwd(session_id, _resume_root_path) is not None
@@ -6887,7 +6891,11 @@ def _do_session_launch(
     _attaching_live = False
     saved_agy_no_worktree_cwd = (
         _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
-        if engine == "g" and replay_recipe is None and resume_target is not None and resume_target.title
+        if engine == "g"
+        and not no_worktree
+        and replay_recipe is None
+        and resume_target is not None
+        and resume_target.title
         else None
     )
     if saved_agy_no_worktree_cwd is not None and _resume_root_path is not None:
