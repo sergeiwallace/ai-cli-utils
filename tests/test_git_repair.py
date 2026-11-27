@@ -1131,11 +1131,11 @@ def test_given_unpushed_session_branch_when_syncing_then_rebases_and_reports_arm
     assert sync.process.returncode == 0
     assert _git(local, "rev-parse", "HEAD").stdout.strip() != old_tip
     assert _git(local, "merge-base", "--is-ancestor", new_main_sha, "HEAD").returncode == 0
-    assert "rebased branch 'wt-session-1'" in sync.summary
+    assert "synced branch 'wt-session-1' by pull --rebase" in sync.summary
 
 
 def test_given_diverged_remote_branch_when_syncing_then_rebases_and_reports_arm(tmp_path):
-    """AC-2: when origin/<branch> is not an ancestor of HEAD, launch takes the rebase arm."""
+    """AC-2: when upstream IS origin/<branch> and not an ancestor of HEAD, pull --rebase runs."""
     remote, seed = _make_bare_remote_with_main(tmp_path)
     local = _clone(remote, tmp_path / "local")
     _git(local, "checkout", "-q", "-b", "feat/diverged")
@@ -1157,8 +1157,66 @@ def test_given_diverged_remote_branch_when_syncing_then_rebases_and_reports_arm(
     assert sync.arm == "rebase"
     assert sync.process.returncode == 0
     assert _git(local, "merge-base", "--is-ancestor", peer_sha, "HEAD").returncode == 0
-    assert "rebased branch 'feat/diverged'" in sync.summary
+    assert "synced branch 'feat/diverged' by pull --rebase" in sync.summary
     assert "not an ancestor of HEAD" in sync.summary
+
+
+def test_given_diverged_pushed_branch_tracking_origin_main_when_syncing_then_skips_rebase_and_reports_divergence(
+    tmp_path,
+):
+    """A pushed branch tracking origin/main that diverged from origin/<branch> must not be rebased again."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "--track", "-b", "wt/session-1/amended-pr", "origin/main")
+    (local / "work.txt").write_text("v1\n", encoding="utf-8")
+    _git(local, "add", "work.txt")
+    _git(local, "commit", "-q", "-m", "initial pr commit")
+    _git(local, "push", "-q", "origin", "HEAD")
+
+    (local / "work.txt").write_text("v2\n", encoding="utf-8")
+    _git(local, "commit", "-q", "--amend", "-am", "amended pr commit")
+    amended_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "published-diverged"
+    assert sync.process.returncode == 0
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == amended_tip
+    assert _git(local, "rev-parse", "origin/main").stdout.strip() == new_main_sha
+    assert "diverged from 'origin/wt/session-1/amended-pr' (1 ahead / 1 behind)" in sync.summary
+    assert "skipped rebase" in sync.summary
+
+
+def test_given_unpublished_stacked_branch_when_syncing_then_not_misclassified_as_published(tmp_path):
+    """An unpublished branch tracking origin/feat-a must not take the published-branch arm."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    _git(seed, "checkout", "-q", "-b", "feat/base")
+    (seed / "base-feat.txt").write_text("base feature\n", encoding="utf-8")
+    _git(seed, "add", "base-feat.txt")
+    _git(seed, "commit", "-q", "-m", "base feature")
+    _git(seed, "push", "-q", "-u", "origin", "feat/base")
+
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "--track", "-b", "feat/stacked", "origin/feat/base")
+    (local / "stacked.txt").write_text("stacked work\n", encoding="utf-8")
+    _git(local, "add", "stacked.txt")
+    _git(local, "commit", "-q", "-m", "stacked commit")
+
+    _git(seed, "checkout", "-q", "feat/base")
+    (seed / "base-feat-2.txt").write_text("base feature 2\n", encoding="utf-8")
+    _git(seed, "add", "base-feat-2.txt")
+    _git(seed, "commit", "-q", "-m", "base feature update")
+    _git(seed, "push", "-q", "origin", "feat/base")
+    new_base_sha = _git(seed, "rev-parse", "HEAD").stdout.strip()
+
+    sync = sync_worktree_branch(local, published_mode="merge")
+
+    assert sync.arm == "rebase"
+    assert sync.process.returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", new_base_sha, "HEAD").returncode == 0
+    assert "synced branch 'feat/stacked' by pull --rebase" in sync.summary
 
 
 def test_given_clean_vs_dirty_tree_when_pull_rebase_autostash_runs_then_autostash_used_only_when_dirty(tmp_path):

@@ -637,10 +637,8 @@ def _ref_exists(repo_root: Path, ref: str) -> bool:
 
 def _integration_remote_ref(repo_root: Path, remote: str, current: str, upstream: str | None) -> str | None:
     """Resolve the remote integration branch ref (for example ``origin/main``)."""
-    if upstream and upstream.startswith(f"{remote}/"):
-        upstream_branch = upstream[len(remote) + 1 :]
-        if upstream_branch != current and _ref_exists(repo_root, f"refs/remotes/{remote}/{current}"):
-            return upstream
+    if upstream and upstream != f"{remote}/{current}":
+        return upstream
     sym = _git_query(repo_root, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD")
     if sym.returncode == 0 and sym.stdout.strip():
         return sym.stdout.strip()
@@ -650,12 +648,14 @@ def _integration_remote_ref(repo_root: Path, remote: str, current: str, upstream
     return None
 
 
-def _published_branch_candidate(repo_root: Path) -> tuple[str | None, str | None, str | None, str | None]:
-    """Return ``(current, remote, published_ref, integration_ref)`` for *repo_root*."""
+def _published_branch_candidate(
+    repo_root: Path,
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Return ``(current, remote, upstream, published_ref, integration_ref)`` for *repo_root*."""
     branch_proc = _git_query(repo_root, "symbolic-ref", "--short", "-q", "HEAD")
     current = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
     if not current:
-        return None, None, None, None
+        return None, None, None, None, None
 
     upstream_proc = _git_query(repo_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     upstream = upstream_proc.stdout.strip() if upstream_proc.returncode == 0 else None
@@ -665,11 +665,23 @@ def _published_branch_candidate(repo_root: Path) -> tuple[str | None, str | None
         integration_ref[len(remote) + 1 :] if integration_ref and integration_ref.startswith(f"{remote}/") else None
     )
 
-    if upstream and upstream != integration_ref:
-        return current, remote, upstream, integration_ref
     if current != integration_branch and _ref_exists(repo_root, f"refs/remotes/{remote}/{current}"):
-        return current, remote, f"{remote}/{current}", integration_ref
-    return current, remote, None, integration_ref
+        return current, remote, upstream, f"{remote}/{current}", integration_ref
+    return current, remote, upstream, None, integration_ref
+
+
+def _ahead_behind(repo_root: Path, target_ref: str) -> tuple[int, int] | None:
+    """Return ``(ahead, behind)`` commit counts for ``HEAD`` relative to *target_ref*."""
+    count_proc = _git_query(repo_root, "rev-list", "--left-right", "--count", f"HEAD...{target_ref}")
+    if count_proc.returncode != 0:
+        return None
+    parts = count_proc.stdout.strip().split()
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
 
 def _commits_behind(repo_root: Path, target_ref: str) -> int | None:
@@ -689,16 +701,18 @@ def sync_worktree_branch(
     published_mode: str = "report",
     pull_fn: Callable[[Path], tuple[subprocess.CompletedProcess, str | None]] | None = None,
 ) -> WorktreeSyncResult:
-    """Sync a session worktree without rebasing a published, non-diverged branch.
+    """Sync a session worktree without rebasing a published branch onto trunk.
 
-    When the checked-out branch has a remote-tracking counterpart whose tip is an
-    ancestor of ``HEAD``, runs ``git fetch`` and either reports distance behind the
-    integration branch (default ``"report"``) or merges it (``"merge"``).
-    Otherwise delegates to *pull_fn* (default :func:`pull_rebase_autostash`) and
-    records which arm was taken.
+    When the checked-out branch has a remote-tracking counterpart
+    ``<remote>/<branch>`` whose tip is an ancestor of ``HEAD``, runs ``git fetch``
+    and either reports distance behind the integration branch (default
+    ``"report"``) or merges it (``"merge"``). When ``<remote>/<branch>`` exists
+    but has diverged from ``HEAD``, skips rebasing unless the branch's configured
+    upstream IS ``<remote>/<branch>`` itself. Otherwise delegates to *pull_fn*
+    (default :func:`pull_rebase_autostash`) and records which arm was taken.
     """
     runner = pull_fn if pull_fn is not None else pull_rebase_autostash
-    current, remote, published_ref, integration_ref = _published_branch_candidate(repo_root)
+    current, remote, upstream, published_ref, integration_ref = _published_branch_candidate(repo_root)
     rebase_reason = "no published upstream"
 
     if current and remote and published_ref:
@@ -713,7 +727,7 @@ def sync_worktree_branch(
                     f"skipped rebase; git fetch failed (exit {fetch.returncode})"
                 ),
             )
-        refreshed_integration = integration_ref or _integration_remote_ref(repo_root, remote, current, published_ref)
+        refreshed_integration = integration_ref or _integration_remote_ref(repo_root, remote, current, upstream)
         ancestor_check = _git_query(repo_root, "merge-base", "--is-ancestor", published_ref, "HEAD")
         if ancestor_check.returncode == 0:
             behind = _commits_behind(repo_root, refreshed_integration) if refreshed_integration else None
@@ -752,10 +766,19 @@ def sync_worktree_branch(
                 stranded=None,
                 summary=f"published branch '{current}' tracks '{published_ref}' — skipped rebase; fetched ({distance})",
             )
+        if upstream != published_ref:
+            counts = _ahead_behind(repo_root, published_ref)
+            divergence = f"{counts[0]} ahead / {counts[1]} behind" if counts is not None else "diverged"
+            return WorktreeSyncResult(
+                arm="published-diverged",
+                process=fetch,
+                stranded=None,
+                summary=f"published branch '{current}' diverged from '{published_ref}' ({divergence}) — skipped rebase",
+            )
         rebase_reason = f"'{published_ref}' is not an ancestor of HEAD"
 
     pull, stranded = runner(repo_root)
-    summary = f"rebased branch '{current}' ({rebase_reason})" if current else ""
+    summary = f"synced branch '{current}' by pull --rebase ({rebase_reason})" if current else ""
     return WorktreeSyncResult(arm="rebase", process=pull, stranded=stranded, summary=summary)
 
 
