@@ -567,7 +567,11 @@ def _detect_strand_after_op(
     return "; ".join(reasons)
 
 
-def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
+def pull_rebase_autostash(
+    repo_root: Path,
+    *,
+    autostash_if_clean: bool = False,
+) -> tuple[subprocess.CompletedProcess, str | None]:
     """Run ``git pull --rebase`` (adding ``--autostash`` only when dirty) and verify state.
 
     Returns ``(completed_process, stranded_reason)``. ``stranded_reason`` is
@@ -609,7 +613,7 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     before_unmerged, before_stashes, before_head, probe_failure = _snapshot_strand_baseline(repo_root)
 
     pull_args = ["git", "-C", str(repo_root), "pull", "--rebase"]
-    if _is_worktree_dirty(repo_root):
+    if autostash_if_clean or _is_worktree_dirty(repo_root):
         pull_args.append("--autostash")
     pull_args.extend(_pull_refspec(repo_root))
 
@@ -874,14 +878,16 @@ def sync_worktree_branch(
                 merged = _git_query(repo_root, "merge", "--no-edit", refreshed_integration)
                 merge_stranded = _detect_strand_after_op(repo_root, b_unmerged, b_stashes, b_head, b_probe, "merge")
                 if merged.returncode == 0 or merge_stranded is not None:
+                    outcome = (
+                        f"merge with {refreshed_integration} left the autostash on the stack"
+                        if merge_stranded is not None
+                        else f"merged {behind} commit(s) from {refreshed_integration}"
+                    )
                     return WorktreeSyncResult(
                         arm="published-merge",
                         process=merged,
                         stranded=merge_stranded,
-                        summary=(
-                            f"published branch '{current}' tracks '{published_ref}' — "
-                            f"skipped rebase; merged {behind} commit(s) from {refreshed_integration}"
-                        ),
+                        summary=f"published branch '{current}' tracks '{published_ref}' — skipped rebase; {outcome}",
                     )
                 return WorktreeSyncResult(
                     arm="published-merge-failed",

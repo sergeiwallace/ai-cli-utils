@@ -3379,7 +3379,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     # "Pulling is not possible because you have unmerged files", and the repo
     # never advances again. That is how the remote build host sat 50 commits
     # behind for five days while its disk filled — docs/bugs/stranded-autostash.md.
-    pull, stranded = pull_rebase_autostash(project_path)
+    pull, stranded = pull_rebase_autostash(project_path, autostash_if_clean=True)
     # A conflicted index means the pull could not advance the checkout — whether
     # this run caused it or a previous one did. Either way the source tree is
     # stale and cannot be built from, and every later pull will refuse too, so
