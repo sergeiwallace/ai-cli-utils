@@ -27,7 +27,7 @@ from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_clients import PRESENT, Codex
 
 SCHEMA_VERSION = 2
-PROVEN_VERSIONS = {"0.169.0", "0.171.0"}
+PROVEN_VERSIONS = {"0.169.0", "0.171.0", "0.172.0"}
 CLIENT_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
 HOOK_COMMAND = "ai internal codex-session-confirm"
 HOOK_DECLARATION = 'hooks.SessionStart=[{hooks=[{type="command",command=' + json.dumps(HOOK_COMMAND) + "}]}]"

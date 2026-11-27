@@ -483,7 +483,7 @@ def test_given_pinned_hook_when_contract_requested_then_fixture_and_independent_
     fixture = json.loads((Path(__file__).parent / "fixtures" / "codex_hook_contract_v1.json").read_text())
     assert contract == fixture
     assert contract["schema_version"] == 1
-    assert contract["supported_client_versions"] == ["0.169.0", "0.171.0"]
+    assert contract["supported_client_versions"] == ["0.169.0", "0.171.0", "0.172.0"]
     assert contract["event"] == "SessionStart"
     assert contract["command"] == "ai internal codex-session-confirm"
     assert contract["position"] == {"group": 0, "handler": 0}
