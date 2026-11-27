@@ -20,6 +20,7 @@ from ai_cli.git_repair import (
     pull_rebase_autostash,
     repair_bare_worktree_config,
     stash_entries,
+    sync_worktree_branch,
     unmerged_paths,
 )
 
@@ -391,6 +392,8 @@ def test_given_beads_issues_only_strand_when_pull_completes_then_regenerates_and
             return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["status", "--porcelain", "-uno"]:
+            return MagicMock(returncode=0, stdout=" M .beads/issues.jsonl\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if command[3:] == ["rev-parse", "--absolute-git-dir"]:
@@ -428,22 +431,25 @@ def test_given_beads_issues_only_strand_when_pull_completes_then_regenerates_and
             {".beads/issues.jsonl", ".beads/interactions.jsonl"},
             None,
             "2 newly conflicted path(s): .beads/interactions.jsonl, .beads/issues.jsonl; "
-            "1 autostash entr(y/ies) left on the stash stack",
+            "1 autostash entr(y/ies) left on the stash stack (new-autostash)",
         ),
         (
             {".beads/interactions.jsonl"},
             None,
-            "1 newly conflicted path(s): .beads/interactions.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+            "1 newly conflicted path(s): .beads/interactions.jsonl; "
+            "1 autostash entr(y/ies) left on the stash stack (new-autostash)",
         ),
         (
             {".beads/issues.jsonl"},
             1,
-            "1 newly conflicted path(s): .beads/issues.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+            "1 newly conflicted path(s): .beads/issues.jsonl; "
+            "1 autostash entr(y/ies) left on the stash stack (new-autostash)",
         ),
         (
             {".beads/issues.jsonl"},
             OSError("bd is unavailable"),
-            "1 newly conflicted path(s): .beads/issues.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+            "1 newly conflicted path(s): .beads/issues.jsonl; "
+            "1 autostash entr(y/ies) left on the stash stack (new-autostash)",
         ),
     ],
 )
@@ -473,6 +479,8 @@ def test_given_unsafe_beads_strand_when_pull_completes_then_retains_the_original
             return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["status", "--porcelain", "-uno"]:
+            return MagicMock(returncode=0, stdout=" M .beads/issues.jsonl\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if command[3:] == ["rev-parse", "--absolute-git-dir"]:
@@ -516,6 +524,8 @@ def test_given_issues_only_strand_with_nonissues_autostash_when_repaired_then_re
             return MagicMock(returncode=0, stdout="refs/heads/main\n", stderr="")
         if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
             return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["status", "--porcelain", "-uno"]:
+            return MagicMock(returncode=0, stdout=" M .beads/issues.jsonl\n", stderr="")
         if command[3:] == ["pull", "--rebase", "--autostash"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if command[3:] == ["rev-parse", "--absolute-git-dir"]:
@@ -1008,3 +1018,234 @@ def test_detect_phantom_deleted_files_when_restored_then_precommit_cycle_is_a_no
     assert patch_bytes == b""
     assert (repo / "docs" / "plan.md").exists()
     assert detect_phantom_deleted_files(repo) == []
+
+
+def _make_bare_remote_with_main(tmp_path):
+    """Create a bare remote with one commit on main and return (remote, seed)."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    seed = _clone(remote, tmp_path / "seed")
+    _git(seed, "checkout", "-q", "-b", "main")
+    (seed / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "base.txt")
+    _git(seed, "commit", "-q", "-m", "initial commit")
+    _git(seed, "push", "-q", "-u", "origin", "main")
+    _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+    return remote, seed
+
+
+def _advance_remote_main(seed, filename="main-advance.txt", content="from main\n"):
+    """Commit and push a new commit on remote main, returning its SHA."""
+    _git(seed, "checkout", "-q", "main")
+    (seed / filename).write_text(content, encoding="utf-8")
+    _git(seed, "add", filename)
+    _git(seed, "commit", "-q", "-m", f"advance main with {filename}")
+    _git(seed, "push", "-q", "origin", "main")
+    return _git(seed, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_given_pushed_pr_branch_and_remote_main_ahead_when_syncing_report_mode_then_tip_unchanged_and_remote_ref_updated(
+    tmp_path,
+):
+    """AC-1 + AC-4: default report mode fetches without rebasing a published branch."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "-b", "feat/open-pr")
+    (local / "feature.txt").write_text("pr work\n", encoding="utf-8")
+    _git(local, "add", "feature.txt")
+    _git(local, "commit", "-q", "-m", "pr commit")
+    _git(local, "push", "-q", "-u", "origin", "feat/open-pr")
+    pr_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "published-report"
+    assert sync.process.returncode == 0
+    assert sync.stranded is None
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == pr_tip
+    assert _git(local, "rev-parse", "origin/main").stdout.strip() == new_main_sha
+    assert "skipped rebase" in sync.summary
+    assert "1 commit(s) behind origin/main" in sync.summary
+
+
+def test_given_pushed_branch_tracking_origin_main_when_syncing_then_skips_rebase_and_updates_remote_ref(tmp_path):
+    """AC-1: a session branch pushed without -u (still tracking origin/main) is also protected."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "--track", "-b", "wt/session-1/my-pr", "origin/main")
+    (local / "work.txt").write_text("published work\n", encoding="utf-8")
+    _git(local, "add", "work.txt")
+    _git(local, "commit", "-q", "-m", "session pr commit")
+    _git(local, "push", "-q", "origin", "HEAD")
+    pr_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "published-report"
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == pr_tip
+    assert _git(local, "rev-parse", "origin/main").stdout.strip() == new_main_sha
+
+
+def test_given_pushed_pr_branch_when_syncing_merge_mode_then_merges_main_preserving_published_history(tmp_path):
+    """AC-1: merge mode merges origin/main while keeping the published PR tip as an ancestor."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "-b", "feat/merge-mode")
+    (local / "feature.txt").write_text("pr work\n", encoding="utf-8")
+    _git(local, "add", "feature.txt")
+    _git(local, "commit", "-q", "-m", "pr commit")
+    _git(local, "push", "-q", "-u", "origin", "feat/merge-mode")
+    pr_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    sync = sync_worktree_branch(local, published_mode="merge")
+
+    assert sync.arm == "published-merge"
+    assert sync.process.returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", pr_tip, "HEAD").returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", new_main_sha, "HEAD").returncode == 0
+    assert (local / "main-advance.txt").exists()
+    assert "merged 1 commit(s) from origin/main" in sync.summary
+
+
+def test_given_unpushed_session_branch_when_syncing_then_rebases_and_reports_arm(tmp_path):
+    """AC-2: an unpushed branch still rebases onto origin/main and names the arm it took."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "--track", "-b", "wt-session-1", "origin/main")
+    (local / "local.txt").write_text("unpushed\n", encoding="utf-8")
+    _git(local, "add", "local.txt")
+    _git(local, "commit", "-q", "-m", "unpushed local commit")
+    old_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "rebase"
+    assert sync.process.returncode == 0
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() != old_tip
+    assert _git(local, "merge-base", "--is-ancestor", new_main_sha, "HEAD").returncode == 0
+    assert "rebased branch 'wt-session-1'" in sync.summary
+
+
+def test_given_diverged_remote_branch_when_syncing_then_rebases_and_reports_arm(tmp_path):
+    """AC-2: when origin/<branch> is not an ancestor of HEAD, launch takes the rebase arm."""
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "checkout", "-q", "-b", "feat/diverged")
+    (local / "local.txt").write_text("from local\n", encoding="utf-8")
+    _git(local, "add", "local.txt")
+    _git(local, "commit", "-q", "-m", "initial branch commit")
+    _git(local, "push", "-q", "-u", "origin", "feat/diverged")
+
+    _git(seed, "fetch", "-q", "origin")
+    _git(seed, "checkout", "-q", "-b", "feat/diverged", "origin/feat/diverged")
+    (seed / "peer.txt").write_text("from peer\n", encoding="utf-8")
+    _git(seed, "add", "peer.txt")
+    _git(seed, "commit", "-q", "-m", "peer commit on remote branch")
+    _git(seed, "push", "-q", "origin", "feat/diverged")
+    peer_sha = _git(seed, "rev-parse", "HEAD").stdout.strip()
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "rebase"
+    assert sync.process.returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", peer_sha, "HEAD").returncode == 0
+    assert "rebased branch 'feat/diverged'" in sync.summary
+    assert "not an ancestor of HEAD" in sync.summary
+
+
+def test_given_clean_vs_dirty_tree_when_pull_rebase_autostash_runs_then_autostash_used_only_when_dirty(tmp_path):
+    """AC-3: --autostash is passed only when the worktree has tracked modifications."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    real_run = subprocess.run
+    observed_pull_cmds: list[list[str]] = []
+
+    def spy_run(cmd, *args, **kwargs):
+        command = [str(part) for part in cmd]
+        if "pull" in command:
+            observed_pull_cmds.append(command)
+        return real_run(cmd, *args, **kwargs)
+
+    with patch("ai_cli.git_repair.subprocess.run", side_effect=spy_run):
+        pull_rebase_autostash(local)
+        (local / "f.txt").write_text("dirty edit\n", encoding="utf-8")
+        pull_rebase_autostash(local)
+
+    assert len(observed_pull_cmds) == 2
+    assert "--autostash" not in observed_pull_cmds[0]
+    assert "--autostash" in observed_pull_cmds[1]
+
+
+def test_given_stranded_autostash_pop_when_pull_completes_then_reports_stranded_stash_sha(tmp_path):
+    """AC-3: a stranded autostash entry is reported by its commit SHA."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("local-change\n", encoding="utf-8")
+    _remote_edits_same_line(remote)
+
+    _pull, stranded = pull_rebase_autostash(local)
+
+    assert stranded is not None
+    stashes = stash_entries(local)
+    assert len(stashes) == 1
+    stash_sha = next(iter(stashes))
+    assert stash_sha in stranded
+
+
+def test_given_pushed_branch_when_session_launches_then_tip_unchanged_and_banner_reports_distance(tmp_path, capsys):
+    """AC-4: end-to-end _do_session_launch on a real git repo leaves a pushed branch tip intact."""
+    from ai_cli.main import _do_session_launch
+
+    remote, seed = _make_bare_remote_with_main(tmp_path)
+    worktree = _clone(remote, tmp_path / "worktree")
+    _git(worktree, "checkout", "-q", "-b", "feat/launched-pr")
+    (worktree / "feature.txt").write_text("pr content\n", encoding="utf-8")
+    _git(worktree, "add", "feature.txt")
+    _git(worktree, "commit", "-q", "-m", "pr commit")
+    _git(worktree, "push", "-q", "-u", "origin", "feat/launched-pr")
+    pr_tip = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    with (
+        patch("ai_cli.main._direnv_setup.ensure_direnv", return_value=MagicMock(installed=True, detail="")),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.session.build_session_name", return_value=("c-myproject-1", "myproject-1")),
+        patch("ai_cli.session.detect_repo_root", return_value=None),
+        patch("ai_cli.session.create_worktree", return_value=(worktree, False)),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.main._exec_with_direnv", side_effect=SystemExit(0)),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(
+                engine="c",
+                name="1",
+                resume=False,
+                once=False,
+                bare=True,
+                notify=False,
+                sandbox=False,
+                no_worktree=False,
+                remote=False,
+                project="",
+                is_remote=False,
+                project_prefix_override="myproject",
+                extra_args=[],
+                config={"worktree": {"enabled": True}},
+            )
+
+    assert exc_info.value.code == 0
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == pr_tip
+    assert _git(worktree, "rev-parse", "origin/main").stdout.strip() == new_main_sha
+    err = capsys.readouterr().err
+    assert "skipped rebase" in err
+    assert "1 commit(s) behind origin/main" in err

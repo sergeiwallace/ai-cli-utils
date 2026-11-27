@@ -94,6 +94,7 @@ from .git_repair import (
     detect_phantom_deleted_files,
     pull_rebase_autostash,
     repair_bare_worktree_config,
+    sync_worktree_branch,
     unmerged_paths,
 )
 from .iterm2 import (  # noqa: F401
@@ -7022,7 +7023,12 @@ def _do_session_launch(
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
-                pull, stranded = pull_rebase_autostash(worktree_path)
+                _sync = sync_worktree_branch(
+                    worktree_path,
+                    published_mode=_config.get_worktree_published_branch_sync(),
+                    pull_fn=pull_rebase_autostash,
+                )
+                pull, stranded = _sync.process, _sync.stranded
                 _detail = ""
                 if pull.returncode and not stranded:
                     _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
@@ -7030,7 +7036,27 @@ def _do_session_launch(
                     _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
                     if _lines:
                         _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
-                if pull.returncode != 0 and not stranded and not _conflicted_before:
+                if pull.returncode == 0 and not stranded and _sync.summary:
+                    _sync_phase.outcome(_sync.summary)
+                if pull.returncode != 0 and not stranded and _sync.arm == "published-fetch-failed":
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and _sync.arm == "published-merge-failed":
+                    if not _conflicted_before:
+                        subprocess.run(
+                            ["git", "merge", "--abort"],
+                            capture_output=True,
+                            cwd=worktree_path,
+                            env=_git_env(),
+                            check=False,
+                        )
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and not _conflicted_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
                     # would abort a rebase the user is part-way through and wipe their
