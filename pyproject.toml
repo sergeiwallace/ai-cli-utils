@@ -3,7 +3,8 @@ name = "ai-cli-utils"
 version = "0.9.0"
 description = "Unified AI session manager and automation toolkit for Claude Code, Codex, Antigravity (agy), and pi"
 readme = "README.md"
-license = "MIT"
+license = "MIT AND Apache-2.0"
+license-files = ["LICENSE", "LICENSE-Apache-2.0", "NOTICE.ai-harness"]
 # ONE supported interpreter, upper bound included on purpose. The project is
 # built, linted, type-checked and tested on exactly one Python version, so
 # declaring an open `>=` range would claim support for interpreters nothing ever
@@ -29,7 +30,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

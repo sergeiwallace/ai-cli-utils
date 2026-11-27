@@ -40,6 +40,7 @@ import portalocker
 import psutil
 
 from . import config, session_run_state, tmux_binary
+from ._claude_registration import CLAUDE_DIGEST_SCHEME, CORE_SERVER_NAME, claude_registration_digest
 from .background_attach import daemon_client_environment
 from .process_probe import ProcessIdentity, StartTimeMatch, normalize_proc_start, probe_for
 
@@ -674,6 +675,29 @@ def _mcp_matches(argv: list[str], command: str, args: list[str], cwd: Path) -> b
     )
 
 
+def _validate_mcp_registration(entry: dict, paths: set[Path]) -> None:
+    if entry["name"] != CORE_SERVER_NAME:
+        if "claude_registration" in entry:
+            raise ValueError("unexpected registration stamp")
+        return
+    registration = entry.get("claude_registration")
+    if (
+        not isinstance(registration, dict)
+        or registration.keys() != {"receipt", "scheme", "sha256"}
+        or registration["scheme"] != CLAUDE_DIGEST_SCHEME
+        or not isinstance(registration["receipt"], str)
+        or not isinstance(registration["sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", registration["sha256"])
+    ):
+        raise ValueError("invalid registration stamp")
+    receipt = Path(registration["receipt"])
+    if receipt not in paths:
+        raise ValueError("receipt stamp missing")
+    directory = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    if claude_registration_digest(directory, receipt) != registration["sha256"]:
+        raise ValueError("stale registration stamp")
+
+
 def _mcp_allowlist() -> list[dict]:
     """Consume installer-verified shapes; never derive trust from live children."""
     path = config.get_xdg_config_home() / "restart-session.d" / "mcp-servers.toml"
@@ -684,9 +708,11 @@ def _mcp_allowlist() -> list[dict]:
         return []
     except (OSError, ValueError) as exc:
         raise Refusal("background-work", "MCP allowlist unreadable; regenerate the allowlist") from exc
+    if type(data.get("version")) is int and data["version"] == 1:
+        raise Refusal("background-work", "MCP allowlist version 1; run ai-harness apply --only restart-mcp")
     name = "mcp-servers.toml"
     try:
-        if type(data.get("version")) is not int or data["version"] != 1 or not isinstance(data.get("servers"), list):
+        if type(data.get("version")) is not int or data["version"] != 2 or not isinstance(data.get("servers"), list):
             raise ValueError("invalid schema")
         names = set()
         for entry in data["servers"]:
@@ -739,6 +765,7 @@ def _mcp_allowlist() -> list[dict]:
                     raise ValueError("stale identity stamp")
             if Path(executable) not in paths:
                 raise ValueError("executable stamp missing")
+            _validate_mcp_registration(entry, paths)
         return data["servers"]
     except (OSError, ValueError, TypeError) as exc:
         raise Refusal(

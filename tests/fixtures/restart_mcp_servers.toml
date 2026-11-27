@@ -1,5 +1,5 @@
 # Contract example: replace absolute paths and empty-file stamps at install time.
-version = 1
+version = 2
 
 [[servers]]
 name = "notifier"

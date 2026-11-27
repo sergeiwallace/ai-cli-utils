@@ -1827,3 +1827,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and contr
 ## License
 
 [MIT](LICENSE) -- AI CLI Utils Contributors
+
+The vendored Claude registration digest and its fixture are distributed under
+[Apache-2.0](LICENSE-Apache-2.0). See [the upstream notice](NOTICE.ai-harness).
