@@ -65,7 +65,7 @@
   "src/ai_cli/launch_logging.py": 26,
   "src/ai_cli/launch_reporter.py": 5,
   "src/ai_cli/layout.py": 24,
-  "src/ai_cli/main.py": 929,
+  "src/ai_cli/main.py": 928,
   "src/ai_cli/memory.py": 1,
   "src/ai_cli/messaging.py": 33,
   "src/ai_cli/migrate_names.py": 1,
