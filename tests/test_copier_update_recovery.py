@@ -487,3 +487,23 @@ def test_given_issue_search_fails_when_entry_runs_then_output_names_the_trackers
     assert "could not search the repository issue store" in output
     assert "no beads database found in myproject" in output
     assert "exit 7" in output
+
+
+def test_given_long_tracker_stderr_when_recovery_filing_fails_then_output_keeps_the_reason_and_the_hint(
+    recovery_project, monkeypatch, capsys
+):
+    project, _, current = recovery_project
+    reason = "error: bd-new: refusing to file a P1 with no owner: no [stores.ACN] routing table"
+    hint = "/handoff <the display_id= value that filing prints>"
+    stderr = f"{reason}. " + "middle " * 200 + hint
+
+    def bd(store, *args):
+        return subprocess.CompletedProcess(args, 1, "", stderr)
+
+    monkeypatch.setattr(session_migrate, "_bd", bd)
+    code, _ = _run(project, current)
+
+    assert code != 0
+    output = capsys.readouterr().out
+    assert reason in output and hint in output
+    assert re.search(r"\[\d+ chars elided\]", output)
