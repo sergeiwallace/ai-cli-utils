@@ -3048,6 +3048,24 @@ def _internal_quota_subscriber(config: dict) -> None:
         )
 
 
+def _format_git_failure_detail(stderr: str | None, stdout: str | None, *, max_lines: int = 5) -> str:
+    """Return a bounded summary of git's failure lines, keeping context before the final fatal/error."""
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    last_err_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.startswith(("error:", "fatal:")):
+            last_err_idx = idx
+    if last_err_idx is not None:
+        start = max(0, last_err_idx - max_lines + 1)
+        selected = lines[start : last_err_idx + 1]
+    else:
+        selected = lines[-max_lines:]
+    return " Last git error: " + " | ".join(selected)
+
+
 def _has_conflict_or_unknown(repo_root) -> bool:
     """True if the repo has conflict stages, or if that cannot be determined.
 
@@ -7036,11 +7054,7 @@ def _do_session_launch(
                 pull, stranded = _sync.process, _sync.stranded
                 _detail = ""
                 if pull.returncode and not stranded:
-                    _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
-                    # Git can print autostash progress after a fetch or rebase error.
-                    _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
-                    if _lines:
-                        _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
+                    _detail = _format_git_failure_detail(pull.stderr, pull.stdout)
                 if pull.returncode == 0 and not stranded and _sync.summary:
                     _sync_phase.outcome(_sync.summary)
                 if pull.returncode != 0 and not stranded and _sync.arm == "published-fetch-failed":
