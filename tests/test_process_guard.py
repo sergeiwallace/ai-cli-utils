@@ -23,6 +23,11 @@ class TestRealProcessGuard:
         with pytest.raises(RuntimeError, match=rf"attempted to spawn a real `{re.escape(binary)}` process"):
             subprocess.Popen([str(tmp_path / binary)])
 
+    @pytest.mark.parametrize("binary", ["circusd", "circusd.exe"])
+    def test_given_unmocked_circusd_popen_when_called_then_fails_loudly(self, binary, tmp_path):
+        with pytest.raises(RuntimeError, match=rf"attempted to spawn a real `{re.escape(binary)}` process"):
+            subprocess.Popen([str(tmp_path / binary), "--daemon", "--pidfile", str(tmp_path / "circusd.pid")])
+
     def test_given_unmocked_ssh_process_when_run_then_fails_loudly(self):
         """A missed remote transport mock must fail before SSH can connect."""
         with pytest.raises(RuntimeError, match="attempted to spawn a real `ssh` process"):
