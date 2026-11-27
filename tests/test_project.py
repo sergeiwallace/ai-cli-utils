@@ -665,3 +665,113 @@ class TestProjectsDirEdgeCases:
         with patch("ai_cli.config._get_main_project_name", return_value=None):
             result = _get_main_project_dir()
         assert result is None
+
+
+class TestCaseInsensitiveProjectAliasLookup:
+    @pytest.mark.parametrize("raw_alias", ["mp", "MP", "Mp", "mP"])
+    def test_given_mixed_case_alias_when_resolved_then_matches_lowercase_registration(self, raw_alias):
+        """AC-1 + AC-3: mixed-case -p values resolve lowercase registered aliases."""
+        from ai_cli.config import resolve_project_alias
+
+        with patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}):
+            assert resolve_project_alias(raw_alias) == "myproject"
+
+    def test_given_unknown_mixed_case_project_when_resolved_then_preserves_original_casing(self):
+        """AC-2: unknown project names keep the operator's original casing for diagnostics."""
+        from ai_cli.config import resolve_project_alias
+
+        with patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}):
+            assert resolve_project_alias("NoSuchProj") == "NoSuchProj"
+
+    def test_given_uppercase_alias_when_local_launch_runs_with_dash_p_then_enters_project_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """AC-1 + AC-3: local _do_session_launch with -p MP resolves mp and chdirs into myproject."""
+        from ai_cli.main import _do_session_launch
+
+        projects_dir = tmp_path / "projects"
+        target_repo = projects_dir / "myproject"
+        target_repo.mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        with (
+            patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}),
+            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="MP"),
+            patch("ai_cli.config._find_project_dir", side_effect=lambda name: projects_dir / name),
+            patch("ai_cli.main._direnv_setup.ensure_direnv", return_value=MagicMock(installed=True, detail="")),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.session.build_session_name", return_value=("c-mp-1", "mp-1")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+        ):
+            _do_session_launch(
+                engine="c",
+                name="1",
+                resume=False,
+                once=False,
+                bare=True,
+                notify=False,
+                sandbox=False,
+                no_worktree=True,
+                remote=False,
+                project="MP",
+                is_remote=False,
+                project_prefix_override="",
+                extra_args=[],
+                dry_run=True,
+                config={"worktree": {"enabled": False}},
+            )
+
+        assert Path.cwd().resolve() == target_repo.resolve()
+
+    def test_given_unknown_mixed_case_dash_p_when_local_launch_refuses_then_error_echoes_raw_input(
+        self, tmp_path, capsys
+    ):
+        """AC-2: unknown -p NoSuchProj echoes 'NoSuchProj' verbatim rather than lowercasing input."""
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}),
+            patch("ai_cli.config._find_project_dir", side_effect=lambda name: tmp_path / name),
+            patch("ai_cli.config.load_config", return_value={"project_registry": {}}),
+            patch("ai_cli.main._direnv_setup.ensure_direnv", return_value=MagicMock(installed=True, detail="")),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _do_session_launch(
+                    engine="c",
+                    name="1",
+                    resume=False,
+                    once=False,
+                    bare=True,
+                    notify=False,
+                    sandbox=False,
+                    no_worktree=True,
+                    remote=False,
+                    project="NoSuchProj",
+                    is_remote=False,
+                    project_prefix_override="",
+                    extra_args=[],
+                    dry_run=True,
+                    config={"worktree": {"enabled": False}},
+                )
+
+        assert exc.value.code == 1
+        assert "NoSuchProj" in capsys.readouterr().err
+
+    def test_given_mixed_case_alias_when_checking_chief_and_session_registry_then_resolves(self):
+        """Chief project matching and session_registry remote lookup honor case-insensitive aliases."""
+        from ai_cli import main as main_mod
+        from ai_cli import session_registry
+
+        with (
+            patch("ai_cli.config.get_project_aliases", return_value={"hub": "myhub", "mp": "myproject"}),
+            patch(
+                "ai_cli.config.resolve_project_prefix_by_name",
+                side_effect=lambda name: "MP" if name == "myproject" else name.upper(),
+            ),
+        ):
+            assert main_mod._names_chief_project("HUB", "myhub") is True
+            assert main_mod._names_chief_project("Hub", "myhub") is True
+            session_name, reason = session_registry._remote_session("Mp", "1")
+            assert session_name is not None
+            assert reason == ""

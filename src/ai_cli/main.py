@@ -2661,7 +2661,7 @@ def _dispatch_internal(argv: list[str]) -> None:
         try:
             _session_naming.validate_session_text(name, partial=True)
             owner = (
-                _config._find_project_dir(_config.get_project_aliases().get(project, project))
+                _config._find_project_dir(_config.resolve_project_alias(project))
                 if project
                 else _session.detect_repo_root()
             )
@@ -5892,7 +5892,7 @@ def _do_session_launch(
         _direnv_root = Path.cwd()
         if project and not remote:
             try:
-                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+                _named_dir = _config._find_project_dir(_config.resolve_project_alias(project))
             except _config.ProjectPrefixError as exc:
                 reporter.error("request", str(exc))
                 sys.exit(1)
@@ -5950,8 +5950,7 @@ def _do_session_launch(
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
         try:
-            _lp_aliases = _config.get_project_aliases()
-            _lp_name = _lp_aliases.get(project.lower(), project)
+            _lp_name = _config.resolve_project_alias(project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -6268,7 +6267,7 @@ def _do_session_launch(
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project.lower(), raw_project)
+        remote_project = _config.resolve_project_alias(raw_project, aliases)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
@@ -6630,7 +6629,7 @@ def _do_session_launch(
             aliases = _config.get_project_aliases()
             raw_project, project_source = _resolve_remote_project(project, config)
             if raw_project:
-                project_name = aliases.get(raw_project, raw_project)
+                project_name = _config.resolve_project_alias(raw_project, aliases)
                 project_dir = _config._find_project_dir(project_name)
                 if not project_dir.is_dir():
                     _exit_missing_project_dir(project_name, project_dir, project_source, f"ai {engine} -R -p PROJECT")
@@ -6641,8 +6640,7 @@ def _do_session_launch(
         # Mirrors the is_remote path above, refusal included -- an absent directory
         # strands the session in the wrong root identically either way, and only the
         # remote half of that is reachable without passing -p.
-        aliases = _config.get_project_aliases()
-        _local_project = aliases.get(project, project)
+        _local_project = _config.resolve_project_alias(project)
         _local_project_dir = _config._find_project_dir(_local_project)
         if not _local_project_dir.is_dir():
             _exit_missing_project_dir(_local_project, _local_project_dir, "-p/--project", f"ai {engine} -p PROJECT")
@@ -7986,7 +7984,7 @@ def _restart_launch_target(target, check, options, *, json_output=False, event_c
         _config.validate_task_prefix(override)
         if override
         else (
-            _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+            _config.resolve_project_prefix_by_name(_config.resolve_project_alias(project))
             if project
             else _session.get_project_prefix()
         )
@@ -8278,7 +8276,7 @@ def _session_options(func):
 
 def _names_chief_project(project: str, chief_project: str) -> bool:
     """True when ``-p PROJECT`` names the chief's project: its directory, an alias, or its task prefix."""
-    if _config.get_project_aliases().get(project, project) == chief_project:
+    if _config.resolve_project_alias(project) == chief_project:
         return True
     try:
         return _config.resolve_project_prefix_by_name(project) == _config.resolve_project_prefix_by_name(chief_project)

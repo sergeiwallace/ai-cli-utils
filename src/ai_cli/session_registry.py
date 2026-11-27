@@ -761,7 +761,7 @@ def _local_candidate(name: str, projects: dict[str, str]) -> AdoptLine:
     # The relaunch resolves -p exactly this way; proving it lands on the same prefix is
     # what makes `ai c -p <project> <slot>` re-attach this session rather than mint one.
     try:
-        resolved = _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+        resolved = _config.resolve_project_prefix_by_name(_config.resolve_project_alias(project))
     except _config.ProjectPrefixError as exc:
         return AdoptLine("skipped", name, f"-p {project} does not resolve ({exc})")
     if resolved.casefold() != prefix:
@@ -823,7 +823,7 @@ def _remote_session(project: str, slot: str) -> tuple[str | None, str]:
     if not slot.isdigit():
         return None, "no numeric slot in the argv, so the remote host allocated it"
     try:
-        prefix = _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+        prefix = _config.resolve_project_prefix_by_name(_config.resolve_project_alias(project))
     except _config.ProjectPrefixError as exc:
         return None, f"-p {project} does not resolve ({exc})"
     return _session._new_session_display_name("c", prefix, slot, True), ""
