@@ -733,32 +733,32 @@ def _resolve_published_branch(
     if current == integration_branch and push_remote == fetch_remote:
         return current, upstream, push_remote, fetch_remote, None, integration_ref, None
 
-    candidate_remotes: list[str] = [push_remote]
-    if fetch_remote != push_remote:
-        candidate_remotes.append(fetch_remote)
-
-    for remote in candidate_remotes:
-        if remote == fetch_remote and current == integration_branch:
-            continue
-        if _ref_exists(repo_root, f"refs/remotes/{remote}/{current}"):
-            return current, upstream, remote, fetch_remote, f"{remote}/{current}", integration_ref, None
-
-    if _remote_exists(repo_root, push_remote):
-        ok, remote_sha, probe_proc = _ls_remote_branch_sha(repo_root, push_remote, current)
-        if not ok:
-            if push_remote != fetch_remote:
-                return (
-                    current,
-                    upstream,
-                    push_remote,
-                    fetch_remote,
-                    f"{push_remote}/{current}",
-                    integration_ref,
-                    probe_proc,
-                )
-            return current, upstream, push_remote, fetch_remote, None, integration_ref, None
-        if remote_sha is not None:
+    if not (push_remote == fetch_remote and current == integration_branch):
+        if _ref_exists(repo_root, f"refs/remotes/{push_remote}/{current}"):
             return current, upstream, push_remote, fetch_remote, f"{push_remote}/{current}", integration_ref, None
+        if _remote_exists(repo_root, push_remote):
+            ok, remote_sha, probe_proc = _ls_remote_branch_sha(repo_root, push_remote, current)
+            if not ok:
+                if push_remote != fetch_remote:
+                    return (
+                        current,
+                        upstream,
+                        push_remote,
+                        fetch_remote,
+                        f"{push_remote}/{current}",
+                        integration_ref,
+                        probe_proc,
+                    )
+                return current, upstream, push_remote, fetch_remote, None, integration_ref, None
+            if remote_sha is not None:
+                return current, upstream, push_remote, fetch_remote, f"{push_remote}/{current}", integration_ref, None
+
+    if (
+        fetch_remote != push_remote
+        and current != integration_branch
+        and _ref_exists(repo_root, f"refs/remotes/{fetch_remote}/{current}")
+    ):
+        return current, upstream, fetch_remote, fetch_remote, f"{fetch_remote}/{current}", integration_ref, None
 
     return current, upstream, push_remote, fetch_remote, None, integration_ref, None
 
@@ -830,32 +830,46 @@ def sync_worktree_branch(
         )
 
     if current and push_remote and integration_remote and published_ref:
-        fetch = _git_query(repo_root, "fetch", push_remote)
-        if fetch.returncode != 0:
-            return WorktreeSyncResult(
-                arm="published-fetch-failed",
-                process=fetch,
-                stranded=None,
-                summary=(
-                    f"published branch '{current}' tracks '{published_ref}' — "
-                    f"skipped rebase; git fetch failed (exit {fetch.returncode})"
-                ),
-            )
-        published_target = published_ref
-        if not _ref_exists(repo_root, f"refs/remotes/{published_ref}"):
-            branch_fetch = _git_query(repo_root, "fetch", push_remote, f"refs/heads/{current}")
-            if branch_fetch.returncode != 0:
+        if _ref_exists(repo_root, f"refs/remotes/{published_ref}"):
+            fetch = _git_query(repo_root, "fetch", push_remote)
+            if fetch.returncode != 0:
                 return WorktreeSyncResult(
                     arm="published-fetch-failed",
-                    process=branch_fetch,
+                    process=fetch,
                     stranded=None,
                     summary=(
                         f"published branch '{current}' tracks '{published_ref}' — "
-                        f"skipped rebase; git fetch failed (exit {branch_fetch.returncode})"
+                        f"skipped rebase; git fetch failed (exit {fetch.returncode})"
                     ),
                 )
-            published_target = "FETCH_HEAD"
-        if integration_remote != push_remote and _remote_exists(repo_root, integration_remote):
+            published_target = published_ref
+            need_integration_fetch = integration_remote != push_remote
+        else:
+            fetch = _git_query(repo_root, "fetch", push_remote, f"refs/heads/{current}")
+            if fetch.returncode != 0:
+                return WorktreeSyncResult(
+                    arm="published-fetch-failed",
+                    process=fetch,
+                    stranded=None,
+                    summary=(
+                        f"published branch '{current}' tracks '{published_ref}' — "
+                        f"skipped rebase; git fetch failed (exit {fetch.returncode})"
+                    ),
+                )
+            resolved_fetch = _git_query(repo_root, "rev-parse", "--verify", "FETCH_HEAD")
+            if resolved_fetch.returncode != 0 or not resolved_fetch.stdout.strip():
+                return WorktreeSyncResult(
+                    arm="published-fetch-failed",
+                    process=resolved_fetch,
+                    stranded=None,
+                    summary=(
+                        f"published branch '{current}' tracks '{published_ref}' — "
+                        f"skipped rebase; could not resolve fetched tip (exit {resolved_fetch.returncode})"
+                    ),
+                )
+            published_target = resolved_fetch.stdout.strip()
+            need_integration_fetch = True
+        if need_integration_fetch and _remote_exists(repo_root, integration_remote):
             integration_fetch = _git_query(repo_root, "fetch", integration_remote)
             if integration_fetch.returncode != 0:
                 return WorktreeSyncResult(

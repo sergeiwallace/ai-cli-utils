@@ -1489,3 +1489,82 @@ def test_given_unreachable_separate_push_remote_when_syncing_then_refuses_rebase
     assert sync.process.returncode != 0
     assert _git(local, "rev-parse", "HEAD").stdout.strip() == tip_before
     assert "skipped rebase" in sync.summary
+
+
+def test_given_missing_fork_ref_and_divergent_origin_upstream_when_syncing_then_probes_fork_and_skips_rebase(
+    tmp_path,
+):
+    """P1: probe pushRemote before falling back to cached origin/<branch>, protecting fork commits."""
+    origin, seed = _make_bare_remote_with_main(tmp_path)
+    fork = tmp_path / "fork.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(fork)], check=True)
+
+    _git(seed, "checkout", "-q", "-b", "feat/shared")
+    (seed / "origin-commit.txt").write_text("origin v1\n", encoding="utf-8")
+    _git(seed, "add", "origin-commit.txt")
+    _git(seed, "commit", "-q", "-m", "origin v1")
+    _git(seed, "push", "-q", "-u", "origin", "feat/shared")
+
+    local = _clone(origin, tmp_path / "local")
+    _git(local, "remote", "add", "fork", str(fork))
+    _git(local, "checkout", "-q", "--track", "-b", "feat/shared", "origin/feat/shared")
+    _git(local, "config", "branch.feat/shared.pushRemote", "fork")
+    (local / "fork-commit.txt").write_text("published on fork\n", encoding="utf-8")
+    _git(local, "add", "fork-commit.txt")
+    _git(local, "commit", "-q", "-m", "fork commit L")
+    _git(local, "push", "-q", "fork", "HEAD")
+    _git(local, "update-ref", "-d", "refs/remotes/fork/feat/shared")
+    fork_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    _git(seed, "checkout", "-q", "feat/shared")
+    (seed / "origin-advance.txt").write_text("origin v2\n", encoding="utf-8")
+    _git(seed, "add", "origin-advance.txt")
+    _git(seed, "commit", "-q", "-m", "origin v2")
+    _git(seed, "push", "-q", "origin", "feat/shared")
+
+    sync = sync_worktree_branch(local, published_mode="report")
+
+    assert sync.arm == "published-report"
+    assert sync.process.returncode == 0
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == fork_tip
+    assert "tracks 'fork/feat/shared'" in sync.summary
+    assert "skipped rebase" in sync.summary
+
+
+def test_given_fork_with_restricted_fetch_refspec_when_origin_main_ahead_then_report_and_merge_preserve_fetched_tip(
+    tmp_path,
+):
+    """P2: fetching origin must not clobber FETCH_HEAD before checking ancestry of fork/<branch>."""
+    origin, seed = _make_bare_remote_with_main(tmp_path)
+    fork = tmp_path / "fork.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(fork)], check=True)
+
+    local = _clone(origin, tmp_path / "local")
+    _git(local, "remote", "add", "fork", str(fork))
+    _git(local, "config", "--replace-all", "remote.fork.fetch", "+refs/heads/main:refs/remotes/fork/main")
+    _git(local, "checkout", "-q", "--track", "-b", "feat/narrow-fork", "origin/main")
+    _git(local, "config", "branch.feat/narrow-fork.pushRemote", "fork")
+    (local / "work.txt").write_text("fork work\n", encoding="utf-8")
+    _git(local, "add", "work.txt")
+    _git(local, "commit", "-q", "-m", "fork commit")
+    _git(local, "push", "-q", "fork", "HEAD")
+    _git(local, "update-ref", "-d", "refs/remotes/fork/feat/narrow-fork")
+    fork_tip = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+    new_main_sha = _advance_remote_main(seed)
+
+    report_sync = sync_worktree_branch(local, published_mode="report")
+
+    assert report_sync.arm == "published-report"
+    assert report_sync.process.returncode == 0
+    assert _git(local, "rev-parse", "HEAD").stdout.strip() == fork_tip
+    assert _git(local, "rev-parse", "origin/main").stdout.strip() == new_main_sha
+    assert "1 commit(s) behind origin/main" in report_sync.summary
+
+    merge_sync = sync_worktree_branch(local, published_mode="merge")
+
+    assert merge_sync.arm == "published-merge"
+    assert merge_sync.process.returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", fork_tip, "HEAD").returncode == 0
+    assert _git(local, "merge-base", "--is-ancestor", new_main_sha, "HEAD").returncode == 0
+    assert "merged 1 commit(s) from origin/main" in merge_sync.summary
