@@ -2271,6 +2271,20 @@ def get_project_aliases() -> dict:
     return {prefix: name for prefix, name in registered_project_names().items() if prefix != name.lower()}
 
 
+def resolve_project_alias(project: str, aliases: dict[str, str] | None = None) -> str:
+    """Resolve a ``-p`` project alias case-insensitively, preserving original casing when unknown."""
+    mapping = get_project_aliases() if aliases is None else aliases
+    if project in mapping:
+        return mapping[project]
+    lowered = project.lower()
+    if lowered in mapping:
+        return mapping[lowered]
+    for alias, target in mapping.items():
+        if alias.lower() == lowered:
+            return target
+    return project
+
+
 _warned_stale_project_aliases: set[tuple[str, str, str, str]] = set()
 # Prefix clashes already reported this process, so a launch warns once, not once per lookup.
 _warned_absent_alias_conflicts: set[tuple[str, str, str]] = set()
