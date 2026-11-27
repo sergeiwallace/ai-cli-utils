@@ -273,6 +273,15 @@ def test_given_the_repository_when_the_wiki_is_built_then_every_tracked_file_is_
     assert all(not p.endswith(".md") and not p.startswith("docs/") for p in result.excluded)
 
 
+def test_given_the_tracked_comment_skip_list_when_the_wiki_is_planned_then_it_is_excluded():
+    data = tomllib.loads((REPO / wiki.MANIFEST).read_text(encoding="utf-8"))
+    generated = {"cli-reference": (gen.REFERENCE, gen.render_reference(_cli_group))}
+
+    result = wiki.plan(data, REPO, generated)
+
+    assert "comment-skip.txt" in result.excluded
+
+
 def test_given_the_repository_wiki_when_built_then_home_and_cli_reference_read_correctly(built):
     out, _ = built
     home = (out / "Home.md").read_text(encoding="utf-8")
