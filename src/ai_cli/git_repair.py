@@ -517,6 +517,56 @@ def _is_worktree_dirty(repo_root: Path) -> bool:
     return bool(out.strip())
 
 
+def _snapshot_strand_baseline(
+    repo_root: Path,
+) -> tuple[set[str] | None, set[str] | None, tuple[str, str] | None, str | None]:
+    """Capture unmerged paths, stash stack, and HEAD identity before a git operation."""
+    try:
+        before_unmerged = unmerged_paths(repo_root)
+        before_stashes = stash_entries(repo_root)
+        before_head = _head_identity(repo_root)
+    except GitProbeError as e:
+        return None, None, None, str(e)
+    return before_unmerged, before_stashes, before_head, None
+
+
+def _detect_strand_after_op(
+    repo_root: Path,
+    before_unmerged: set[str] | None,
+    before_stashes: set[str] | None,
+    before_head: tuple[str, str] | None,
+    probe_failure: str | None,
+    op_label: str,
+) -> str | None:
+    """Compare post-operation repo state against the pre-operation baseline."""
+    if probe_failure:
+        return f"repo state could not be verified before the {op_label} — {probe_failure}"
+
+    assert before_unmerged is not None
+    assert before_stashes is not None
+    try:
+        new_unmerged = unmerged_paths(repo_root) - before_unmerged
+        new_stashes = own_autostash_entries(repo_root, before_head) - before_stashes
+        in_progress = operation_in_progress(repo_root)
+    except GitProbeError as e:
+        return f"repo state could not be verified after the {op_label} — {e}"
+
+    if in_progress:
+        return None
+
+    reasons = []
+    if new_unmerged:
+        reasons.append(f"{len(new_unmerged)} newly conflicted path(s): {', '.join(sorted(new_unmerged))}")
+    if new_stashes:
+        shas = ", ".join(sorted(new_stashes))
+        reasons.append(f"{len(new_stashes)} autostash entr(y/ies) left on the stash stack ({shas})")
+    if not reasons:
+        return None
+    if _repair_beads_issues_autostash_strand(repo_root, new_unmerged, new_stashes):
+        return None
+    return "; ".join(reasons)
+
+
 def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
     """Run ``git pull --rebase`` (adding ``--autostash`` only when dirty) and verify state.
 
@@ -556,15 +606,7 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     If a state probe cannot run at all, that is reported AS a strand — an
     unverifiable repo is treated as unsafe rather than assumed clean.
     """
-    try:
-        before_unmerged = unmerged_paths(repo_root)
-        before_stashes = stash_entries(repo_root)
-        before_head = _head_identity(repo_root)
-    except GitProbeError as e:
-        before_unmerged, before_stashes, before_head = None, None, None
-        probe_failure: str | None = str(e)
-    else:
-        probe_failure = None
+    before_unmerged, before_stashes, before_head, probe_failure = _snapshot_strand_baseline(repo_root)
 
     pull_args = ["git", "-C", str(repo_root), "pull", "--rebase"]
     if _is_worktree_dirty(repo_root):
@@ -579,34 +621,15 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
         check=False,
     )
 
-    if probe_failure:
-        return result, f"repo state could not be verified before the pull — {probe_failure}"
-
-    assert before_unmerged is not None
-    assert before_stashes is not None
-    try:
-        new_unmerged = unmerged_paths(repo_root) - before_unmerged
-        new_stashes = own_autostash_entries(repo_root, before_head) - before_stashes
-        in_progress = operation_in_progress(repo_root)
-    except GitProbeError as e:
-        return result, f"repo state could not be verified after the pull — {e}"
-
-    if in_progress:
-        # git left an explicit marker, so the conflict is visible by ordinary
-        # means and the caller's own non-zero handling applies.
-        return result, None
-
-    reasons = []
-    if new_unmerged:
-        reasons.append(f"{len(new_unmerged)} newly conflicted path(s): {', '.join(sorted(new_unmerged))}")
-    if new_stashes:
-        shas = ", ".join(sorted(new_stashes))
-        reasons.append(f"{len(new_stashes)} autostash entr(y/ies) left on the stash stack ({shas})")
-    if not reasons:
-        return result, None
-    if _repair_beads_issues_autostash_strand(repo_root, new_unmerged, new_stashes):
-        return result, None
-    return result, "; ".join(reasons)
+    stranded = _detect_strand_after_op(
+        repo_root,
+        before_unmerged,
+        before_stashes,
+        before_head,
+        probe_failure,
+        "pull",
+    )
+    return result, stranded
 
 
 @dataclass(frozen=True)
@@ -635,6 +658,21 @@ def _ref_exists(repo_root: Path, ref: str) -> bool:
     return _git_query(repo_root, "rev-parse", "--verify", "-q", ref).returncode == 0
 
 
+def _remote_exists(repo_root: Path, remote: str) -> bool:
+    """Return whether *remote* has a configured URL in *repo_root*."""
+    return _git_query(repo_root, "remote", "get-url", remote).returncode == 0
+
+
+def _push_remote_for_branch(repo_root: Path, current: str, fallback_remote: str) -> str:
+    """Return the configured push remote for *current*, falling back to *fallback_remote*."""
+    for key in (f"branch.{current}.pushRemote", "remote.pushDefault"):
+        proc = _git_query(repo_root, "config", "--get", key)
+        value = proc.stdout.strip() if proc.returncode == 0 else ""
+        if value:
+            return value
+    return fallback_remote
+
+
 def _integration_remote_ref(repo_root: Path, remote: str, current: str, upstream: str | None) -> str | None:
     """Resolve the remote integration branch ref (for example ``origin/main``)."""
     if upstream and upstream != f"{remote}/{current}":
@@ -648,26 +686,77 @@ def _integration_remote_ref(repo_root: Path, remote: str, current: str, upstream
     return None
 
 
-def _published_branch_candidate(
+def _ls_remote_branch_sha(
+    repo_root: Path, remote: str, branch: str
+) -> tuple[bool, str | None, subprocess.CompletedProcess]:
+    """Probe *remote* for ``refs/heads/<branch>``, returning ``(ok, sha_or_none, process)``."""
+    proc = _git_query(repo_root, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+    if proc.returncode != 0:
+        return False, None, proc
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == f"refs/heads/{branch}":
+            return True, parts[0], proc
+    return True, None, proc
+
+
+def _resolve_published_branch(
     repo_root: Path,
-) -> tuple[str | None, str | None, str | None, str | None, str | None]:
-    """Return ``(current, remote, upstream, published_ref, integration_ref)`` for *repo_root*."""
+) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None, subprocess.CompletedProcess | None]:
+    """Identify whether ``HEAD`` is published on its push or fetch remote.
+
+    Returns ``(current, upstream, push_remote, integration_remote, published_ref,
+    integration_ref, probe_failure_proc)``. When a branch has no locally cached
+    remote-tracking ref on its push remote, probes the remote with ``git ls-remote``
+    before concluding it is unpublished.
+    """
     branch_proc = _git_query(repo_root, "symbolic-ref", "--short", "-q", "HEAD")
     current = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
     if not current:
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     upstream_proc = _git_query(repo_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     upstream = upstream_proc.stdout.strip() if upstream_proc.returncode == 0 else None
-    remote = upstream.split("/", 1)[0] if upstream and "/" in upstream else "origin"
-    integration_ref = _integration_remote_ref(repo_root, remote, current, upstream)
+    fetch_remote = upstream.split("/", 1)[0] if upstream and "/" in upstream else "origin"
+    push_remote = _push_remote_for_branch(repo_root, current, fetch_remote)
+    integration_ref = _integration_remote_ref(repo_root, fetch_remote, current, upstream)
     integration_branch = (
-        integration_ref[len(remote) + 1 :] if integration_ref and integration_ref.startswith(f"{remote}/") else None
+        integration_ref[len(fetch_remote) + 1 :]
+        if integration_ref and integration_ref.startswith(f"{fetch_remote}/")
+        else None
     )
 
-    if current != integration_branch and _ref_exists(repo_root, f"refs/remotes/{remote}/{current}"):
-        return current, remote, upstream, f"{remote}/{current}", integration_ref
-    return current, remote, upstream, None, integration_ref
+    if current == integration_branch and push_remote == fetch_remote:
+        return current, upstream, push_remote, fetch_remote, None, integration_ref, None
+
+    candidate_remotes: list[str] = [push_remote]
+    if fetch_remote != push_remote:
+        candidate_remotes.append(fetch_remote)
+
+    for remote in candidate_remotes:
+        if remote == fetch_remote and current == integration_branch:
+            continue
+        if _ref_exists(repo_root, f"refs/remotes/{remote}/{current}"):
+            return current, upstream, remote, fetch_remote, f"{remote}/{current}", integration_ref, None
+
+    if _remote_exists(repo_root, push_remote):
+        ok, remote_sha, probe_proc = _ls_remote_branch_sha(repo_root, push_remote, current)
+        if not ok:
+            if push_remote != fetch_remote:
+                return (
+                    current,
+                    upstream,
+                    push_remote,
+                    fetch_remote,
+                    f"{push_remote}/{current}",
+                    integration_ref,
+                    probe_proc,
+                )
+            return current, upstream, push_remote, fetch_remote, None, integration_ref, None
+        if remote_sha is not None:
+            return current, upstream, push_remote, fetch_remote, f"{push_remote}/{current}", integration_ref, None
+
+    return current, upstream, push_remote, fetch_remote, None, integration_ref, None
 
 
 def _ahead_behind(repo_root: Path, target_ref: str) -> tuple[int, int] | None:
@@ -703,20 +792,41 @@ def sync_worktree_branch(
 ) -> WorktreeSyncResult:
     """Sync a session worktree without rebasing a published branch onto trunk.
 
-    When the checked-out branch has a remote-tracking counterpart
-    ``<remote>/<branch>`` whose tip is an ancestor of ``HEAD``, runs ``git fetch``
-    and either reports distance behind the integration branch (default
-    ``"report"``) or merges it (``"merge"``). When ``<remote>/<branch>`` exists
-    but has diverged from ``HEAD``, skips rebasing unless the branch's configured
-    upstream IS ``<remote>/<branch>`` itself. Otherwise delegates to *pull_fn*
-    (default :func:`pull_rebase_autostash`) and records which arm was taken.
+    Checks both locally cached remote-tracking refs and the configured push
+    remote (including ``branch.<name>.pushRemote`` and ``remote.pushDefault``)
+    before deciding to rebase. When the remote branch tip is an ancestor of
+    ``HEAD``, runs ``git fetch`` and either reports distance behind the
+    integration branch (default ``"report"``) or merges it (``"merge"``) with
+    stranded-autostash detection. When the remote branch exists but is not an
+    ancestor of ``HEAD``, skips rebasing unless the configured upstream IS that
+    remote branch itself. Otherwise delegates to *pull_fn* (default
+    :func:`pull_rebase_autostash`) and records which arm was taken.
     """
     runner = pull_fn if pull_fn is not None else pull_rebase_autostash
-    current, remote, upstream, published_ref, integration_ref = _published_branch_candidate(repo_root)
+    (
+        current,
+        upstream,
+        push_remote,
+        integration_remote,
+        published_ref,
+        integration_ref,
+        probe_failure,
+    ) = _resolve_published_branch(repo_root)
     rebase_reason = "no published upstream"
 
-    if current and remote and published_ref:
-        fetch = _git_query(repo_root, "fetch", remote)
+    if probe_failure is not None and current and published_ref:
+        return WorktreeSyncResult(
+            arm="published-fetch-failed",
+            process=probe_failure,
+            stranded=None,
+            summary=(
+                f"could not verify push remote for branch '{current}' ('{published_ref}') — "
+                f"skipped rebase (exit {probe_failure.returncode})"
+            ),
+        )
+
+    if current and push_remote and integration_remote and published_ref:
+        fetch = _git_query(repo_root, "fetch", push_remote)
         if fetch.returncode != 0:
             return WorktreeSyncResult(
                 arm="published-fetch-failed",
@@ -727,17 +837,47 @@ def sync_worktree_branch(
                     f"skipped rebase; git fetch failed (exit {fetch.returncode})"
                 ),
             )
-        refreshed_integration = integration_ref or _integration_remote_ref(repo_root, remote, current, upstream)
-        ancestor_check = _git_query(repo_root, "merge-base", "--is-ancestor", published_ref, "HEAD")
+        published_target = published_ref
+        if not _ref_exists(repo_root, f"refs/remotes/{published_ref}"):
+            branch_fetch = _git_query(repo_root, "fetch", push_remote, f"refs/heads/{current}")
+            if branch_fetch.returncode != 0:
+                return WorktreeSyncResult(
+                    arm="published-fetch-failed",
+                    process=branch_fetch,
+                    stranded=None,
+                    summary=(
+                        f"published branch '{current}' tracks '{published_ref}' — "
+                        f"skipped rebase; git fetch failed (exit {branch_fetch.returncode})"
+                    ),
+                )
+            published_target = "FETCH_HEAD"
+        if integration_remote != push_remote and _remote_exists(repo_root, integration_remote):
+            integration_fetch = _git_query(repo_root, "fetch", integration_remote)
+            if integration_fetch.returncode != 0:
+                return WorktreeSyncResult(
+                    arm="published-fetch-failed",
+                    process=integration_fetch,
+                    stranded=None,
+                    summary=(
+                        f"published branch '{current}' tracks '{published_ref}' — "
+                        f"skipped rebase; git fetch {integration_remote} failed (exit {integration_fetch.returncode})"
+                    ),
+                )
+        refreshed_integration = integration_ref or _integration_remote_ref(
+            repo_root, integration_remote, current, upstream
+        )
+        ancestor_check = _git_query(repo_root, "merge-base", "--is-ancestor", published_target, "HEAD")
         if ancestor_check.returncode == 0:
             behind = _commits_behind(repo_root, refreshed_integration) if refreshed_integration else None
             if published_mode == "merge" and refreshed_integration and behind:
+                b_unmerged, b_stashes, b_head, b_probe = _snapshot_strand_baseline(repo_root)
                 merged = _git_query(repo_root, "merge", "--no-edit", refreshed_integration)
-                if merged.returncode == 0:
+                merge_stranded = _detect_strand_after_op(repo_root, b_unmerged, b_stashes, b_head, b_probe, "merge")
+                if merged.returncode == 0 or merge_stranded is not None:
                     return WorktreeSyncResult(
                         arm="published-merge",
                         process=merged,
-                        stranded=None,
+                        stranded=merge_stranded,
                         summary=(
                             f"published branch '{current}' tracks '{published_ref}' — "
                             f"skipped rebase; merged {behind} commit(s) from {refreshed_integration}"
@@ -767,13 +907,18 @@ def sync_worktree_branch(
                 summary=f"published branch '{current}' tracks '{published_ref}' — skipped rebase; fetched ({distance})",
             )
         if upstream != published_ref:
-            counts = _ahead_behind(repo_root, published_ref)
-            divergence = f"{counts[0]} ahead / {counts[1]} behind" if counts is not None else "diverged"
+            counts = _ahead_behind(repo_root, published_target)
+            if counts is not None and counts[0] == 0 and counts[1] > 0:
+                detail = f"is {counts[1]} commit(s) behind '{published_ref}'"
+            elif counts is not None:
+                detail = f"diverged from '{published_ref}' ({counts[0]} ahead / {counts[1]} behind)"
+            else:
+                detail = f"diverged from '{published_ref}'"
             return WorktreeSyncResult(
                 arm="published-diverged",
                 process=fetch,
                 stranded=None,
-                summary=f"published branch '{current}' diverged from '{published_ref}' ({divergence}) — skipped rebase",
+                summary=f"published branch '{current}' {detail} — skipped rebase",
             )
         rebase_reason = f"'{published_ref}' is not an ancestor of HEAD"
 

@@ -57,7 +57,7 @@
   "src/ai_cli/data/statusline-command.sh": 229,
   "src/ai_cli/direnv_setup.py": 22,
   "src/ai_cli/extensions.py": 4,
-  "src/ai_cli/git_repair.py": 14,
+  "src/ai_cli/git_repair.py": 12,
   "src/ai_cli/host_env.py": 18,
   "src/ai_cli/icon_generator.py": 62,
   "src/ai_cli/iterm2.py": 52,

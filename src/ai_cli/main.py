@@ -92,6 +92,7 @@ from .git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
+    operation_in_progress,
     pull_rebase_autostash,
     repair_bare_worktree_config,
     sync_worktree_branch,
@@ -7022,6 +7023,10 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
+            try:
+                _in_progress_before: str | None = operation_in_progress(worktree_path)
+            except GitProbeError:
+                _in_progress_before = "unknown"
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
                 _sync = sync_worktree_branch(
                     worktree_path,
@@ -7044,7 +7049,7 @@ def _do_session_launch(
                         f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
                     )
                 elif pull.returncode != 0 and not stranded and _sync.arm == "published-merge-failed":
-                    if not _conflicted_before:
+                    if not _conflicted_before and not _in_progress_before:
                         subprocess.run(
                             ["git", "merge", "--abort"],
                             capture_output=True,
@@ -7056,7 +7061,7 @@ def _do_session_launch(
                         "worktree",
                         f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
                     )
-                elif pull.returncode != 0 and not stranded and not _conflicted_before:
+                elif pull.returncode != 0 and not stranded and not _conflicted_before and not _in_progress_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
                     # would abort a rebase the user is part-way through and wipe their
