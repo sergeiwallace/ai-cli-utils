@@ -322,6 +322,7 @@ def test_given_a_delay_that_overshoots_the_total_when_retrying_then_it_stops_bef
 # -- the show lookup, and the ensure and show together ---------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the session wake watcher is POSIX-only")
 def test_given_a_hung_sidecar_when_the_ensure_and_the_show_lookup_both_run_then_together_they_stay_within_twice_the_total(
     tmp_path, monkeypatch
 ):
