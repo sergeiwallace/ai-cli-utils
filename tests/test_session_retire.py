@@ -483,6 +483,33 @@ def test_given_a_file_outside_heads_tree_when_retiring_an_interrupted_home_then_
     assert "debug.log is not in HEAD's tree" in err
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError as exc:
+        pytest.skip(f"cannot create a symlink here: {exc}")
+
+
+def test_given_a_symlink_out_of_the_checkout_when_retiring_an_interrupted_home_then_it_is_removed_and_its_target_kept(
+    interrupted, tmp_path
+):
+    target = tmp_path / "provisioned-env"
+    target.mkdir()
+    (target / "marker").write_text("kept\n")
+    _symlink_or_skip(interrupted["wt"] / ".venv", target)
+
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+    assert (target / "marker").read_text() == "kept\n"
+
+
+def test_given_a_symlink_into_the_checkout_when_retiring_an_interrupted_home_then_it_is_refused_naming_it(interrupted):
+    _symlink_or_skip(interrupted["wt"] / "alias.md", interrupted["wt"] / "README.md")
+    err = _refused(interrupted, "-y")
+    assert "alias.md is not in HEAD's tree" in err
+
+
 def test_given_a_file_diverging_from_heads_blob_when_retiring_an_interrupted_home_then_it_is_refused(interrupted):
     (interrupted["wt"] / "README.md").write_bytes(b"hX")
     err = _refused(interrupted, "-y")
