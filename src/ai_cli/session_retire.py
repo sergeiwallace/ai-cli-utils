@@ -361,14 +361,16 @@ def session_worktree(repo_root: Path, name: str, registered: list[Path]) -> Path
                 if found is not None and found != repo_root and found not in recorded:
                     recorded.append(found)
     at_slot = _registered_worktree_at(slot, registered)
-    found = list(dict.fromkeys([*recorded, *([at_slot] if at_slot is not None else [])]))
-    if not found:
+    worktrees: list[Path] = list(recorded)
+    if at_slot is not None and at_slot not in worktrees:
+        worktrees.append(at_slot)
+    if not worktrees:
         raise RetireError(f"{slot} is not a registered worktree of {repo_root}, and no session record names one")
-    if len(found) > 1:
+    if len(worktrees) > 1:
         raise RetireError(
-            f"{name} names more than one worktree ({', '.join(str(w) for w in found)}); retire each by hand"
+            f"{name} names more than one worktree ({', '.join(str(w) for w in worktrees)}); retire each by hand"
         )
-    return found[0]
+    return worktrees[0]
 
 
 def retire_session(
