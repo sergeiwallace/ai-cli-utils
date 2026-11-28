@@ -165,7 +165,6 @@ def fetch_failure(what: str, stderr: str) -> RegistryUnreachableError:
         return RegistryAuthError(f"{what}: authentication refused: {refusal}{said}")
     marker = git_transport.transient_marker(stderr)
     if marker is not None:
-        # The helper's own cause, not git's follow-on prompt line, is what the report names.
         return RegistryUnreachableError(f"{what}: {marker}", transient=True)
     return RegistryUnreachableError(f"{what}: {stderr.strip()}", transient=git_transport.is_transient(stderr))
 
@@ -1847,7 +1846,6 @@ def sync_names(
             if result.returncode != 0:
                 raise fetch_failure(f"could not fetch {registry.remote}", result.stderr.decode(errors="replace"))
 
-        # Best effort, as before: the ancestry test then reads the last fetched history.
         with contextlib.suppress(RegistryError):
             registry.retrying_fetch(fetch_policy_history)
         commit, committed_at = policy_revision(registry)

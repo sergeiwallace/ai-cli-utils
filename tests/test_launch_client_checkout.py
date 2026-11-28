@@ -236,7 +236,6 @@ def test_given_a_fetch_that_hangs_once_when_launching_remote_then_it_is_retried_
     monkeypatch.setenv("APPDATA", str(tmp_path / "user-config"))
     _, publisher, checkout = origin_and_checkout
     target = _advance_origin(publisher)
-    # The origin's own upload-pack sleeps past the first attempt's timeout, once: a real hang.
     stub = tmp_path / "upload_pack.py"
     stub.write_text(_UPLOAD_PACK_HANGS_ONCE, encoding="utf-8")
     python = Path(sys.executable).as_posix()

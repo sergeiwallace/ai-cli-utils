@@ -57,9 +57,6 @@ def _calls(script: Path) -> int:
     return int(counter.read_text()) if counter.exists() else 0
 
 
-# -- the wake sidecar's total budget ---------------------------------------------------------
-
-
 def test_given_a_hung_sidecar_and_a_total_budget_when_launching_then_the_ensure_costs_no_more_than_the_budget(
     tmp_path, monkeypatch
 ):
@@ -96,9 +93,6 @@ def test_given_a_hung_sidecar_and_a_total_budget_when_launching_then_the_ensure_
     launched.assert_called_once()
 
 
-# -- the Dolt supervisor ensure --------------------------------------------------------------
-
-
 def test_given_a_hung_dolt_supervisor_when_launching_then_the_ensure_is_bounded_and_the_launch_continues(
     tmp_path, monkeypatch
 ):
@@ -121,8 +115,6 @@ def test_given_a_hung_dolt_supervisor_when_launching_then_the_ensure_is_bounded_
     assert "did not finish within 1 s" in message
     assert message.endswith("launch continues")
 
-
-# -- the policy-sync fetch of sync-names -----------------------------------------------------
 
 _UPLOAD_PACK_HANGS_ONCE = """\
 import pathlib, time
@@ -163,9 +155,6 @@ def test_given_a_policy_fetch_that_times_out_once_when_syncing_names_then_it_is_
 
     assert len(policy_fetches) == 2
     assert policy_fetches[1] > policy_fetches[0] == 3
-
-
-# -- the reinstall: package-only at launch, full repair by hand ------------------------------
 
 
 @pytest.fixture
@@ -247,9 +236,6 @@ def test_given_a_stale_install_when_a_launch_updates_it_then_the_child_is_this_r
     assert update[4:7] == ["update", "--force", "--package-only"]
 
 
-# -- the policy's own shape ------------------------------------------------------------------
-
-
 def _sites() -> list[str]:
     return [name for name, value in retry.shipped_table().items() if isinstance(value, dict)]
 
@@ -317,9 +303,6 @@ def test_given_a_delay_that_overshoots_the_total_when_retrying_then_it_stops_bef
     assert timeouts == [1]
     assert exhausted.value.attempts == 1
     assert str(exhausted.value.last) == "no answer"
-
-
-# -- the show lookup, and the ensure and show together ---------------------------------------
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the session wake watcher is POSIX-only")

@@ -214,6 +214,10 @@ def _ensure_dolt_server() -> None:
     visible embedded fallback itself and always permits the requested session.
     Its output is relayed as ``[dolt_server]`` lines rather than inherited, so a
     child's ``dolt_server: healthy`` never reaches the terminal untagged.
+
+    The wait is bounded under ``[retry.dolt_server]``. Stopping the ensure stops only this
+    wait: a server it asked the unit manager to start keeps starting, and the launch
+    continues as it does when the supervisor reports its embedded fallback.
     """
     script = _dolt_server_script()
     if script is None:
@@ -233,9 +237,6 @@ def _ensure_dolt_server() -> None:
                 f"the Dolt server ensure did not finish within {current.timeout:g} s"
             ) from exc
 
-    # Bounded under [retry.dolt_server]. Stopping the ensure stops only this wait: a server it
-    # asked the unit manager to start keeps starting, and the launch continues as it does when
-    # the supervisor reports its embedded fallback.
     try:
         _retry.run("dolt_server", attempt, transient=lambda exc: isinstance(exc, _DoltEnsureTimeoutError))
     except _retry.RetryExhaustedError as exc:
@@ -287,7 +288,6 @@ def _run_wake_sidecar(script: Path, command: str) -> subprocess.CompletedProcess
 
     def retrying(current: _retry.Attempt, exc: Exception, next_timeout: float) -> None:
         message = f"wake sidecar {exc} (attempt {current.number} of {current.of}); retrying with {next_timeout:g} s"
-        # The output vocabulary names the launch's operations, not the sidecar CLI's commands.
         if command == "ensure":
             _out.warning(Tag.DAEMON, "ensure", message)
         else:
@@ -369,7 +369,11 @@ def _session_wake_watch_loop(config: dict, slug: str) -> str | None:
 
 
 def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, loop: str | None = None) -> None:
-    """Run the optional session watcher under tmux, independent of the agent."""
+    """Run the optional session watcher under tmux, independent of the agent.
+
+    The new-window call is bounded by one attempt's timeout and never retried: a second
+    new-window would open a second watcher.
+    """
     loop = loop or _session_wake_watch_loop(config, slug)
     if loop is None:
         return
@@ -377,7 +381,6 @@ def _start_session_wake_watcher(config: dict, tmux_session: str, slug: str, *, l
         created = subprocess.run(
             tmux_binary.argv("new-window", "-d", "-t", f"{tmux_session}:", "-n", "wake-watch", "sh", "-c", loop),
             capture_output=True,
-            # One bounded call, never retried: a second new-window would open a second watcher.
             timeout=_retry.policy("wake_sidecar").timeout_for(1),
             check=False,
         )
@@ -1623,7 +1626,6 @@ def _clear_update_failure_record() -> None:
         _update_failure_record_path().unlink(missing_ok=True)
 
 
-#: How the launch runs `ai update` as a child: this interpreter and this package's own entry.
 _UPDATE_CHILD = (sys.executable, "-P", "-m", "ai_cli.main")
 
 
@@ -1641,6 +1643,20 @@ def _auto_update_if_stale(config: dict) -> bool:
 
     A successful reinstall rewrote this process's own installed tree, so the
     caller must re-exec: True says so. Every other outcome returns False.
+
+    The child is this running package (``_UPDATE_CHILD``), never the ``ai`` first on PATH:
+    that can be another, older install, which would reject ``--package-only``. ``-P`` keeps
+    the checkout the child runs in off ``sys.path``, so nothing there can shadow a module.
+    ``--package-only`` reinstalls this package alone, since the bumped version already
+    defeats uv's cache for it, and leaves the dependencies as they are.
+
+    The child is deliberately unbounded and not on the retry policy. It runs
+    ``uv pip install`` or ``uv tool install --force`` into this launcher's own environment,
+    and uv is not atomic about it: killed part way it can leave the environment with no
+    packages and ``ai`` unable to start, so a timeout would turn a slow launch into a broken
+    install, and a retry would repeat a whole pull and install. The launch reports progress
+    with its "still checking" heartbeat instead, and the one-line summary times the pull,
+    the install and the work after it.
     """
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
@@ -1702,21 +1718,9 @@ def _auto_update_if_stale(config: dict) -> bool:
         # means a failed install is retried on the next launch rather than being
         # remembered as done.
         verbose = _update_verbose_requested()
-        # The child is this running package, never the `ai` first on PATH: that can be another,
-        # older install, which would reject --package-only. -P keeps the checkout the child
-        # runs in (cwd) off sys.path, so nothing there can shadow a module.
-        # --package-only: the bumped version already defeats uv's cache for this package, so
-        # the launch reinstalls it alone and leaves the dependencies as they are.
         cmd = [*_UPDATE_CHILD, "update", "--force", "--package-only"] + ([] if verbose else ["--quiet"])
         # Captured even when verbose: the child's lines are replayed through the
         # tagged relay below rather than inherited raw.
-        # Deliberately unbounded, not on the retry policy: the child runs `uv pip install`
-        # or `uv tool install --force` into this launcher's own environment, and uv is not
-        # atomic about it. Killed part way it can leave the environment with no packages and
-        # `ai` unable to start (see the repair message below), so a timeout here would turn a
-        # slow launch into a broken install. A retry would repeat a whole pull and install.
-        # The launch reports progress with its "still checking" heartbeat instead, and the
-        # one-line summary times the pull, the install and the work after it.
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=False, env=_out.record_relay_env()
         )
@@ -3304,6 +3308,18 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     session-launch auto-update, where the full transcript scrolled past every
     launch immediately before the session painted. Failures are never quiet: the
     captured transcript is printed in full on stderr.
+
+    The launch's own update (``package_only``) reinstalls this package alone; a hand-typed
+    ``ai update --force`` keeps uv's full ``--reinstall``, which also reinstalls every
+    dependency and revalidates each against the index (``--refresh``), so it can repair a
+    damaged dependency. On one Linux host, warm cache, an editable install of this package
+    took 0.87 to 0.91 s with ``--reinstall`` and 0.52 to 0.69 s with
+    ``--reinstall-package``, three runs each: a saving, but not the cost of a slow
+    launch-time reinstall, which the one-line summary's step times now name.
+
+    Stale bytecode is cleared only under ``src/``: the checkout root also holds
+    ``.worktrees/``, every other session's tree and virtualenv, whose caches are theirs,
+    and walking them cost a cold 10 s on one host.
     """
     project_path = _find_aicli_project_path(config)
     if project_path is None:
@@ -3395,13 +3411,6 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         sys.exit(1)
     old_version = m.group(2).decode("utf-8", "replace")
     pulled = time.monotonic()
-    # The bumped version already defeats uv's cache for this package. The launch's own update
-    # (package_only) reinstalls this package alone; a hand-typed `ai update --force` keeps uv's
-    # full --reinstall, which also reinstalls every dependency and revalidates each against the
-    # index (--refresh), so it can repair a damaged dependency. On one Linux host, warm cache,
-    # an editable install of this package took 0.87 to 0.91 s with --reinstall and 0.52 to
-    # 0.69 s with --reinstall-package, three runs each: a saving, but not the cost of a slow
-    # launch-time reinstall, which the one-line summary's step times now name.
     package = _project_name(original) or "ai-cli-utils"
     if not force_reinstall:
         reinstall, full_reinstall = [], []
@@ -3479,9 +3488,6 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
                         f"{(pip_result.stdout or '') + (pip_result.stderr or '')}".rstrip(),
                     )
         installed = time.monotonic()
-        # Clear the package's own stale bytecode (cross-platform). Only under src/: the
-        # checkout root also holds .worktrees/, every other session's tree and virtualenv,
-        # whose caches are theirs, and walking them cost a cold 10 s on one host.
         for _cache_dir in (project_path / "src").rglob("__pycache__"):
             if _cache_dir.is_dir():
                 shutil.rmtree(_cache_dir, ignore_errors=True)
@@ -10516,7 +10522,6 @@ def cmd_ssh(alias):
 )
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-# Hidden and machine-to-machine: only the launch-time auto-update passes it.
 @click.option("--package-only", is_flag=True, hidden=True)
 def cmd_update(force, quiet, verbose, package_only):
     config = _config.load_config()
@@ -10532,7 +10537,6 @@ def cmd_update(force, quiet, verbose, package_only):
 )
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
 @click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
-# Hidden and machine-to-machine: only the launch-time auto-update passes it.
 @click.option("--package-only", is_flag=True, hidden=True)
 def cmd_deploy(force, quiet, verbose, package_only):
     config = _config.load_config()

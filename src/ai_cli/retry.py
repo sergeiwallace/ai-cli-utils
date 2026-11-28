@@ -214,7 +214,9 @@ def run(
     definite answer does not change by asking again. ``on_retry`` hears each retried failure
     with the next attempt's timeout, so the caller can say what it is doing. When the attempts
     or ``max_total_seconds`` run out, :class:`RetryExhaustedError` carries the count and the
-    last cause, and names the total when that is what stopped it.
+    last cause, and names the total when that is what stopped it. The delay can overrun its
+    estimate (a loaded host, a suspended clock), so an attempt with no time left is never
+    called, and the caller only ever sees a real timeout.
     """
     current = policy(site)
     total = max(current.max_total_seconds, current.timeout_for(1))
@@ -224,8 +226,6 @@ def run(
         timeout = current.timeout_for(number)
         if last is not None:
             timeout = min(timeout, deadline - time.monotonic())
-            # The delay can overrun its estimate (a loaded host, a suspended clock): an attempt
-            # with no time left is never called, so the caller only ever sees a real timeout.
             if timeout <= 0:
                 raise RetryExhaustedError(site, number - 1, last, total=total) from last
         attempt = Attempt(number, current.attempts, timeout)

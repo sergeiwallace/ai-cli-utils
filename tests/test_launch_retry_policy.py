@@ -33,8 +33,6 @@ from name_fleet import HOST, HOST_ALIAS, REPO, build_fleet, git
 from ai_cli import session_naming
 from ai_cli.main import _do_update_or_deploy
 
-# -- the user config file, read at call time -----------------------------------------------
-
 
 def _write_config(tmp_path: Path, monkeypatch, text: str) -> None:
     base = tmp_path / "user-config"
@@ -43,8 +41,6 @@ def _write_config(tmp_path: Path, monkeypatch, text: str) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(base))
     monkeypatch.setenv("APPDATA", str(base))
 
-
-# -- the wake sidecar: a real script that hangs on the attempts its plan says ---------------
 
 _SIDECAR = """\
 import json, pathlib, sys, time
@@ -140,8 +136,6 @@ def test_given_a_changed_retry_config_when_the_next_launch_runs_then_the_new_val
     assert "wake sidecar started" in second
     assert "wake sidecar failed" not in second
 
-
-# -- the name registry: a real bare remote whose upload-pack misbehaves on cue --------------
 
 _UPLOAD_PACK = """\
 import pathlib, sys, time
@@ -282,8 +276,6 @@ def test_given_a_registry_fetch_refused_for_authentication_when_launching_then_i
     assert "paste the new token" not in err
 
 
-# -- the launch-time reinstall: the uv command line is the process boundary -----------------
-
 _PYPROJECT = '[project]\nname = "myproject"\nversion = "0.1.0"\n'
 
 
@@ -364,8 +356,6 @@ def test_given_no_user_retry_table_when_a_site_reads_its_policy_then_the_shipped
     for site in ("wake_sidecar", "registry_fetch"):
         assert retry.policy(site).attempts >= 2, site
 
-
-# -- a credential helper on an HTTP remote: the transient marker ----------------------------
 
 _HELPER = """\
 import pathlib, sys
@@ -453,7 +443,6 @@ def helper_remote(launch, monkeypatch):
     helper.write_text(_HELPER, encoding="utf-8")
     repo = Path.cwd()
     git(repo, "remote", "set-url", "origin", f"http://127.0.0.1:{server.server_port}/remote.git")
-    # An empty value clears any inherited helper, so only the planned one answers.
     git(repo, "config", "--add", "credential.helper", "")
     git(repo, "config", "--add", "credential.helper", f'!"{Path(sys.executable).as_posix()}" "{helper.as_posix()}"')
     for name in ("GIT_ASKPASS", "SSH_ASKPASS"):

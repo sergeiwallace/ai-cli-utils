@@ -912,7 +912,6 @@ def _run_remote_named_launch(
         if failures:
             failure = failures.pop(0)
             if failure == "hang":
-                # A real process that never answers, run under the call's own timeout.
                 return real_run([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
             return MagicMock(returncode=failure, stdout="", stderr="")
         if allocator_reply is not None:

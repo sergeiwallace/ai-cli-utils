@@ -17,26 +17,24 @@ where ``<helper-name>`` is letters, digits, ``_``, ``.`` or ``-``. Such a line m
 transient, so it is retried, and it outranks git's follow-on "could not read Username" or
 "could not read Password". It never outranks a refusal the remote itself gave:
 "Authentication failed", an HTTP 401 or 403, or a rejected ssh key stops at once.
+
+"could not read Username" or "could not read Password" alone means git found no credential
+to send and could not prompt for one: a refusal, unless a helper marked its own failure
+transient. "Could not read from remote repository" is not a connection failure: git prints
+it for a repository that does not exist too, which is a definite answer.
 """
 
 from __future__ import annotations
 
 import re
 
-# A credential helper's own report that it could not answer this time (see the module docstring).
 _TRANSIENT_MARKER = re.compile(r"^\s*[A-Za-z0-9_.-]+: transient:.*$", re.MULTILINE)
-# A refusal the remote itself gave: a definite answer whatever any helper printed.
 _REMOTE_REFUSAL = re.compile(
     r"Authentication failed|Permission denied \(publickey|HTTP Basic: Access denied"
     r"|Invalid username or password|returned error: 40[13]",
     re.IGNORECASE,
 )
-# git found no credential to send and could not prompt for one. A refusal, unless a helper
-# marked its own failure transient.
 _NO_CREDENTIAL = re.compile(r"could not read (?:Username|Password)", re.IGNORECASE)
-# A remote that was not reached or dropped the transfer. "Could not read from remote
-# repository" is not here: git prints it for a repository that does not exist too, which
-# is a definite answer.
 _CONNECTION_FAILURE = re.compile(
     r"Could not resolve host|Could not resolve hostname|Connection (?:timed out|refused|reset|closed by)"
     r"|ssh: connect to host|Failed to connect|Operation timed out|early EOF|remote end hung up unexpectedly"
