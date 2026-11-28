@@ -727,6 +727,24 @@ def test_given_a_probe_its_owner_set_to_never_when_agent_exits_then_original_she
     assert "not restarting: relaunch policy never" in pane_session.output.read_text()
 
 
+@pytest.mark.parametrize("stop", ["never", "auto_restart_off"])
+def test_given_restarts_turned_off_when_agent_exits_cleanly_then_no_restart_countdown_is_shown(pane_session, stop):
+    pane_session.start(caller=True)
+    if stop == "never":
+        pane_session.set_policy("never", by="owner")
+    else:
+        path = Path(config.config_file_text())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[session]\nauto_restart = false\n", encoding="utf-8")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    pane_session.assert_caller()
+    output = pane_session.output.read_text()
+    assert "not restarting:" in output
+    assert "restarting in" not in output
+    assert pane_session.count() == 1
+
+
 @pytest.mark.parametrize("remote", [False, True])
 def test_given_running_tmux_session_when_command_stops_then_pane_closes_and_migration_preflight_passes(
     pane_session, remote, tmp_path
