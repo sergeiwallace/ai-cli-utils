@@ -10978,9 +10978,12 @@ def _print_retirement(result) -> None:
     verb = "would retire" if result.dry_run else "retired"
     _out.emit(Tag.RETIRE, "retire", f"{result.name}: {verb} {result.worktree}")
     checked_out = result.branch or "detached HEAD"
-    _out.emit(
-        Tag.RETIRE, "retire", f"  checkout: {result.worktree} ({checked_out} at {result.head}) -- git worktree remove"
+    removal = (
+        "git worktree remove --force --force (interrupted checkout: locked `initializing`, only HEAD's bytes on disk)"
+        if result.dead_checkout
+        else "git worktree remove"
     )
+    _out.emit(Tag.RETIRE, "retire", f"  checkout: {result.worktree} ({checked_out} at {result.head}) -- {removal}")
     for anchor in result.anchors:
         state = "already in place" if anchor.exists else "write"
         _out.emit(
@@ -11030,7 +11033,10 @@ def cmd_retire_session(name, repo, dry_run, yes):
     heartbeat), while the checkout has uncommitted or untracked work, or while
     its checked-out commit is in neither its upstream nor ``origin/main``. The
     branch tips are anchored under ``refs/preserved/retire-session/`` and the
-    branches kept; the Claude Code project directory is left in place.
+    branches kept; the Claude Code project directory is left in place. A locked
+    checkout is removed only when it proves to be an interrupted, never-started
+    ``git worktree add`` (locked ``initializing``, quiet, unused, and holding only
+    HEAD's bytes or cut-off prefixes of them).
     """
     from .session_adopt import AdoptionError
     from .session_retire import retire_session
