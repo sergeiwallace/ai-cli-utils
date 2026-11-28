@@ -30,6 +30,11 @@ from .native_deps import Candidate, InstallResult, attempt_installs
 
 BYPASS_ENV = "AI_CLI_SKIP_DIRENV"
 
+#: ``ai internal prepare-project-env``'s exit status for a refusal to approve an ``.envrc``.
+#: The session script stops on this status alone; any other failure means the helper did
+#: not run, and the agent starts with whatever direnv itself allows.
+PROJECT_ENV_REFUSED_EXIT = 3
+
 # Install candidates per sys.platform, in attempt order: (probe, argv).
 # ``probe`` is the executable that must exist on PATH for the entry to apply.
 # Only non-interactive invocations belong here — an installer that can block on a
@@ -173,9 +178,13 @@ def envrc_allowed(directory: Path, timeout: int = 30) -> bool | None:
     uses. That is why it, and not ``envrc_loads``, is the right probe before
     approving: the cheaper question is also the one actually being asked.
 
-    The printed form of ``direnv status`` is useless here -- it exits 0 even for a
+    The exit status of ``direnv status`` is useless here -- it exits 0 even for a
     blocked ``.envrc`` -- but the JSON carries ``state.foundRC.allowed``, which is
-    0 only when direnv will load the file.
+    0 only when direnv will load the file. A direnv older than ``--json`` (2.32 and
+    earlier, still what several Linux distributions ship) ignores the flag and
+    prints its text report, whose ``Found RC allowed`` line says the same thing
+    (``true``/``false`` there, the same integer as the JSON in later builds), so
+    that line is read rather than treating every such host as "unknown".
     """
     try:
         probe = subprocess.run(
@@ -194,16 +203,21 @@ def envrc_allowed(directory: Path, timeout: int = 30) -> bool | None:
         found = json.loads(probe.stdout)["state"]["foundRC"]
         return found["allowed"] == 0
     except (ValueError, TypeError, KeyError):
-        return None
+        pass
+    for line in probe.stdout.splitlines():
+        if line.startswith("Found RC allowed "):
+            return line.removeprefix("Found RC allowed ").strip() in ("true", "0")
+    return None
 
 
-def allow_envrc(directory: Path, timeout: int = 60) -> bool:
-    """Approve ``directory``'s ``.envrc`` with ``direnv allow``. True on success.
+def allow_envrc(directory: Path, timeout: int = 60) -> tuple[bool, str]:
+    """Approve ``directory``'s ``.envrc`` with ``direnv allow``: ``(approved, why not)``.
 
     Output is captured rather than inherited: direnv writes its own
     ``.envrc is blocked`` diagnostics to stderr, and letting those through would
     put the complaint on the terminal ahead of the notice saying it has just been
-    fixed. Never raises -- this runs mid-launch, and direnv is an enhancement.
+    fixed. A failure's reason is direnv's own last line, so the caller can quote
+    it. Never raises -- this runs mid-launch.
     """
     try:
         result = subprocess.run(
@@ -213,9 +227,14 @@ def allow_envrc(directory: Path, timeout: int = 60) -> bool:
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False, f"`direnv allow` did not finish within {timeout}s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"`direnv allow` could not run ({exc})"
+    if result.returncode == 0:
+        return True, ""
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return False, lines[-1] if lines else f"`direnv allow` exited {result.returncode}"
 
 
 def find_envrc(start: Path) -> Path | None:

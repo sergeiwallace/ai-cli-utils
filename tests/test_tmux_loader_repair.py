@@ -45,9 +45,9 @@ from ai_cli.native_deps import InstallResult, LoaderRepair
 MISSING_LIB = "libevent_core-2.1.so.7"
 
 # Two tests below assert an outcome that only exists where tmux can host a session.
-# Production's own policy is that Windows is not such a platform -- tmux_setup's
-# manual hints say "(there is no native Windows tmux; bare mode is the right answer
-# here)", and main.py suppresses the tmux report entirely when win32 has no tmux. So
+# Production's own policy is that a Windows host without a running tmux (psmux, or
+# one under WSL/MSYS2) is not such a platform: nothing installs one unattended there,
+# and main.py suppresses the tmux report entirely when win32 has no tmux. So
 # on Windows a launch correctly resolves to bare and emits no repair diagnostic, and
 # asserting "local, tmux" or the missing-library line there is asserting against the
 # documented behaviour.
@@ -425,7 +425,7 @@ class TestInstallTimeVerification:
     def test_given_tmux_is_unusable_when_setup_runs_then_the_install_still_succeeds(self, tmp_path):
         """A missing enhancement must not fail an install. Anything else makes
         ai-cli-utils uninstallable on a box with no tmux at all — including
-        every Windows host, where there is no native tmux to have."""
+        a Windows host without psmux, where nothing installs one unattended."""
         from ai_cli import setup as ai_setup
 
         with (

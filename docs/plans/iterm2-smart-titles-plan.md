@@ -37,7 +37,7 @@ Replace static `cc session-N` titles with actual tmux session names (e.g. `c-ses
 | Session type | Tab text symbol | Pane profile icon |
 |---|---|---|
 | Claude CC | `*` | Claude logo PNG (`ClaudeCode` profile family) |
-| Gemini | `✦` | Gemini icon (`GeminiCLI` profile) |
+| Antigravity | `✦` | Gemini icon |
 | Shell / zsh | `$` | Terminal icon PNG (`ShellUtility` profile) |
 | Other process | `·` | Default / no icon |
 
@@ -80,7 +80,7 @@ Use pane creation index (from `ITERM_SESSION_ID` `p{N}`) as proxy for spatial or
 Each pane's title bar shows independently:
 - CC pane: `[Claude logo] ▶ c-session-5`
 - Shell pane: `[terminal icon] $ → c-session-5` (paired CC session name)
-- Gemini pane: `[Gemini icon] ▶ g-session-1`
+- Antigravity pane: `[Gemini icon] ▶ g-session-1`
 
 Profile icon comes from the applied profile (real PNG). Title text set via OSC 0 per-session.
 
@@ -119,9 +119,9 @@ Shell companion pane uses `ShellUtility` profile. A `>_` style terminal icon PNG
 
 ---
 
-## Gemini Sessions
+## Antigravity Sessions
 
-Same rules. `g-session-1`, `g-r-proj-2` — same abbreviation, same status symbols, `◇` symbol, `GeminiCLI` profile icon.
+Antigravity sessions such as `g-session-1` and `g-r-myproject-2` follow the same abbreviation and status rules and use the `✦` symbol and Gemini icon.
 
 ---
 

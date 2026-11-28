@@ -1,0 +1,1 @@
+- On Windows, `ai doctor` and the launch no longer say there is no native tmux: psmux is one. A host where tmux runs but `use_tmux = false` is reported as not hosting sessions.

@@ -1,1 +1,1 @@
-Save native mosh and fallback SSH stderr in the launch log while showing it on the terminal.
+- Save native mosh and fallback SSH stderr in the launch log while showing it on the terminal.

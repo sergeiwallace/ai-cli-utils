@@ -28,8 +28,10 @@ from typing import TypeGuard
 
 import psutil
 
+from . import output as _out
 from . import tmux_binary
 from .config import get_xdg_state_home, read_relaunch_config
+from .output import Tag
 
 _BACKGROUND_ID = re.compile(r"[0-9a-f]{8}")
 _DIALOG_OPTION = re.compile(r"❯\s*\d+\.")
@@ -245,19 +247,41 @@ def _capture_pane(tmux_session: str, destination: Path) -> bool:
     return True
 
 
-def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: float) -> tuple[str | None, str | None]:
-    """Run the configured command. Returns (id, None) for an answer, else (None, reason)."""
+#: The exit status with which a ``[relaunch] background_session_resolver`` says that nothing
+#: is pending for this session: an ordinary no-answer, logged but never shown. Every other
+#: non-zero status (1 included, which is also what an uncaught traceback exits with) can be
+#: an unreadable capture, an ambiguous identity or a crash, so it is shown as a warning.
+RESOLVER_NOTHING_PENDING_EXIT = 3
+
+
+@dataclass(frozen=True)
+class _ResolverReply:
+    """What the configured resolver said: an id, a misbehaviour to report, or an ordinary no-answer.
+
+    ``no_answer`` is a :data:`RESOLVER_NOTHING_PENDING_EXIT` exit, kept for the launch log
+    only. ``problem`` is everything else that is not an answer (a resolver that could not
+    run, timed out, exited with any other status or printed a malformed id), which a
+    person should hear about; its warning reaches the launch log too.
+    """
+
+    background_id: str | None = None
+    problem: str | None = None
+    no_answer: str | None = None
+
+
+def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: float) -> _ResolverReply:
+    """Run the configured command and classify its reply."""
     try:
         words = shlex.split(command)
     except ValueError as error:
-        return None, f"has an unparsable command ({error})"
+        return _ResolverReply(problem=f"has an unparsable command ({error})")
     if not words:
-        return None, "has an empty command"
+        return _ResolverReply(problem="has an empty command")
     words[0] = str(Path(words[0]).expanduser())
     with tempfile.TemporaryDirectory(prefix="ai-background-resolver-") as scratch:
         capture = Path(scratch) / "pane.txt"
         if not _capture_pane(tmux_session, capture):
-            return None, "was skipped because the session pane could not be captured"
+            return _ResolverReply(problem="was skipped because the session pane could not be captured")
         try:
             completed = subprocess.run(
                 [*words, "--session", session_key, "--pane-capture", str(capture)],
@@ -267,15 +291,19 @@ def _run_resolver(command: str, session_key: str, tmux_session: str, timeout: fl
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return None, f"timed out after {timeout:g}s"
+            return _ResolverReply(problem=f"timed out after {timeout:g}s")
         except OSError as error:
-            return None, f"could not run ({error})"
+            return _ResolverReply(problem=f"could not run ({error})")
     if completed.returncode != 0:
-        return None, f"exited {completed.returncode}"
+        said = (completed.stderr or "").strip().splitlines()
+        status = f"exited {completed.returncode}" + (f": {said[-1]}" if said else "")
+        if completed.returncode == RESOLVER_NOTHING_PENDING_EXIT:
+            return _ResolverReply(no_answer=status)
+        return _ResolverReply(problem=status)
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if len(lines) != 1 or not _BACKGROUND_ID.fullmatch(lines[0]):
-        return None, "did not print exactly one 8-character id"
-    return lines[0], None
+        return _ResolverReply(problem="did not print exactly one 8-character id")
+    return _ResolverReply(background_id=lines[0])
 
 
 def _same_directory(left: object, right: Path) -> bool:
@@ -438,11 +466,20 @@ def _resolve(
 
     command = settings["background_session_resolver"].strip() if settings else ""
     if settings and command:
-        hint, reason = _run_resolver(
-            command, ai_name, tmux_session, settings["background_session_resolver_timeout_seconds"]
-        )
-        if hint is None:
-            notes.append(f"background resolver {reason}")
+        reply = _run_resolver(command, ai_name, tmux_session, settings["background_session_resolver_timeout_seconds"])
+        hint = reply.background_id
+        if reply.no_answer:
+            # An ordinary outcome, so it is kept off the terminal; the launch log says why.
+            _out.emit(
+                Tag.INTERNAL,
+                "resume",
+                f"background resolver has nothing pending ({reply.no_answer})",
+                err=True,
+                level=_out.Level.DETAIL,
+                terminal=False,
+            )
+        elif hint is None:
+            notes.append(f"background resolver {reply.problem}")
         elif any(row["id"] == hint for row in rows):
             return _attach_or_hold(next(row for row in rows if row["id"] == hint), prompted, ai_name, cwd)
         else:
@@ -482,12 +519,15 @@ def hosting_environment(background_id: str) -> dict[str, str] | None:
     None when no such process is found or its environment cannot be read.
     """
     socket_name = f"{background_id}.sock"
-    for process in psutil.process_iter(["cmdline"]):
+    # Each process's arguments are read here, not by process_iter, so a failing read skips that
+    # process instead of ending the scan. psutil on macOS can raise SystemError reading another
+    # process's arguments (sysctl KERN_PROCARGS2), not only AccessDenied.
+    for process in psutil.process_iter():
         try:
-            arguments = [Path(part) for part in process.info.get("cmdline") or ()]
+            arguments = [Path(part) for part in process.cmdline()]
             if any(path.name == socket_name and path.parent.name == "pty" for path in arguments):
                 return process.environ()
-        except (psutil.Error, OSError):
+        except (psutil.Error, OSError, SystemError):
             continue
     return None
 

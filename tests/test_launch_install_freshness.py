@@ -33,11 +33,14 @@ import pytest
 from conftest import is_update_child
 
 from ai_cli.main import (
+    SKIP_AUTO_UPDATE_ENV,
     UPDATE_VERBOSE_ENV,
     _auto_update_if_stale,
     _do_update_or_deploy,
+    _install_decision,
     _installed_source_fingerprint,
     cli,
+    trigger_background_update,
 )
 
 PYPROJECT = '[project]\nname = "myproject"\nversion = "0.1.0"\n'
@@ -360,6 +363,91 @@ class TestEscapeHatches:
 
         assert exc.value.code == 0
         assert any("--reinstall" in cmd for cmd in launch.installs)
+
+    @pytest.mark.parametrize("raw_value", ["1", "true", "TRUE", "yes", "on", " 1 "])
+    def test_given_skip_auto_update_env_truthy_when_checked_then_skips_stale_reinstall_and_lock(
+        self, project, state, tmp_path, raw_value
+    ):
+        launch = _Launch(project, state, installed_root=tmp_path / "installed")
+
+        with (
+            patch.dict(os.environ, {SKIP_AUTO_UPDATE_ENV: raw_value}),
+            patch("ai_cli.main._find_aicli_project_path", side_effect=AssertionError("must not inspect project")),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state),
+            patch("subprocess.run", side_effect=launch.run),
+        ):
+            assert _auto_update_if_stale({"deploy": {"project_path": str(project)}}) is False
+
+        assert launch.commands == []
+        assert not _stamp(state).exists()
+        assert not _stamp(state).with_suffix(".lock").exists()
+
+    @pytest.mark.parametrize("raw_value", ["", "0", "false", "FALSE", "no", "off", " false "])
+    def test_given_skip_auto_update_env_falsy_when_checked_then_auto_update_still_runs(
+        self, project, state, tmp_path, raw_value
+    ):
+        launch = _Launch(project, state, installed_root=tmp_path / "installed")
+
+        with patch.dict(os.environ, {SKIP_AUTO_UPDATE_ENV: raw_value}):
+            launch.launch()
+
+        assert launch.updates
+        assert _stamp(state).exists()
+
+    def test_given_skip_auto_update_env_when_trigger_background_update_called_then_skips_state_and_spawn(self, state):
+        with (
+            patch.dict(os.environ, {SKIP_AUTO_UPDATE_ENV: "1"}),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state),
+            patch("subprocess.Popen", side_effect=AssertionError("must not spawn uv tool upgrade")),
+        ):
+            trigger_background_update()
+
+        assert not (state / "update_check.json").exists()
+
+    def test_given_skip_auto_update_env_when_explicit_update_force_runs_then_reinstall_still_executes(
+        self, project, state, tmp_path
+    ):
+        _record_installed(project, state)
+        launch = _Launch(project, state, installed_root=tmp_path / "installed")
+
+        with (
+            patch.dict(os.environ, {SKIP_AUTO_UPDATE_ENV: "1"}),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state),
+            patch("subprocess.run", side_effect=launch.run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _do_update_or_deploy(
+                    force_reinstall=True, config={"deploy": {"project_path": str(project)}}, quiet=False
+                )
+
+        assert exc.value.code == 0
+        assert any("--reinstall" in cmd for cmd in launch.installs)
+
+    def test_given_skip_auto_update_env_when_install_decision_formatted_then_reports_skipped(self):
+        assert _install_decision(None, False, skipped=True) == f"skipped ({SKIP_AUTO_UPDATE_ENV})"
+
+    def test_given_skip_auto_update_env_when_session_launches_then_install_phase_skips_sync_and_reinstall(
+        self, tmp_path, capsys
+    ):
+        with (
+            patch.dict(os.environ, {SKIP_AUTO_UPDATE_ENV: "1"}),
+            patch("sys.argv", ["ai", "c", "1"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.main._ensure_dolt_server"),
+            patch("ai_cli.main._ensure_wake_sidecar"),
+            patch("ai_cli.main._sync_launch_client", side_effect=AssertionError("must not sync client")),
+            patch("ai_cli.main._auto_update_if_stale", side_effect=AssertionError("must not auto-update")),
+            patch("ai_cli.main._tunnel._ensure_nats_tunnel"),
+            patch("ai_cli.main._process_manager._start_stale_session_reaper_for_launch"),
+            patch("ai_cli.main.run_launch_extensions"),
+            patch("ai_cli.main._do_session_launch", side_effect=SystemExit(0)),
+            patch("subprocess.Popen", side_effect=AssertionError("must not spawn background upgrade")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        assert f"skipped ({SKIP_AUTO_UPDATE_ENV})" in capsys.readouterr().err
 
 
 class TestFingerprintScope:

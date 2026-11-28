@@ -5,6 +5,8 @@ tags: [gemini, oauth, deep-research, gcp, ai-cli-45]
 status: archived
 ---
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## Table of Contents
 
 - [Context](#context)

@@ -464,3 +464,75 @@ def test_given_names_disabled_when_a_name_is_chosen_then_it_is_still_honoured_th
 
     assert title == f"{STEM}-cleo"
     assert fleet.rows()["cleo"]["machine"] == HOST
+
+
+# --- AI-CLI-zqda6: one machine recorded under another of its spellings -----------------
+
+OLD_HOST = f"{HOST}-old"
+OLD_HOST_ALIAS = "boxo"
+
+
+def _write_alias_table(text: str) -> None:
+    from ai_cli import session_naming
+
+    session_naming.alias_sources()[0].write_text(text, encoding="utf-8")
+
+
+def _hold_under_old_spelling(fleet, name: str = "cleo") -> str:
+    """A row this machine wrote under its retired host id and alias, as a rename leaves it."""
+    reg.reserve_hand_chosen(
+        fleet.other_machine("old-spelling"),
+        name,
+        reg.Slot(
+            repo=REPO, repo_alias=REPO, host_alias=OLD_HOST_ALIAS, label=None, machine=OLD_HOST, client="claude-code"
+        ),
+        add=False,
+        via="launch-prompt",
+        added_by=f"t@{OLD_HOST}",
+        words=frozenset(),
+    )
+    return f"{REPO}-{OLD_HOST_ALIAS}-{name}"
+
+
+def test_given_a_row_under_a_former_host_id_when_named_positionally_then_it_reattaches_to_the_rows_title(fleet):
+    _write_alias_table(f'[aliases]\n{HOST} = "{HOST_ALIAS}"\n\n[former_host_ids]\n{HOST} = ["{OLD_HOST}"]\n')
+    held_title = _hold_under_old_spelling(fleet)
+    before = fleet.tip()
+
+    (session_id, title), _ = resolve("cleo")
+
+    assert title == held_title
+    assert session_id == f"c-{held_title}"
+    assert fleet.tip() == before
+
+
+def test_given_this_host_listed_as_a_former_id_when_named_positionally_then_it_reattaches(fleet):
+    # The table may name the newer spelling as the former one: the fold has no direction.
+    _write_alias_table(f'[aliases]\n{HOST} = "{HOST_ALIAS}"\n\n[former_host_ids]\n{OLD_HOST} = ["{HOST}"]\n')
+    held_title = _hold_under_old_spelling(fleet)
+
+    (_, title), _ = resolve("cleo")
+
+    assert title == held_title
+
+
+def test_given_a_row_under_an_unlisted_host_id_when_named_positionally_then_it_still_refuses_naming_the_holder(fleet):
+    _write_alias_table(f'[aliases]\n{HOST} = "{HOST_ALIAS}"\n')
+    held_title = _hold_under_old_spelling(fleet)
+    before = fleet.tip()
+
+    code, output = refused("cleo")
+
+    assert code == 2
+    assert f"{held_title}@{OLD_HOST}" in output
+    assert fleet.tip() == before
+
+
+def test_given_a_former_id_of_another_machine_when_named_positionally_then_it_still_refuses(fleet):
+    _write_alias_table(f'[aliases]\n{HOST} = "{HOST_ALIAS}"\n\n[former_host_ids]\n{OTHER_HOST} = ["{OLD_HOST}"]\n')
+    _hold_under_old_spelling(fleet)
+
+    code, output = refused("cleo")
+
+    assert code == 2
+    assert f"@{OLD_HOST}" in output

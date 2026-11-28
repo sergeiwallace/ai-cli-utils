@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 ## [Unreleased]
 
 ### Added
@@ -21,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `ai c -t` probe now restarts after `/exit` inside tmux like any session. Its default relaunch
+  policy `never` keeps it from boot relaunch only; a `never` set with `ai sessions policy` still stops
+  the restart, and the exit now says so.
+- `ai retire-session NAME` reads the session's worktree from its run-state record, so an exited
+  `ai c -t` probe, whose worktree lives outside the repository, is retired by name. `ai c -t -d`
+  now plans the probe's real worktree and `probe-` branch.
+- `ai c NAME` reattaches to a session this machine holds even when its name-registry row was
+  written under a former host id and host alias. List the former ids under a new
+  `[former_host_ids]` table in `machine-host-aliases.toml` (`my-host = ["my-host-old"]`); every
+  check of whether a recorded machine is this one now folds them, and a malformed table is refused
+  at launch naming the file. A row held by a different machine is still refused.
 - A failed remote session-name allocation (`ai c NAME -R`) now names its exit code and the signal
   that ended it, instead of failing with no detail when the call printed nothing. A call cut off by
   SIGKILL or SIGTERM before it answered is retried once.

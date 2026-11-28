@@ -2248,6 +2248,7 @@ def _run_supervisor_on_a_terminal_owned_elsewhere(
         os.close(master_fd)
 
 
+@pytest.mark.real_pty
 def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exits_and_child_dies(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -2304,6 +2305,7 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
 _SLOW_PROMOTION_ATTEMPT_SECONDS = 2
 
 
+@pytest.mark.real_pty
 def test_given_slow_promotion_attempts_when_promotion_keeps_failing_then_the_supervisor_gives_up_on_time(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -2410,6 +2412,7 @@ def _assert_interrupt_tore_down_the_session(tmp_path: Path, process: subprocess.
     assert process.returncode == 0, f"stdout={stdout!r} stderr={stderr!r}"
 
 
+@pytest.mark.real_pty
 def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it_tears_down_its_tmux_session(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -2443,6 +2446,7 @@ def test_given_a_child_still_starting_when_ctrl_c_reaches_the_supervisor_then_it
                 reap_tree(process)
 
 
+@pytest.mark.real_pty
 def test_given_ctrl_c_after_the_child_reports_but_before_promotion_starts_when_supervised_then_it_is_an_interrupt(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -2518,6 +2522,7 @@ def _surviving_members(record: list[dict[str, float]]) -> list[str]:
     return survivors
 
 
+@pytest.mark.real_pty
 def test_given_a_supervisor_test_that_fails_when_its_teardown_runs_then_no_process_from_its_groups_survives(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -3075,6 +3080,7 @@ fi
     _finish_supervisor(process)
 
 
+@pytest.mark.real_pty
 def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_waits_for_readiness(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -3097,6 +3103,7 @@ def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_wait
     _finish_supervisor(process)
 
 
+@pytest.mark.real_pty
 def test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promoted(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -3128,6 +3135,7 @@ fi
     _finish_supervisor(process)
 
 
+@pytest.mark.real_pty
 def test_given_a_child_that_exits_77_at_once_when_supervised_on_a_pty_then_the_supervisor_ends_without_a_respawn(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -3164,6 +3172,7 @@ fi
     assert count == "1", f"the supervisor started {count} children for one clean exit"
 
 
+@pytest.mark.real_pty
 def test_given_a_child_that_exits_without_a_reload_reason_when_supervised_then_no_missing_file_error_is_printed(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -3274,6 +3283,7 @@ printf '%s\\n' "$?" > {shlex.quote(str(status))}
     )
 
 
+@pytest.mark.real_pty
 def test_given_a_promoted_child_that_exits_77_when_the_supervisor_waits_on_a_pty_then_it_reads_77(
     tmp_path: Path, supported_session_shell: str
 ):

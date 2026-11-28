@@ -22,7 +22,7 @@ START_RESUME_ATTACH = (
         "Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it "
         "instead; `ai attach` is not needed for a session `ai` started",
     ),
-    ("ai g NAME", "The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex"),
+    ("ai g NAME", "The same for Antigravity (`agy`); `ai p NAME` for Pi and `ai cx NAME` for Codex"),
     (
         "ai c NAME -r",
         "Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, "

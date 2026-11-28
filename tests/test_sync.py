@@ -1696,7 +1696,10 @@ def test_sync_watch_when_nats_unavailable_returns_nonzero():
 
     from ai_cli.sync import sync_watch
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AsyncMock()):
                 with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
@@ -1731,7 +1734,10 @@ def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
         pull_calls.append(flags)
         return 0
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AsyncMock()):
                 with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
@@ -3939,7 +3945,10 @@ def test_sync_watch_when_pull_returns_2_then_prints_conflict_message(tmp_path, c
 
     mock_nc.subscribe = fake_subscribe
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
                 with patch("nats.connect", new=AM(return_value=mock_nc)):
@@ -3965,7 +3974,10 @@ def test_sync_watch_when_pull_fails_then_prints_failure_message(tmp_path, capsys
 
     mock_nc.subscribe = fake_subscribe
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
                 with patch("nats.connect", new=AM(return_value=mock_nc)):
@@ -3989,7 +4001,10 @@ def test_sync_watch_when_verbose_then_prints_connected(tmp_path, capsys):
 
     mock_nc.subscribe = fake_subscribe
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
                 with patch("nats.connect", new=AM(return_value=mock_nc)):
@@ -4009,7 +4024,10 @@ def test_sync_watch_when_keyboard_interrupt_during_run_then_returns_0(capsys):
         coro.close()
         raise KeyboardInterrupt
 
-    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+    with (
+        patch("ai_cli.sync._acquire_pid_file", return_value=True),
+        patch("ai_cli.sync._holds_pid_file", return_value=True),
+    ):
         with patch("ai_cli.sync._release_pid_file"):
             with patch("asyncio.run", side_effect=interrupted_run):
                 result = sync_watch([])

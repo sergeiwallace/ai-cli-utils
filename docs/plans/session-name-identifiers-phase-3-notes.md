@@ -1,5 +1,7 @@
 # Human-name session identifiers: implementation notes
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 These notes record the measurements the human-name session identifier work takes before
 it writes code that depends on them: each AI client's session store, and the size of the
 generated name list. The design that asks for them is kept in the environment

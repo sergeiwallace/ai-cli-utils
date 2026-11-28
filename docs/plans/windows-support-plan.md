@@ -7,6 +7,8 @@ status: complete
 
 # Windows Out-of-Box Support — Implementation Plan
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** COMPLETE (2026-04-25)
 
 **Created:** 2026-04-24

@@ -1,5 +1,7 @@
 # Pre-Release v0.2.0 — Implementation Plan
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** IN PROGRESS
 **Created:** 2026-04-04
 **Updated:** 2026-04-05

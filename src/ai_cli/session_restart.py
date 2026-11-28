@@ -225,7 +225,9 @@ def _pane_attach_client(target: str | None) -> str | None:
         except (ValueError, psutil.Error):
             continue
         for process in processes:
-            with contextlib.suppress(psutil.Error):
+            # psutil on macOS can raise SystemError reading another process's argv (sysctl
+            # KERN_PROCARGS2); that process is unknown here and the others are still read.
+            with contextlib.suppress(psutil.Error, SystemError):
                 command_lines.append(process.cmdline())
     return attached_background_id(command_lines)
 
@@ -849,7 +851,9 @@ def descendants_gate(pid: int, cwd: Path) -> None:
                 raise Refusal("background-work", "unclassified live descendant")
         for root, matching in runtimes.items():
             _mcp_npx_descendants(helpers.get(root, []), matching, cwd)
-    except (OSError, psutil.Error, TypeError, ValueError) as exc:
+    # SystemError: psutil on macOS can raise it reading a descendant's argv (sysctl
+    # KERN_PROCARGS2). An unreadable descendant is unclassified, so the restart is refused.
+    except (OSError, psutil.Error, TypeError, ValueError, SystemError) as exc:
         raise Refusal("background-work", "process tree unavailable") from exc
 
 
@@ -974,7 +978,26 @@ _PREVIOUS_TERMINAL_RESET = (
 def _compatible(source: str, expected: str) -> bool:
     # Full program comparison, excluding package stamps. New restart insertions
     # are bracketed so the one supported pre-feature program can be certified too.
+    def strip_retired_metadata(match: re.Match[str]) -> str:
+        # Match only data emitted by the template, preserving comparison of any
+        # shell syntax outside the canonical quoted JSON argument.
+        quoted = match[2]
+        try:
+            (raw,) = shlex.split(quoted)
+            metadata = json.loads(raw)
+        except ValueError:
+            return match[0]
+        if isinstance(metadata, dict) and "gemini_cmd" in metadata and shlex.quote(json.dumps(metadata)) == quoted:
+            del metadata["gemini_cmd"]
+            return match[1] + shlex.quote(json.dumps(metadata)) + match[3]
+        return match[0]
+
     def normalize(text: str) -> str:
+        text = re.sub(
+            r"""(?m)^(    printf '%s' )(.+)( > "\$_ai_state_dir/session-meta-\$tmux_session\.json")$""",
+            strip_retired_metadata,
+            text,
+        )
         # Teardown moved into EXIT cleanup so abnormal returns fence tmux too.
         # Compare its body at the original location, rather than ignoring it:
         # changing the ownership fence must still make a program uncertifiable.
@@ -982,16 +1005,26 @@ def _compatible(source: str, expected: str) -> bool:
         if cleanup:
             text = text[: cleanup.start()] + text[cleanup.end() :]
             body = re.sub(r"(?m)^  ", "", cleanup[1])
-            ending = "      done\n      exit 0\n    fi\n"
-            if ending not in text:
-                ending = "      done\n    # BEGIN SHELL RETURN interactive\n"
+            # The supervisor loop's end, in each form a supported program has had.
+            ending = next(
+                (
+                    candidate
+                    for candidate in (
+                        "      done\n      exit 0\n    fi\n",
+                        "      done\n    # BEGIN SHELL RETURN interactive\n",
+                        "      done\n    # BEGIN RUN STATE final-exit-message\n",
+                    )
+                    if candidate in text
+                ),
+                "      done\n      exit 0\n    fi\n",
+            )
             text = text.replace(
                 ending,
                 "      done\n" + body + ending.removeprefix("      done\n"),
                 1,
             )
         text = re.sub(
-            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE)[^\n]*\n.*?^    # END \1\n",
+            r"(?ms)^    # BEGIN (PINNED RESTART|RUN STATE|BACKGROUND ATTACH|HOST REFRESH|PLUGIN REFRESH|MIGRATION FINISH|CODEX DISPLAY|CODEX THREAD|TRANSCRIPT RESTORE|PROJECT ENV|LAUNCH LOG|EMIT STAMP|TMUX BINARY)[^\n]*\n.*?^    # END \1\n",
             "",
             text,
         )
@@ -1003,6 +1036,50 @@ def _compatible(source: str, expected: str) -> bool:
             r"\1if $first_run; then run_agent codex\n\1else run_agent codex resume --last\n\1fi\n",
             text,
         )
+        # Antigravity launches through the bracketed _run_agy function; for non-g engines
+        # map its definition, call sites, and session-type tag back to the legacy g-engine
+        # form so running Claude Code / Pi / Codex supervisors remain certifiable across the
+        # client switch while edits inside _run_agy on an active g supervisor are still caught.
+        if not re.search(r"(?m)^    engine=g$", text):
+            text = re.sub(r"(?ms)^    # BEGIN AGY THREAD[^\n]*\n.*?^    # END AGY THREAD\n", "", text)
+            sandbox_flag = "-s" if '"sandbox": true' in text else "--no-sandbox"
+            text = re.sub(
+                r'(?m)^          _run_agy --prompt-interactive "\$resume_msg"\n',
+                '          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &\n'
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = re.sub(
+                r"(?m)^          _run_agy\n",
+                f'      if [[ -n "$uuid" ]]; then run_agent gemini -y {sandbox_flag} -r "$uuid"\n'
+                f'      else run_agent gemini -y {sandbox_flag} -i "/resume load $ai_name"\n'
+                "          fi\n",
+                text,
+            )
+            text = text.replace(
+                '[[ "$stype" == "gemini" || "$stype" == "agy" ]] && type_sym="✦ "',
+                '[[ "$stype" == "gemini" ]] && type_sym="✦ "',
+            ).replace(
+                '[[ "$engine" == "g" ]] && _session_type="agy"',
+                '[[ "$engine" == "g" ]] && _session_type="gemini"',
+            )
+            if 'get-latest-gemini-id "$ai_name"' not in text:
+                text = text.replace(
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    '      if [[ "$engine" == "g" ]]; then\n'
+                    '        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)\n'
+                    '        if [[ -n "$new_uuid" ]]; then\n'
+                    '          uuid="$new_uuid"\n'
+                    '          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null\n'
+                    "        fi\n"
+                    "      fi\n"
+                    "      first_run=false\n"
+                    "      # Mark session as started so hot-reload exec skips first-run-only setup blocks.\n",
+                    1,
+                )
         # The background-attach branch is the head of the launch if/elif chain, so it
         # cannot be bracketed; dropping it leaves the pre-feature chain.
         text = re.sub(
@@ -1011,6 +1088,11 @@ def _compatible(source: str, expected: str) -> bool:
             text,
         )
         text = re.sub(r"(?m)^    _template_(?:version|commit)=.*$", "", text)
+        # The fallback stamp is data for `date` with no control flow; before the EMIT STAMP
+        # insertion it was this fixed line, which certifies as the same program.
+        text = re.sub(r"(?m)^        _ai_emit_stamp=\$\(TZ=America/New_York date .*$", "", text)
+        # So was the comment above it, which named that fixed form; its successor is in the bracket.
+        text = re.sub(r"(?m)^        # The renderer's default datetime leads the plain line too\.$", "", text)
         return "\n".join(line for line in text.splitlines() if line.strip())
 
     normalized_source = normalize(source)
@@ -1030,10 +1112,16 @@ def _compatible(source: str, expected: str) -> bool:
             return True
     # The terminal restore is printf data with no control flow, so a program that
     # sends the retired bytes is the same program. Rebuilt in our trusted template.
-    from .session_script import rendered_terminal_reset
+    from .session_script import POSIX_AGENT_RUN, WINDOWS_AGENT_RUN, WINDOWS_CHILD_INT, rendered_terminal_reset
 
     previous_reset = expected.replace(rendered_terminal_reset(), _PREVIOUS_TERMINAL_RESET)
     if previous_reset != expected and _compatible(source, previous_reset):
+        return True
+    # A Windows program launched before its agent ran in the foreground backgrounded it
+    # as on POSIX and took the double-press path for every Ctrl+C. Rebuilt in our trusted
+    # template, never ignored in the running source.
+    previous_windows_agent = expected.replace(WINDOWS_AGENT_RUN, POSIX_AGENT_RUN).replace(WINDOWS_CHILD_INT, "")
+    if previous_windows_agent != expected and _compatible(source, previous_windows_agent):
         return True
     # Reconstruct the previous resolver in our trusted template. Replacing this
     # block in the running source would hide changes to its transcript safeguards.
@@ -1069,10 +1157,6 @@ def _compatible(source: str, expected: str) -> bool:
         expected,
     )
     earlier = re.sub(r"(?ms)^    # BEGIN SHELL RETURN[^\n]*\n.*?^    # END SHELL RETURN\n", "", earlier)
-    earlier = earlier.replace(
-        "if $_supervisor_tmux_ownership_established && ! $_supervisor_return_to_shell; then",
-        "if $_supervisor_tmux_ownership_established; then",
-    ).replace("elif ! $_supervisor_return_to_shell; then", "else")
     earlier = earlier.replace(
         "if (( _child_status == 77 || _child_status == 79 || _child_status == 130 )); then",
         "if (( _child_status == 77 || _child_status == 79 )); then",
@@ -1124,7 +1208,9 @@ def _restart_pin_gate(supervisor: int, cwd: Path, session: str) -> None:
         )
         if result.returncode or result.stdout.strip() != RESTART_PIN_PROTOCOL:
             raise Refusal("supervisor-upgrade-required", "supervisor ai lacks restart-pin support")
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+    # SystemError: psutil on macOS reads the environment through sysctl KERN_PROCARGS2,
+    # which can raise it; an unreadable supervisor environment proves no restart pin.
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error, SystemError) as exc:
         # Neither the pane environment nor executable output is safe to echo.
         raise Refusal("supervisor-upgrade-required", "restart-pin compatibility cannot be established") from exc
 
@@ -1214,7 +1300,9 @@ def managed_gate(record: dict, settings: dict, *, prepared: Managed | None = Non
         )
     except Refusal:
         raise
-    except (OSError, ValueError, KeyError, psutil.Error, StopIteration) as exc:
+    # SystemError: psutil on macOS can raise it reading the child's argv (sysctl
+    # KERN_PROCARGS2). A child whose argv cannot be read is not proven replaceable.
+    except (OSError, ValueError, KeyError, psutil.Error, StopIteration, SystemError) as exc:
         raise Refusal("supervisor-upgrade-required", "supervisor compatibility cannot be established") from exc
 
 
@@ -1749,6 +1837,24 @@ def _report(reason: str, *, detail: str = "", local: str = "UNVERIFIED", peer: s
         "mobile": "UNVERIFIED",
         "message_delivery": "UNVERIFIED",
         **extra,
+    }
+
+
+def _upgrade_remedy(reason: str, record: dict | None) -> dict:
+    """What a refused in-place restart tells the user to do, when the cause is the session's own age.
+
+    ``supervisor-upgrade-required`` means the running session program was started by an
+    older ai-cli-utils than this one can certify, so only a relaunch moves it on: once.
+    """
+    if reason != "supervisor-upgrade-required":
+        return {}
+    name = (record or {}).get("name")
+    command = f"ai c {name}" if isinstance(name, str) and name else "ai c <name>"
+    return {
+        "remedy": (
+            "this session was started before the installed ai-cli-utils, so it cannot be restarted in "
+            f"place until it is relaunched once: exit it (/exit, or ai exit-session), then run: {command}"
+        )
     }
 
 
@@ -2341,6 +2447,7 @@ def restart(
     event_completion: bool = False,
 ) -> dict:
     """One command path; callers never acquire a lock on a helper's behalf."""
+    record: dict | None = None
     try:
         settings = config.read_restart_config(config.load_config())
         commands = load_commands()
@@ -2445,7 +2552,7 @@ def restart(
                             time.monotonic() + max(0.001, settings["relaunch_timeout_seconds"]),
                         )
             except Refusal as exc:
-                report = _report(exc.reason, detail=exc.detail)
+                report = _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
             except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                 report = _report("verification-failed", detail="replacement evidence became unavailable")
             succeeded = report["reason"] == "restarted" or (event_completion and report["reason"] == "started")
@@ -2456,6 +2563,6 @@ def restart(
             _atomic_json(request_path, request)
             return report
     except Refusal as exc:
-        return _report(exc.reason, detail=exc.detail)
+        return _report(exc.reason, detail=exc.detail, **_upgrade_remedy(exc.reason, record))
     except (OSError, ValueError, TypeError) as exc:
         return _report("unavailable", detail=type(exc).__name__)

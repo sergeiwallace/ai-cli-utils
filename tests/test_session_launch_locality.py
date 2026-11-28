@@ -228,7 +228,6 @@ def test_given_named_ai_host_when_launched_in_repo_then_worktree_stays_in_that_r
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.config._get_main_project_name", return_value="mainproject"),
@@ -292,7 +291,6 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main._pty_handoff", return_value=mock_exec),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -327,6 +325,124 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     assert "Last git error: Applied autostash." not in err
 
 
+def test_given_git_stderr_with_preceding_cause_lines_when_formatted_then_preserves_bounded_context():
+    """_format_git_failure_detail keeps up to 5 lines ending at the final fatal/error line."""
+    from ai_cli.main import _format_git_failure_detail
+
+    hook_stderr = "\n".join(
+        [
+            "line-1-too-old",
+            "line-2-too-old",
+            "line-3-kept",
+            "line-4-kept",
+            "line-5-kept",
+            "env: bash: No such file or directory",
+            "fatal: in 'preparing' phase, update aborted by the reference-transaction hook",
+            "Applied autostash.",
+        ]
+    )
+    detail = _format_git_failure_detail(hook_stderr, "")
+    assert "line-2-too-old" not in detail
+    assert "line-3-kept" in detail
+    assert "env: bash: No such file or directory" in detail
+    assert "fatal: in 'preparing' phase, update aborted by the reference-transaction hook" in detail
+    assert "Applied autostash." not in detail
+
+
+def test_given_failing_reference_transaction_hook_when_pull_fails_at_launch_then_launch_log_names_cause(
+    tmp_path, monkeypatch, capsys
+):
+    """Real-git regression for AI-CLI-qgttc: hook stderr before git's fatal line reaches warning and launch log."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", "--no-local", str(remote), str(seed)], check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=seed, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=seed, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "main"], cwd=seed, check=True)
+    (seed / "README.md").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=seed, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=seed, check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+    repo = tmp_path / "projects" / "myproject"
+    repo.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", "--no-local", str(remote), str(repo)], check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+
+    worktree = repo / ".worktrees" / "app-tst-1"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "--track", "-b", "wt-app-tst-1", str(worktree), "origin/main"],
+        cwd=repo,
+        check=True,
+    )
+
+    (seed / "README.md").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "-am", "advance main"], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=seed, check=True)
+
+    hook = repo / ".git" / "hooks" / "reference-transaction"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    cause_text = "hook-cause: simulated reference-transaction abort"
+    hook.write_text(f"#!/bin/sh\necho '{cause_text}' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    from ai_cli import output as _out
+    from ai_cli.launch_logging import create_launch_log
+
+    state_dir = tmp_path / "state"
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state_dir)
+
+    launch_log = create_launch_log("app-1")
+    previous_sink = _out.attach_file_sink(launch_log.write_line)
+    try:
+        with (
+            patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as mock_exec,
+            patch("ai_cli.main._pty_handoff", return_value=mock_exec),
+            patch("ai_cli.session.build_session_name", return_value=("c-app-1", "app-1")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("ai_cli.session.create_worktree", return_value=(worktree, False)),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.trust.ensure_workspace_trusted"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(
+                    engine="c",
+                    name="1",
+                    resume=False,
+                    once=False,
+                    bare=True,
+                    notify=False,
+                    sandbox=False,
+                    no_worktree=False,
+                    remote=False,
+                    project="",
+                    is_remote=False,
+                    project_prefix_override="app",
+                    extra_args=[],
+                    config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
+                )
+    finally:
+        _out.attach_file_sink(previous_sink)
+        launch_log.close()
+
+    assert exc_info.value.code == 0
+    err = capsys.readouterr().err
+    assert "git pull --rebase failed" in err
+    assert cause_text in err
+
+    assert launch_log.path is not None
+    log_text = launch_log.path.read_text(encoding="utf-8")
+    assert cause_text in log_text
+    assert "reference-transaction" in log_text
+
+
 def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_segment(tmp_path, monkeypatch):
     """A local session on a named host must be ``app-tst-1``, not ``c-r-app-tst-1``.
 
@@ -341,7 +457,6 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
@@ -373,12 +488,17 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
 def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected_exception=SystemExit):
     """Run one bare launch from the current directory, up to the engine exec."""
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    home = tmp_path / "home"
+    if engine == "g":
+        token = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"access_token": "tok"}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setenv("AI_HOST", "my-linux-box")
 
     with (
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
-        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/agy"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
