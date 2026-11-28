@@ -90,6 +90,18 @@ def exit_shell(request, tmp_path, monkeypatch):
     return shell, env, render, attempts, generation
 
 
+def _count_attempt(attempts):
+    """How a fault endpoint counts its run: append one byte, so a later kill cannot erase it.
+
+    A read-then-rewrite truncates the file before it writes, so a mark killed at its command
+    timeout in between left the count at zero on a loaded runner.
+    """
+    return (
+        f"import os\nfd = os.open({str(attempts)!r}, os.O_WRONLY | os.O_CREAT | os.O_APPEND)\n"
+        "os.write(fd, b'x')\nos.close(fd)\n"
+    )
+
+
 def run_exit(exit_shell, program=None, prefix="", suffix=""):
     shell, env, render, _, _ = exit_shell
     return subprocess.run(
@@ -123,9 +135,7 @@ def test_given_shadow_cli_when_exit_persists_then_verified_installation_is_used(
 @pytest.mark.parametrize("failure", ["exit", "hang", "missing"])
 def test_given_permanent_failure_when_deadline_expires_then_generation_is_denied_without_respawn(exit_shell, failure):
     _, _, _, attempts, generation = exit_shell
-    program = (
-        f"from pathlib import Path\np=Path({str(attempts)!r})\np.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-    )
+    program = _count_attempt(attempts)
     program += "import time\ntime.sleep(60)\n" if failure == "hang" else "raise SystemExit(1)\n"
     if failure == "missing":
         program = (
@@ -197,17 +207,20 @@ def test_given_failed_fallback_storage_when_retries_end_then_failure_is_reported
 
 @pytest.mark.parametrize("failure", ["exit", "hang"])
 def test_given_failing_mark_when_sequence_succeeds_then_mark_is_bounded_and_exit_is_denied(exit_shell, failure):
+    """A second mark attempt proves the first was bounded; the test waits for it, not a budget.
+
+    Each attempt starts two processes, which a slow or loaded runner cannot fit inside a
+    two-second deadline, so the deadline is long and the sequence call answers slowly, as a
+    process start on such a runner does. SIGTERM then ends the retry loop.
+    """
     shell, env, render, attempts, generation = exit_shell
-    # Wait for the retry itself, not for it to fit a fixed budget: each attempt starts
-    # two processes, which a slow or loaded runner cannot do inside a two-second deadline.
     config.load_config()["session_relaunch"]["exit_persistence"].update(
         deadline_seconds=scaled(60), command_timeout_seconds=scaled(2)
     )
     program = (
-        "import sys, time\nfrom pathlib import Path\n"
-        # Answer slowly, as a process start on a slow or loaded runner does.
+        "import sys, time\n"
         f"if sys.argv[2] == '_sequence':\n time.sleep({scaled(0.5)})\n print(time.monotonic_ns())\n raise SystemExit(0)\n"
-        f"p=Path({str(attempts)!r})\np.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
+        + _count_attempt(attempts)
         + ("time.sleep(60)\n" if failure == "hang" else "raise SystemExit(1)\n")
     )
     script = render(program, suffix="printf agent-started")
@@ -218,7 +231,6 @@ def test_given_failing_mark_when_sequence_succeeds_then_mark_is_bounded_and_exit
             if attempts.exists() and len(attempts.read_text()) > 1:
                 break
             time.sleep(0.05)
-        # A second mark proves the first one was bounded: a hung mark was stopped and retried.
         assert len(attempts.read_text()) > 1
         proc.send_signal(signal.SIGTERM)
         stdout, stderr = proc.communicate(timeout=scaled(10))

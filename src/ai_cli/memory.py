@@ -77,7 +77,7 @@ def memory_watch() -> int:
     Exit codes: 0 = clean stop, 1 = error
     """
     from .messaging import NATSClient
-    from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
+    from .sync import _acquire_pid_file, _dream_state_path, _holds_pid_file, _release_pid_file
 
     if not _acquire_pid_file("memory-watch"):
         _out.emit(Tag.MEMORY, "watch", "ai memory watch is already running.", err=True)
@@ -134,7 +134,7 @@ def memory_watch() -> int:
     _out.emit(Tag.MEMORY, "watch", "ai memory watch — watching for MEMORY.md writes (Ctrl+C to stop)")
 
     try:
-        while True:
+        while _holds_pid_file("memory-watch"):
             handler.check_settle()
             time.sleep(0.5)
     except KeyboardInterrupt:

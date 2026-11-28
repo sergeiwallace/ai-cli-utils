@@ -11,6 +11,7 @@ from pathlib import Path
 
 import psutil
 
+from . import session_naming
 from . import session_registry as registry
 from . import session_run_state as state
 
@@ -25,6 +26,7 @@ def _could_run_session(executable: str | None) -> bool:
     return executable.startswith("python") or executable in {
         "claude",
         "codex",
+        "agy",
         "gemini",
         "pi",
         "node",
@@ -67,7 +69,9 @@ def _process_alive(record: dict) -> bool | None:
                         return True
                 try:
                     argv = process.cmdline()
-                except psutil.AccessDenied:
+                except (psutil.AccessDenied, SystemError):
+                    # psutil on macOS can raise SystemError reading another process's
+                    # arguments (sysctl KERN_PROCARGS2); that is unreadable argv too.
                     argv = None
                 if not argv:
                     # Missing arguments on a possible agent or wrapper are unknown;
@@ -89,7 +93,7 @@ def _process_alive(record: dict) -> bool | None:
                     continue
                 # Interpreters also run unrelated helpers with inherited markers.
                 # Require an agent entry point before interpreting those markers.
-                agents = {"claude", "codex", "gemini", "pi"}
+                agents = {"claude", "codex", "agy", "gemini", "pi"}
                 entry = argv[1].replace("\\", "/") if len(argv) > 1 else ""
                 interpreted_agent = Path(entry).stem in agents or any(
                     package in entry
@@ -110,13 +114,16 @@ def _process_alive(record: dict) -> bool | None:
                 if (
                     environment.get("AI_TMUX_SESSION") == name
                     or environment.get("CLAUDE_CODE_TASK_LIST_ID") == agent_name
+                    or environment.get("AI_SESSION_NAME") == agent_name
+                    or (name.startswith("g-") and environment.get("AI_CLI_SESSION_NAME") == agent_name)
                 ):
                     return True
             except psutil.NoSuchProcess:
                 continue
             except (psutil.Error, OSError, ValueError, KeyError):
                 return None
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, SystemError):
+        # SystemError: process_iter's name() reads argv for a long name (see above).
         return None
     return False
 
@@ -149,7 +156,7 @@ def liveness_blocker(record: dict) -> str | None:
         pass
     host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
     boot = registry.current_boot_id()
-    if record.get("owning_host", host) != host:
+    if not session_naming.machine_identity(host).matches(record.get("owning_host", host)):
         return f"liveness is unprovable on this host: the session belongs to host {record['owning_host']}"
     unanswered = [probe for probe, alive in (("tmux", tmux), ("process table", process)) if alive is None]
     if unanswered:
@@ -173,12 +180,13 @@ def reconcile(*, names: set[str] | None = None) -> None:
         if not boot:
             return
         host = state.config.load_config().get("machine", {}).get("host_id") or registry.load_registry()["machine"]
+        here = session_naming.machine_identity(host)
         settled = []
         candidates = []
         for record in registry.load_registry()["sessions"]:
             if (
                 record.get("kind") != "local"
-                or record.get("owning_host", host) != host
+                or not here.matches(record.get("owning_host", host))
                 or record.get("boot_id") != boot
                 or (names is not None and record.get("name") not in names)
                 or state.run_state(record) not in {"running", "unknown"}

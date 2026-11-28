@@ -307,6 +307,86 @@ def bounded_supervisor(
             assert timer.wait(timeout=scaled(5)) == 0, "supervisor lifetime timer failed"
 
 
+def reap_pid_tree(pid: int, *, timeout: float = _REAP_TIMEOUT) -> bool:
+    """Stop *pid* and its descendants, escalating from terminate to kill.
+
+    Returns ``True`` if a live process existed and was stopped, ``False`` if *pid*
+    was already gone or refused (for example, the current process).
+    """
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        root = psutil.Process(pid)
+        if not root.is_running() or root.status() == psutil.STATUS_ZOMBIE:
+            return False
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+        return False
+
+    victims: list[psutil.Process] = []
+    with contextlib.suppress(psutil.Error, ProcessLookupError):
+        victims = [*root.children(recursive=True), root]
+    if not victims:
+        victims = [root]
+
+    groups: set[int] = set()
+    if sys.platform != "win32":
+        own_group = os.getpgrp()
+        for victim in victims:
+            with contextlib.suppress(OSError):
+                groups.add(os.getpgid(victim.pid))
+        groups.discard(own_group)
+
+    def _still_alive() -> list[psutil.Process]:
+        alive: list[psutil.Process] = []
+        for victim in victims:
+            with contextlib.suppress(psutil.NoSuchProcess, ProcessLookupError):
+                if victim.is_running() and victim.status() != psutil.STATUS_ZOMBIE:
+                    alive.append(victim)
+        return alive
+
+    for escalate in (False, True):
+        alive = _still_alive()
+        if not alive:
+            break
+        for victim in alive:
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                if escalate:
+                    victim.kill()
+                else:
+                    victim.terminate()
+        if sys.platform != "win32":
+            sig = signal.SIGKILL if escalate else signal.SIGTERM
+            for group in groups:
+                with contextlib.suppress(OSError):
+                    os.killpg(group, sig)
+        deadline = monotonic() + scaled(timeout)
+        while _still_alive() and monotonic() < deadline:
+            sleep(0.02)
+    return True
+
+
+def stop_circusd_by_pidfile(pidfile: Path, *, timeout: float = _REAP_TIMEOUT) -> bool:
+    """Stop a test-owned circusd daemon and its watcher children via *pidfile*."""
+    try:
+        raw = pidfile.read_text(encoding="utf-8").strip()
+        pid = int(raw)
+    except (OSError, ValueError):
+        return False
+    stopped = reap_pid_tree(pid, timeout=timeout)
+    with contextlib.suppress(OSError):
+        pidfile.unlink(missing_ok=True)
+    return stopped
+
+
+@contextlib.contextmanager
+def managed_circusd(pidfile: Path, *, timeout: float = _REAP_TIMEOUT) -> Iterator[Path]:
+    """Ensure any circusd recorded in *pidfile* is stopped with its watchers at teardown."""
+    try:
+        yield pidfile
+    finally:
+        stop_circusd_by_pidfile(pidfile, timeout=timeout)
+
+
 @contextlib.contextmanager
 def owned_process(command: list[str], **kwargs: Any) -> Iterator[subprocess.Popen]:
     """Spawn *command* owned, hand it to the caller, and reap its group after.

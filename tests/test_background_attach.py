@@ -263,17 +263,59 @@ def test_given_resolver_fails_and_one_name_and_directory_match_when_resolving_th
     assert out == OTHER_ID
 
 
-def test_given_resolver_fails_and_no_match_when_resolving_then_warns_with_the_reason(
-    workdir, fake_tools, tmp_path, capsys
-):
-    fake_tools([])
-    resolver = _script(tmp_path / "resolver", "exit 3\n")
-
+def _resolve_logged(workdir, tmp_path, capsys, monkeypatch, body: str) -> tuple[str, list[str]]:
+    """Resolve against a resolver running ``body``, with a launch log; return stderr and its resume lines."""
+    resolver = _script(tmp_path / "resolver", body)
+    log = tmp_path / "launch.log"
+    log.write_text("2026-01-01 00:00:00 EST launch log started for session test\n", encoding="utf-8")
+    monkeypatch.setenv("AI_CLI_LAUNCH_LOG", str(log))
     out, err = _resolve(workdir, _resolver_config(resolver), capsys)
-
     assert out == ""
-    assert "background resolver exited 3" in err
+    return err, [line for line in log.read_text(encoding="utf-8").splitlines() if "[internal] resume:" in line]
+
+
+def test_given_resolver_has_nothing_pending_when_relaunching_then_no_warning_is_shown_and_the_log_says_why(
+    workdir, fake_tools, tmp_path, capsys, monkeypatch
+):
+    """A resolver's "nothing pending" exit is an ordinary no-answer: logged, never shown.
+
+    Every ordinary launch and restart has no "Move to background" handoff pending, so
+    warning about it printed "background resolver exited 1; resuming by title instead"
+    on nearly every start.
+    """
+    fake_tools([_row("background", LIVE_ID, tmp_path / "elsewhere", name="other")])
+    status = background_attach.RESOLVER_NOTHING_PENDING_EXIT
+
+    err, logged = _resolve_logged(
+        workdir,
+        tmp_path,
+        capsys,
+        monkeypatch,
+        f"echo 'resolver: no pending handoff for myproject-1' >&2\nexit {status}\n",
+    )
+
+    assert f"exited {status}" not in err
+    assert "resuming by title" not in err
+    assert any(f"exited {status}" in line and "no pending handoff for myproject-1" in line for line in logged), logged
+
+
+@pytest.mark.parametrize("status", [1, 2])
+def test_given_resolver_fails_with_any_other_status_when_relaunching_then_it_warns_with_its_reason(
+    workdir, fake_tools, tmp_path, capsys, monkeypatch, status
+):
+    """Any other non-zero exit can be an unreadable capture, an ambiguous identity or a crash.
+
+    It is shown, quoting the resolver's own reason line, and the warning reaches the launch log.
+    """
+    fake_tools([_row("background", LIVE_ID, tmp_path / "elsewhere", name="other")])
+
+    err, logged = _resolve_logged(
+        workdir, tmp_path, capsys, monkeypatch, f"echo 'resolver: pane capture unreadable' >&2\nexit {status}\n"
+    )
+
+    assert f"background resolver exited {status}: resolver: pane capture unreadable" in err
     assert "resuming by title" in err
+    assert any("Warning:" in line and f"exited {status}" in line for line in logged), logged
 
 
 def test_given_resolver_prints_two_ids_when_resolving_then_it_counts_as_no_answer(
@@ -698,6 +740,29 @@ def test_given_the_copy_runs_in_another_sessions_environment_when_resolving_then
     assert (out, code) == ("", 73)
     assert fake_tools.stopped == [host_id]
     assert "other-session-1" in err and "resuming its conversation instead" in err
+
+
+def test_given_other_processes_argv_raising_system_error_when_resolving_then_the_host_is_still_found(
+    workdir, tmp_path, fake_tools, capsys, monkeypatch
+):
+    """psutil on macOS can raise SystemError, not AccessDenied, reading another process's argv
+    (``sysctl(KERN_PROCARGS2)``); one such process must not end the scan for the host."""
+    real_cmdline = psutil.Process.cmdline
+
+    def cmdline(self):
+        arguments = real_cmdline(self)
+        if not any(part.endswith(".sock") and "pty" in part for part in arguments):
+            raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+        return arguments
+
+    with _host(tmp_path, CLAUDE_CODE_TASK_LIST_ID="other-session-1") as host_id:
+        monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+        fake_tools([_live(workdir, row_id=host_id)])
+        out, err, code = _resolve_with(workdir, {}, capsys, "--resume-follows")
+
+    assert (out, code) == ("", 73)
+    assert fake_tools.stopped == [host_id]
+    assert "other-session-1" in err
 
 
 def test_given_a_foreign_copy_is_mid_turn_when_resolving_then_the_relaunch_holds_without_stopping_it(

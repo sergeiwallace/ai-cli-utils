@@ -57,8 +57,9 @@ a pinned restart and a bare (`-b`) launch.
 
 A non-zero exit, a timeout or a command that cannot start stops the resume before Claude
 Code starts. The launcher prints the session id, the exit status (or the timeout), the
-command and its output. In a tmux session the pane stays open: fix the cause, then type
-`exit 78` there or run `ai c NAME` again. A bare launch exits 1.
+command and its output. In a tmux session the session then ends and the terminal returns to
+the shell that ran `ai c`, with that output kept in the session's launch log: fix the cause,
+then run `ai c NAME` again. A bare launch exits 1.
 
 A setting that is present but unusable (not a list, no `{session_id}`, a non-positive
 timeout) also stops the resume, naming the setting.

@@ -1,7 +1,9 @@
-"""Retire a defunct ``ai`` session's home slot (``ai retire-session NAME``).
+"""Retire a defunct ``ai`` session's worktree (``ai retire-session NAME``).
 
 A session home ``<repo>/.worktrees/<name>`` is never reaped automatically: its
-owner retires it. This is that route. It removes the checkout and its
+owner retires it. This is that route, and the one for an exited ``ai c -t`` probe,
+whose worktree lives outside the repository; :func:`session_worktree` reads which
+worktree a name has from its run-state record. It removes the checkout and its
 canonical-registry entry, and nothing else of value:
 
 * the tip of the branch checked out in the slot, and of ``wt-<name>``, is first
@@ -329,6 +331,48 @@ def _drop_session_rows(name: str, *, dry_run: bool) -> int:
     return len(dropped)
 
 
+def session_worktree(repo_root: Path, name: str, registered: list[Path]) -> Path:
+    """The registered worktree session ``name`` runs in, read from its run-state record.
+
+    A session's record keeps the directory it was launched in (``cwd`` and its boot recipe's
+    ``cwd``), which is where its worktree really is: ``<repo>/.worktrees/<name>`` for a
+    session home, the probe directory for an ``ai c -t`` probe. A recorded directory counts
+    only when it is a linked worktree of ``repo_root``; the repository's own checkout, which a
+    ``--no-worktree`` session records, is never one. With no such record the slot
+    ``<repo>/.worktrees/<name>`` is used. A record and a slot naming different worktrees, or
+    records naming two, refuse rather than pick one.
+    """
+    from .session import _registered_worktree_at
+
+    slot = repo_root / ".worktrees" / name
+    variants = set(_session_variants(name))
+    recorded: list[Path] = []
+    if _session_registry.registry_path().exists():
+        try:
+            rows = _session_registry.load_registry()["sessions"]
+        except _session_registry.RegistryError:
+            rows = []
+        for record in rows:
+            if record.get("kind") != "local" or not _names_old_session(record, variants):
+                continue
+            recipe = record.get("boot_recipe") if isinstance(record.get("boot_recipe"), dict) else {}
+            for cwd in (recipe.get("cwd"), record.get("cwd")):
+                found = _registered_worktree_at(Path(cwd), registered) if isinstance(cwd, str) and cwd else None
+                if found is not None and found != repo_root and found not in recorded:
+                    recorded.append(found)
+    at_slot = _registered_worktree_at(slot, registered)
+    worktrees: list[Path] = list(recorded)
+    if at_slot is not None and at_slot not in worktrees:
+        worktrees.append(at_slot)
+    if not worktrees:
+        raise RetireError(f"{slot} is not a registered worktree of {repo_root}, and no session record names one")
+    if len(worktrees) > 1:
+        raise RetireError(
+            f"{name} names more than one worktree ({', '.join(str(w) for w in worktrees)}); retire each by hand"
+        )
+    return worktrees[0]
+
+
 def retire_session(
     repo_root: Path,
     name: str,
@@ -342,21 +386,19 @@ def retire_session(
     boot_generation: Callable[[], str | None] = current_boot_generation,
     monotonic_clock: Callable[[], float] = time.monotonic,
 ) -> RetireResult:
-    """Retire the session home ``<repo_root>/.worktrees/<name>``; see the module docstring.
+    """Retire session ``name``'s worktree (:func:`session_worktree`); see the module docstring.
 
     Raises :class:`RetireError` or :class:`~ai_cli.session_adopt.LiveSessionError`
     before writing anything.
     """
-    from .session import _current_branch, _registered_worktree_at, registered_worktrees
+    from .session import _current_branch, registered_worktrees
 
     repo_root = repo_root.resolve()
     home = claude_home if claude_home is not None else Path.home() / ".claude"
     state = state_dir if state_dir is not None else _config.get_xdg_state_home()
 
     registered = registered_worktrees(repo_root)
-    wt = _registered_worktree_at(repo_root / ".worktrees" / name, registered)
-    if wt is None:
-        raise RetireError(f"{repo_root / '.worktrees' / name} is not a registered worktree of {repo_root}")
+    wt = session_worktree(repo_root, name, registered)
     nested = [w for w in registered if w != wt and wt in w.parents]
     if nested:
         raise RetireError(

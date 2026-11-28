@@ -1,0 +1,1 @@
+- Reuse the saved `--no-worktree` directory when resuming a stopped Antigravity (`ai g -r`) slot without repeating `-W`, avoiding creating a mismatched worktree checkout that fails the saved-cwd safety check.

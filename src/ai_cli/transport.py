@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -96,6 +96,11 @@ _SSH_OPERATOR_EXIT_CODES = frozenset({0, 130})
 #: dropped link: every reattach would be refused the same way, so the ladder stops on it.
 #: 78 is ``EX_CONFIG`` from BSD ``sysexits.h``; neither ssh nor tmux exits with it.
 REMOTE_LAUNCH_REFUSED_EXIT = 78
+
+#: Default remote ``ai`` exit codes that are terminal for every engine (never a dropped link).
+#: Callers may pass additional engine-specific terminal codes (for example exit 77 for
+#: Antigravity headless empty-print results) via ``terminal_exit_codes``.
+DEFAULT_REMOTE_TERMINAL_EXIT_CODES: frozenset[int] = frozenset({REMOTE_LAUNCH_REFUSED_EXIT})
 
 #: stderr text that marks a failed attempt as a CREDENTIAL fault rather than a lost link.
 #: ssh exits 255 for both, so its own stderr and its ``ProxyCommand``'s (which inherits it)
@@ -270,6 +275,7 @@ def run_ssh_with_reconnect(
     on_exit_receipt: Callable[[], bool] | None = None,
     diagnostic_ssh_args: list[str] | None = None,
     remote_diagnostic_file: str = "",
+    terminal_exit_codes: Collection[int] = DEFAULT_REMOTE_TERMINAL_EXIT_CODES,
 ) -> int:
     """Run the interactive SSH session, reattaching if the connection drops.
 
@@ -316,6 +322,7 @@ def run_ssh_with_reconnect(
     next drop says so once per installed commit, since a fix to this very ladder reaches an
     existing session only through a fresh launch.
     """
+    terminal_exits = frozenset(terminal_exit_codes) | DEFAULT_REMOTE_TERMINAL_EXIT_CODES
     loaded_commit = _current_update_commit()
     identity = {
         "pid": os.getpid(),
@@ -370,17 +377,26 @@ def run_ssh_with_reconnect(
                     verdict = "clean_exit" if returncode == 0 else "interrupted"
                     cause = None
                     break
-                if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                if returncode in terminal_exits:
                     verdict = "refused"
                     cause = "remote_launch"
                     restore_terminal()
-                    _out.emit(
-                        Tag.TRANSPORT,
-                        "connect",
-                        "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
-                        "since every retry would be refused the same way. Fix that, then re-run the same command.",
-                        err=True,
-                    )
+                    if returncode == REMOTE_LAUNCH_REFUSED_EXIT:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            "\nThe remote host refused to launch the session (its reason is above); not reattaching, "
+                            "since every retry would be refused the same way. Fix that, then re-run the same command.",
+                            err=True,
+                        )
+                    else:
+                        _out.emit(
+                            Tag.TRANSPORT,
+                            "connect",
+                            f"\nThe remote command ended with terminal status {returncode} (its reason is above); "
+                            "not reattaching to avoid re-running the request.",
+                            err=True,
+                        )
                     break
                 drops += 1
                 connected = _format_uptime(_monotonic() - started)
@@ -459,7 +475,7 @@ def run_ssh_with_reconnect(
                 )
                 time.sleep(delay)
                 delay = min(delay * 2, max_backoff_seconds)
-            if returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT) and diagnostic_ssh_args and remote_diagnostic_file:
+            if returncode in (0, *terminal_exits) and diagnostic_ssh_args and remote_diagnostic_file:
                 _report_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
             if returncode == 0 and on_clean_exit is not None:
                 on_clean_exit()
@@ -789,6 +805,7 @@ async def _run_transport_loop(
     remote_diagnostic_file: str = "",
     on_exit_receipt: Callable[[], bool] | None = None,
     ssh_diagnostic_args: list[str] | None = None,
+    terminal_exit_codes: Collection[int] = DEFAULT_REMOTE_TERMINAL_EXIT_CODES,
 ) -> int:
     """Run the mosh/SSH transport loop with VPN-aware switching; return the exit status to leave with.
 
@@ -923,6 +940,10 @@ async def _run_transport_loop(
                         exit_code = remote_status
                         break
 
+                if proc.returncode in (frozenset(terminal_exit_codes) | DEFAULT_REMOTE_TERMINAL_EXIT_CODES):
+                    exit_code = proc.returncode
+                    break
+
                 # Mosh failed before establishing a session — check for VPN or unreachable host.
                 # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
                 # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
@@ -999,7 +1020,10 @@ async def _run_transport_loop(
                         raise_if_terminated()
                         if on_exit_receipt is not None and await asyncio.to_thread(on_exit_receipt):
                             return 0
-                        if proc2.returncode in (0, REMOTE_LAUNCH_REFUSED_EXIT):
+                        if proc2.returncode in (
+                            0,
+                            *(frozenset(terminal_exit_codes) | DEFAULT_REMOTE_TERMINAL_EXIT_CODES),
+                        ):
                             if ssh_diagnostic_args and remote_diagnostic_file:
                                 await asyncio.to_thread(
                                     _report_remote_diagnostic, ssh_diagnostic_args, remote_diagnostic_file

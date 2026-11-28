@@ -12,6 +12,8 @@ delegation_provenance:
 
 # CLI Launch-Sequence Progress Logging — Best Practices and Package Survey
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** complete
 
 **Created:** 2026-08-31

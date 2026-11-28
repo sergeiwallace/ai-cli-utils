@@ -2,7 +2,7 @@
 """Generate iTerm2 tab icon PNGs for ai-cli-utils profiles.
 
 Reads color configuration from iterm2.toml and generates tinted PNG variants
-for all ClaudeCode-{Color} and GeminiCLI-{Color} Dynamic Profile entries.
+for Claude Code and Antigravity CLI, which uses the Gemini logo asset.
 
 Usage:
     python scripts/generate_iterm2_icons.py

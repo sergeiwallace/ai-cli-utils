@@ -1,0 +1,1 @@
+- Run live tmux and pseudo-terminal tests one at a time per macOS pytest job to avoid intermittent timeouts.

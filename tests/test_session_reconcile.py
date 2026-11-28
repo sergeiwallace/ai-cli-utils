@@ -396,19 +396,48 @@ def test_given_new_run_that_vanishes_when_next_minute_passes_then_worker_settles
     assert ticks == ["running", "exited"]
 
 
-@pytest.mark.parametrize("arguments", ["empty", "unreadable"])
+@pytest.mark.parametrize("arguments", ["empty", "unreadable", "system_error"])
 def test_unrelated_process_when_arguments_unavailable_then_dead_session_settles(stale_record, monkeypatch, arguments):
+    """``system_error``: psutil on macOS can raise SystemError, not AccessDenied, reading another
+    process's argv (``sysctl(KERN_PROCARGS2)``)."""
     import psutil
 
     process = Mock()
     process.info = {"pid": 42, "username": psutil.Process().username(), "status": "running", "name": "helper"}
     if arguments == "empty":
         process.cmdline.return_value = []
-    else:
+    elif arguments == "unreadable":
         process.cmdline.side_effect = psutil.AccessDenied(42)
+    else:
+        process.cmdline.side_effect = SystemError(
+            "<built-in function proc_cmdline> returned a result with an exception set"
+        )
     monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: iter([process]))
     assert CliRunner().invoke(_cli_group, ["sessions", "list", "-j"]).exit_code == 0
     assert registry.load_registry()["sessions"][0]["run_state"] == "exited"
+
+
+def test_given_missing_tmux_and_process_scan_raising_system_error_when_listed_then_tmux_liveness_is_unknown(
+    stale_record, monkeypatch
+):
+    """process_iter reads ``name`` inside its generator, and on POSIX name() reads the argv of a
+    process named 15 or more characters; on macOS that read can raise SystemError, which then
+    ends the scan. The scan cannot prove the tmux server gone, so liveness stays unknown."""
+    import psutil
+
+    monkeypatch.setattr(registry, "_local_session_alive", _LOCAL_SESSION_ALIVE)
+    monkeypatch.setattr(registry.subprocess, "run", Mock(side_effect=FileNotFoundError("tmux")))
+
+    def processes(*args, **kwargs):
+        raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+        yield
+
+    monkeypatch.setattr(psutil, "process_iter", processes)
+    before = registry.registry_path().read_bytes()
+    result = CliRunner().invoke(_cli_group, ["sessions", "list", "-j"])
+    assert result.exit_code == 0, result.output
+    assert registry.registry_path().read_bytes() == before
+    assert _LOCAL_SESSION_ALIVE("c-session-1") is None
 
 
 @pytest.mark.parametrize("executable", ["python", "node", "nodejs"])

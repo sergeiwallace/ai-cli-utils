@@ -268,7 +268,7 @@ def test_the_guard_rejects_every_other_protected_binary() -> None:
     """The read-only exemption is tmux-specific, not a general loosening."""
     from tests.conftest import _reject_real_agent_process
 
-    for program in ("claude", "gemini", "direnv", "ssh", "mosh"):
+    for program in ("claude", "agy", "agy.exe", "direnv", "ssh", "mosh"):
         with pytest.raises(RuntimeError, match=program):
             _reject_real_agent_process([program, "-V"])
 

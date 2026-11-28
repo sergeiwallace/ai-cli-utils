@@ -1,0 +1,1 @@
+- Preserve up to the last 5 non-empty stderr lines leading up to git's final `error:`/`fatal:` line in the `ai c` worktree sync failure warning and launch log so failing hook causes are never dropped.

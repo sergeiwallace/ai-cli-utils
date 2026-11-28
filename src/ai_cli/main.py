@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any, NoReturn, TypeVar, cast
@@ -25,6 +25,7 @@ import portalocker
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import agy_session as _agy_session
 from . import background_attach as _background_attach
 from . import chief_of_staff as _chief_of_staff
 from . import compact_transport as _compact_transport
@@ -76,8 +77,6 @@ from .config import (  # noqa: F401
     _migrate_xdg_dir,
     get_current_project_name,
     get_project_aliases,
-    get_session_map,
-    get_session_map_path,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
@@ -85,7 +84,6 @@ from .config import (  # noqa: F401
     load_project_registry,
     register_project,
     resolve_project_prefix_by_name,
-    save_session_map,
     validate_registry_completeness,
 )
 from .extensions import run_launch_extensions
@@ -94,8 +92,10 @@ from .git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
+    operation_in_progress,
     pull_rebase_autostash,
     repair_bare_worktree_config,
+    sync_worktree_branch,
     unmerged_paths,
 )
 from .iterm2 import (  # noqa: F401
@@ -124,10 +124,6 @@ from .process_manager import (  # noqa: F401
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
-    _checkpoint_to_chat_uuid,
-    _convert_checkpoint_to_chat,
-    _find_latest_gemini_uuid,
-    _get_chat_last_message_timestamp,
     _resolve_is_remote,
     _sweep_stale_iterm2_profiles,
     build_session_name,
@@ -136,7 +132,6 @@ from .session import (  # noqa: F401
     detect_repo_root,
     find_next_index,
     find_recent_session,
-    get_latest_gemini_session_id,
     get_project_prefix,
     resolve_session,
 )
@@ -386,6 +381,74 @@ def _exec_tmux(args: list[str]) -> NoReturn:
     _exec_handoff(args[0], args)
 
 
+def _tmux_client_here() -> "tuple[str, str] | str":
+    """The tmux client showing this process's pane, as ``(session id, client tty)``; else why there is none.
+
+    Asked only inside tmux (``TMUX`` set). The pane is the one ``TMUX_PANE`` names, on the
+    server ``TMUX`` names, which is the server every ``tmux`` call from here reaches.
+    """
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return "TMUX is set but TMUX_PANE is not, so tmux cannot say which pane this is"
+    try:
+        shown = subprocess.run(
+            tmux_binary.argv("display-message", "-p", "-t", pane, "#{session_id}\t#{client_tty}"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"tmux could not be asked which client shows this pane ({exc})"
+    session_id, _, client = (shown.stdout or "").strip().partition("\t")
+    if shown.returncode != 0 or not session_id.startswith("$"):
+        detail = _decode_tmux_stderr(shown.stderr or "").strip() or "no answer"
+        return f"the tmux server that TMUX names does not know pane {pane} ({detail})"
+    if not client:
+        return "no tmux client shows this pane's session, so there is no terminal to switch"
+    return session_id, client
+
+
+def _attach_terminal(target: str, *, detach_others: bool = False) -> NoReturn:
+    """Put this terminal on tmux session ``target``: the one way a launch enters a session.
+
+    Outside tmux the terminal becomes the session's client (``attach-session``, exec'd), so
+    when the session ends its client exits and the shell that ran ``ai`` has the terminal
+    again. Inside tmux a client cannot nest, so the client already showing this pane is
+    switched to ``target`` and ``target`` records where it came from: the session's
+    teardown sends it back there, to the shell that ran ``ai`` in its own pane
+    (:func:`tmux_ownership.return_switched_client`).
+    """
+    if os.environ.get("TMUX"):
+        _switch_tmux_client(target)
+    else:
+        _exec_tmux(tmux_binary.argv("attach-session", *(["-d"] if detach_others else []), "-t", target))
+
+
+def _switch_tmux_client(target: str) -> NoReturn:
+    """Switch the tmux client showing this pane to ``target``, recording where it came from; exit."""
+    here = _tmux_client_here()
+    refusal = here if isinstance(here, str) else ""
+    if not refusal:
+        origin, client = here
+        if not _tmux_ownership.record_return(target, origin, client):
+            refusal = f"this pane is already in {target}, or tmux would not record where its client came from"
+        else:
+            switched = subprocess.run(
+                tmux_binary.argv("switch-client", "-c", client, "-t", target),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if switched.returncode != 0:
+                refusal = _decode_tmux_stderr(switched.stderr or "").strip() or "tmux refused the switch"
+    if refusal:
+        _out.error(Tag.LAUNCH, "tmux", f"could not switch this terminal's tmux client to {target}: {refusal}")
+        sys.exit(1)
+    _out.flush_sinks()
+    sys.exit(0)
+
+
 def _refresh_claude_plugins() -> None:
     from .plugin_refresh import refresh_plugins
 
@@ -458,6 +521,26 @@ def _exec_with_direnv(
         handoff(command[0], command)
     except FileNotFoundError:
         _out.error(Tag.LAUNCH, "handoff", f"{command[0]} not found on PATH.")
+        sys.exit(1)
+
+
+def _prepare_project_environment(directory: Path, config: dict, *, no_direnv: bool, reporter: LaunchReporter) -> None:
+    """Approve the session worktree's ``.envrc`` before the handoff, or refuse the launch.
+
+    The launcher's half of :func:`ai_cli.session.prepare_project_environment`; the
+    session script's child body runs the same policy before every agent start through
+    ``ai internal prepare-project-env``. A refusal exits before anything is handed off.
+    """
+    if no_direnv:
+        reporter.detail("direnv", f"{directory / '.envrc'}: approval skipped (-D/--no-direnv)")
+        return
+    result = _session.prepare_project_environment(directory, config=config)
+    if result.level is _out.Level.DETAIL:
+        reporter.detail("direnv", result.message)
+    elif result.ready:
+        reporter.phase("direnv").outcome(result.message)
+    else:
+        reporter.error("direnv", result.message)
         sys.exit(1)
 
 
@@ -1181,11 +1264,14 @@ def _bare_engine_command(
     ai_name: str,
     target_root: Path,
     uuid: str | None,
-    gemini_cmd: str,
     sandbox_flag: str,
     extra_args: list[str],
     resume: bool = False,
     pi_provider: str = "openai-codex",
+    *,
+    session_id: str | None = None,
+    agy_cmd: str | None = None,
+    sandbox: bool | None = None,
 ) -> list[str]:
     """Build the argv for a bare (no-tmux) engine launch.
 
@@ -1242,12 +1328,21 @@ def _bare_engine_command(
             command += ["resume", "--last"]
         return [*command, *extra_args]
 
-    command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-    if uuid:
-        command += ["-r", uuid]
-    else:
-        command += ["-i", f"/resume load {ai_name}"]
-    return command + extra_args
+    effective_agy_cmd = agy_cmd if agy_cmd is not None else "agy"
+    effective_sandbox = (sandbox_flag == "-s") if sandbox is None else sandbox
+    slot = session_id or f"g-{ai_name}"
+    record = _config.get_xdg_state_home() / "sessions" / f"{slot}.agy.json"
+    return _agy_session.launch_command(
+        effective_agy_cmd,
+        record,
+        target_root,
+        slot,
+        ai_name,
+        fresh=not resume,
+        route="bare",
+        sandbox=effective_sandbox,
+        extra_args=extra_args,
+    )
 
 
 def _is_root() -> bool:
@@ -1267,7 +1362,7 @@ def _is_root() -> bool:
 
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
-    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+    return {"c": "Claude Code", "g": "Antigravity (agy)", "p": "Pi", "cx": "Codex"}[engine]
 
 
 def _launch_mode_label(*, remote: bool, bare: bool) -> str:
@@ -1355,6 +1450,9 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             dst.chmod(dst.stat().st_mode | 0o755)
 
 
+#: Why a Windows host has no tmux to host a session: none runs, and none installs unattended.
+_WINDOWS_NO_TMUX = "no tmux runs here (on Windows: install psmux, or a tmux under WSL/MSYS2/Cygwin)"
+
 _PEER_UPDATE_WAIT_SECONDS = 90.0
 _PEER_UPDATE_POLL_SECONDS = 0.25
 
@@ -1417,6 +1515,7 @@ def _await_peer_update(
 
 
 UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+SKIP_AUTO_UPDATE_ENV = "AI_CLI_SKIP_AUTO_UPDATE"
 _LAUNCH_REEXEC_ENV = "AI_CLI_LAUNCH_REEXEC"
 
 
@@ -1428,6 +1527,15 @@ def _update_verbose_requested() -> bool:
     whether a source change actually reached the installed build.
     """
     return os.environ.get(UPDATE_VERBOSE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _auto_update_skipped() -> bool:
+    """Whether the operator opted out of launch-time auto-update via ``AI_CLI_SKIP_AUTO_UPDATE``.
+
+    Used by isolated canaries, review checkouts, and tests so launching from an
+    alternate tree never fingerprints or reinstalls the global ``uv tool`` build.
+    """
+    return os.environ.get(SKIP_AUTO_UPDATE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def _packaged_source_paths(project_path: Path) -> list[Path]:
@@ -1591,6 +1699,8 @@ def _auto_update_if_stale(config: dict) -> bool:
     A successful reinstall rewrote this process's own installed tree, so the
     caller must re-exec: True says so. Every other outcome returns False.
     """
+    if _auto_update_skipped():
+        return False
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
         return False
@@ -1711,6 +1821,8 @@ def _auto_update_if_stale(config: dict) -> bool:
 
 
 def trigger_background_update():
+    if _auto_update_skipped():
+        return
     state_file = _config.get_xdg_state_home() / "update_check.json"
     now = time.time()
     if state_file.exists():
@@ -1764,6 +1876,9 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
     fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
     """
     _session_naming.validate_script_metadata(meta, expected_session=expected_session)
+    agy_cmd = meta.get("agy_cmd")
+    if meta["engine"] == "g" and not agy_cmd:
+        agy_cmd = _config.load_config().get("agy", {}).get("command", "agy")
     # Resolve through the session_script module (not the name imported into main) so
     # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
     return _session_script.get_engine_script(
@@ -1780,7 +1895,8 @@ def _engine_script_from_meta(meta: dict, *, expected_session: str | None = None)
         project_name=meta.get("project_name", ""),
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
-        gemini_cmd=meta.get("gemini_cmd", "gemini"),
+        agy_cmd=agy_cmd,
+        agy_args=meta.get("agy_args"),
         pi_provider=meta.get("pi_provider", "openai-codex"),
         launch_log_path=meta.get("launch_log_path") or None,
     )
@@ -2196,22 +2312,12 @@ def _internal_emit(args: list[str]) -> int:
 def _store_session_records(records: list[_out.Record]) -> None:
     """Send a session-script reply's records to its launch log and to telemetry (AI-CLI-cuwe).
 
-    ``[output.sinks.*]`` decides what each sink keeps. The script names its
-    launch's log in ``AI_CLI_LAUNCH_LOG``; without one the records still reach
-    telemetry.
+    ``[output.sinks.*]`` decides what each sink keeps. The launch log is the one
+    :func:`_handle_internal` attached from ``AI_CLI_LAUNCH_LOG``; without one the
+    records still reach telemetry.
     """
-    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-    path = os.environ.get(LAUNCH_LOG_ENV, "")
-    log = open_launch_log(path) if path else None
-    previous = _out.attach_file_sink(log.write_line if log is not None else None)
-    try:
-        _out.store(records)
-        _out.flush_sinks()
-    finally:
-        _out.attach_file_sink(previous)
-        if log is not None:
-            log.close()
+    _out.store(records)
+    _out.flush_sinks()
 
 
 _RELOAD_REASONS = {
@@ -2287,14 +2393,43 @@ def _handle_internal(argv: list[str]) -> None:
 
     Kept out of Click so sub-millisecond startup is preserved for hot paths.
     Always calls ``sys.exit`` — never returns.
+
+    Every record any action emits also goes to the launch log the session script
+    names in ``AI_CLI_LAUNCH_LOG``, stamped as it is emitted. The script exports that
+    for its child body, whose stderr is the pane, so a relaunch's direnv, resume and
+    restart lines reach the log exactly as the launcher's own do. Attaching it here,
+    once, rather than per action is what stops an action from being added that
+    reports only to the pane.
     """
+    from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
+
     _out.utf8_stdout_on_windows()
+    log_path = os.environ.get(LAUNCH_LOG_ENV, "")
+    if not log_path:
+        _dispatch_internal(argv)
+        return
+    launch_log = open_launch_log(log_path)
+    previous_sink = _out.attach_file_sink(launch_log.write_line)
+    try:
+        _dispatch_internal(argv)
+    finally:
+        _out.flush_sinks()
+        _out.attach_file_sink(previous_sink)
+        launch_log.close()
+
+
+def _dispatch_internal(argv: list[str]) -> None:
+    """The actions of :func:`_handle_internal`; every one ends in ``sys.exit``."""
     if not argv:
         _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal <action> [args...]", err=True)
         sys.exit(1)
     action = argv[0]
     if action == "codex-session-confirm":
         from .codex_session import confirm_from_environment
+
+        sys.exit(confirm_from_environment(argv[1:]))
+    if action == "agy-session-confirm":
+        from .agy_session import confirm_from_environment
 
         sys.exit(confirm_from_environment(argv[1:]))
     if action == "codex-hook-contract" and len(argv) == 1:
@@ -2332,28 +2467,30 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(_internal_progress(argv[1:]))
     config = _config.load_config()
 
-    if action == "get-latest-gemini-id":
-        _ai_name_arg = argv[1] if len(argv) > 1 else None
-        res = _session.get_latest_gemini_session_id(_ai_name_arg)
-        if res:
-            _out.raw(Untagged.INTERNAL_REPLY, str(res))
-        sys.exit(0)
-    elif action == "finish-migrations":
+    if action == "prepare-project-env":
+        if len(argv) not in (2, 3):
+            _out.emit(
+                Tag.INTERNAL, "usage", "Usage: ai internal prepare-project-env <directory> [<tmux_session>]", err=True
+            )
+            sys.exit(1)
+        if len(argv) == 3 and _session_launch_state.launched_with(argv[2], "no_direnv"):
+            _out.emit(Tag.SESSION, "direnv", "approval skipped (-D/--no-direnv)", err=True, level=_out.Level.DETAIL)
+            sys.exit(0)
+        prepared = _session.prepare_project_environment(_session.native_path(argv[1]), config=config)
+        _out.emit(
+            Tag.SESSION,
+            "direnv",
+            prepared.message,
+            err=True,
+            level=prepared.level,
+            terminal=prepared.level is not _out.Level.DETAIL,
+        )
+        sys.exit(0 if prepared.ready else _direnv_setup.PROJECT_ENV_REFUSED_EXIT)
+    if action == "finish-migrations":
         if len(argv) != 3:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal finish-migrations <tmux_session> <ai_name>", err=True)
             sys.exit(1)
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
-
-        log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-        launch_log = open_launch_log(log_path) if log_path else None
-        previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-        try:
-            _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
-        finally:
-            _out.flush_sinks()
-            _out.attach_file_sink(previous_sink)
-            if launch_log is not None:
-                launch_log.close()
+        _finish_migrations_on_restart(argv[1], argv[2], LaunchReporter())
         sys.exit(0)
     elif action == "resolve-host-env":
         from .host_env import resolve_host_env
@@ -2363,20 +2500,10 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "resolve-codex-display":
         from .codex_display import resolve_codex_display
-        from .launch_logging import LAUNCH_LOG_ENV, open_launch_log
 
         resolution = resolve_codex_display(os.environ)
         if resolution.reason:
-            log_path = os.environ.get(LAUNCH_LOG_ENV, "")
-            launch_log = open_launch_log(log_path) if log_path else None
-            previous_sink = _out.attach_file_sink(launch_log.write_line if launch_log is not None else None)
-            try:
-                LaunchReporter().detail("display", resolution.reason)
-            finally:
-                _out.flush_sinks()
-                _out.attach_file_sink(previous_sink)
-                if launch_log is not None:
-                    launch_log.close()
+            LaunchReporter().detail("display", resolution.reason)
         for variable, value in resolution.values.items():
             _out.raw(Untagged.INTERNAL_REPLY, f"{variable}={value}")
         sys.exit(0)
@@ -2419,7 +2546,7 @@ def _handle_internal(argv: list[str]) -> None:
         )
         defer_hold_warning = "--defer-hold-warning" in flags
         if resolution.warning and (not defer_hold_warning or not resolution.hold or resolution.timed_out):
-            _out.emit(Tag.INTERNAL, "resume", resolution.warning, err=True)
+            _out.warning(Tag.INTERNAL, "resume", resolution.warning)
         if resolution.background_id:
             _out.raw(Untagged.INTERNAL_REPLY, resolution.background_id)
         if resolution.timed_out:
@@ -2499,17 +2626,6 @@ def _handle_internal(argv: list[str]) -> None:
             _out.error(Tag.INTERNAL, "resume", str(exc))
             sys.exit(_RESTORE_FAILED_STATUS)
         sys.exit(0)
-    elif action == "update-session-map":
-        if len(argv) < 4:
-            _out.emit(
-                Tag.INTERNAL, "usage", "Usage: ai internal update-session-map <engine> <ai_name> <uuid>", err=True
-            )
-            sys.exit(1)
-        engine, ai_name, uuid = argv[1], argv[2], argv[3]
-        d = _config.get_session_map(engine)
-        d[ai_name] = uuid
-        _config.save_session_map(d, engine)
-        sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
             _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal release-color-slot <ai_name>", err=True)
@@ -2545,7 +2661,7 @@ def _handle_internal(argv: list[str]) -> None:
         try:
             _session_naming.validate_session_text(name, partial=True)
             owner = (
-                _config._find_project_dir(_config.get_project_aliases().get(project, project))
+                _config._find_project_dir(_config.resolve_project_alias(project))
                 if project
                 else _session.detect_repo_root()
             )
@@ -2579,7 +2695,7 @@ def _handle_internal(argv: list[str]) -> None:
                 target = _resolve_resume_target(
                     engine,
                     naming_prefix,
-                    project_prefix,
+                    launch_naming.legacy_prefix,
                     name,
                     is_remote=True,
                     bare=not use_tmux,
@@ -2787,6 +2903,11 @@ def _handle_internal(argv: list[str]) -> None:
 
         schedule_auto(argv[1], config)
         sys.exit(0)
+    elif action == "return-tmux-client":
+        if len(argv) != 2:
+            _out.emit(Tag.INTERNAL, "usage", "Usage: ai internal return-tmux-client <tmux_session_id>", err=True)
+            sys.exit(1)
+        sys.exit(0 if _tmux_ownership.return_switched_client(argv[1]) else 1)
     elif action == "revoke-heartbeat":
         if len(argv) < 3:
             _out.emit(
@@ -2927,6 +3048,24 @@ def _internal_quota_subscriber(config: dict) -> None:
         )
 
 
+def _format_git_failure_detail(stderr: str | None, stdout: str | None, *, max_lines: int = 5) -> str:
+    """Return a bounded summary of git's failure lines, keeping context before the final fatal/error."""
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    last_err_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.startswith(("error:", "fatal:")):
+            last_err_idx = idx
+    if last_err_idx is not None:
+        start = max(0, last_err_idx - max_lines + 1)
+        selected = lines[start : last_err_idx + 1]
+    else:
+        selected = lines[-max_lines:]
+    return " Last git error: " + " | ".join(selected)
+
+
 def _has_conflict_or_unknown(repo_root) -> bool:
     """True if the repo has conflict stages, or if that cannot be determined.
 
@@ -2965,11 +3104,22 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: before this launch would otherwise hand the pane a stale environment.
 #: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
 #: both are forwarded only when set, so an ordinary launch is unchanged.
-_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
+#: AI_CLI_SKIP_DIRENV reaches the child body's .envrc approval the same way, so the
+#: documented bypass holds on a tmux server started before it was set.
+_TMUX_FORWARDED_VARS = (
+    "PATH",
+    "XDG_STATE_HOME",
+    "LC_TERMINAL",
+    "TERM_PROGRAM",
+    "FM_HOME",
+    "AI_SESSION_ROLE",
+    _direnv_setup.BYPASS_ENV,
+)
 _LAUNCH_REASON_VAR = _iterm2_restore.LAUNCH_REASON_VAR
+_INHERITED_LAUNCH_REASON_VAR = _iterm2_restore.INHERITED_LAUNCH_REASON_VAR
 
 
-def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+def build_tmux_env_flags(env: "Mapping[str, str]", *, launch_reason: str = "") -> list[str]:
     """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
 
     ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
@@ -2995,9 +3145,11 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
     The other variables are forwarded only when non-empty, since none of them has
     a meaningful empty value and an empty ``PATH`` would be actively harmful.
 
-    ``AIH_LAUNCH_REASON`` (set by ``ai iterm2 restore`` on a relaunch) is always
-    forwarded, empty when unset: the first relaunch after a reboot starts the tmux
-    server, whose global environment then holds that reason for every later session.
+    ``AI_CLI_LAUNCH_REASON`` is ``launch_reason``, the reason the relaunch that started
+    this launch gave it, and never a value read from ``env``: a shell or agent inside a
+    session relaunched after a reboot still carries that session's reason, and a new
+    session must not inherit it. It is always emitted, empty when there is none, so a
+    value left in a tmux server's global environment reaches no session either.
     """
     flags: list[str] = []
     for var in _TMUX_FORWARDED_VARS:
@@ -3006,8 +3158,23 @@ def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
             value = value or str(Path.home() / ".local" / "state")
         if value:
             flags += ["-e", f"{var}={value}"]
-    flags += ["-e", f"{_LAUNCH_REASON_VAR}={env.get(_LAUNCH_REASON_VAR, '')}"]
+    flags += ["-e", f"{_LAUNCH_REASON_VAR}={launch_reason}"]
     return flags
+
+
+def _take_launch_reason(env: "MutableMapping[str, str]") -> str:
+    """Remove the launch reason from ``env`` and return it when it was set for this launch.
+
+    A relaunch hands ``ai c`` its reason in the environment of that one command
+    (``AI_CLI_LAUNCH_REASON=<cause> ai c ...``, as ``ai iterm2 restore`` types it). A session
+    hands its reason to its first agent the same way, marked with
+    ``AI_CLI_INHERITED_LAUNCH_REASON``, so an ``ai c`` run from inside that session sees a
+    reason equal to the mark and starts fresh. Both are removed, so nothing this launch
+    starts, the tmux server included, inherits either.
+    """
+    reason = env.pop(_LAUNCH_REASON_VAR, "")
+    inherited = env.pop(_INHERITED_LAUNCH_REASON_VAR, None)
+    return "" if inherited is not None and reason == inherited else reason
 
 
 def _install_is_editable(venv: "Path") -> bool:
@@ -3075,14 +3242,17 @@ def _sync_launch_client(config: dict, origin: InstallOrigin) -> "_LaunchClient |
     return _LaunchClient(checkout, sync_client_checkout(checkout))
 
 
-def _install_decision(client: "_LaunchClient | None", reinstalled: bool) -> str:
+def _install_decision(client: "_LaunchClient | None", reinstalled: bool, *, skipped: bool = False) -> str:
     if client is not None:
         check = client.check
         if check.state is ClientState.SYNCED:
             return f"fast-forwarded {check.behind} commit(s) from origin/main; restarting"
         if check.state is ClientState.BEHIND:
             return f"{check.behind} commit(s) behind origin/main, not updated"
-    decision = "reinstalled; restarting" if reinstalled else "current"
+    if skipped:
+        decision = f"skipped ({SKIP_AUTO_UPDATE_ENV})"
+    else:
+        decision = "reinstalled; restarting" if reinstalled else "current"
     if client is not None and client.check.state is ClientState.UNCHECKED:
         return f"{decision} locally; could not check origin/main ({client.check.reason})"
     return decision
@@ -3227,7 +3397,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     # "Pulling is not possible because you have unmerged files", and the repo
     # never advances again. That is how the remote build host sat 50 commits
     # behind for five days while its disk filled — docs/bugs/stranded-autostash.md.
-    pull, stranded = pull_rebase_autostash(project_path)
+    pull, stranded = pull_rebase_autostash(project_path, autostash_if_clean=True)
     # A conflicted index means the pull could not advance the checkout — whether
     # this run caused it or a previous one did. Either way the source tree is
     # stale and cannot be built from, and every later pull will refuse too, so
@@ -3422,8 +3592,9 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         _out.error(Tag.REMOTE, "reconnect", "[remote] host not set in ~/.config/ai-cli-utils/config.toml")
         sys.exit(1)
 
+    # The remote host's tmux, found by its own PATH: this host's [tmux] binary does not apply there.
     probe = subprocess.run(
-        ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
+        ["ssh", f"{user}@{host}", tmux_binary.REMOTE, "list-sessions", "-F", "#{session_name}"],
         capture_output=True,
         text=True,
         check=False,
@@ -3475,13 +3646,387 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     sys.exit(0)
 
 
+_TMUX_CLIENT_OPTION = "@ai_cli_client"
+_G_CLIENT_EXEC_EXTS = (".exe", ".cmd", ".bat", ".ps1", ".com")
+_G_PANE_QUERY_FORMAT = f"#{{{_TMUX_CLIENT_OPTION}}}\t#{{pane_current_command}}"
+_G_ALL_PANES_QUERY_FORMAT = f"#{{session_name}}\t{_G_PANE_QUERY_FORMAT}"
+
+
+def _classify_g_command_name(token: str) -> str | None:
+    cleaned = token.strip().strip("\"'")
+    if not cleaned:
+        return None
+    base = re.split(r"[/\\]", cleaned)[-1].lower()
+    for ext in _G_CLIENT_EXEC_EXTS:
+        if base.endswith(ext) and len(base) > len(ext):
+            base = base[: -len(ext)]
+            break
+    if base in ("agy", "antigravity"):
+        return "agy"
+    if base == "gemini":
+        return "gemini"
+    return None
+
+
+def _decode_tmux_stdout(raw_out: bytes | str | None) -> str | None:
+    if isinstance(raw_out, bytes):
+        return raw_out.decode("utf-8", errors="replace")
+    if isinstance(raw_out, str):
+        return raw_out
+    return None
+
+
+def _client_from_pane_rows(rows: Sequence[tuple[str, str]]) -> str | None:
+    found: set[str] = set()
+    for marker, current_cmd in rows:
+        if marker:
+            return marker if marker in ("agy", "gemini") else None
+        client = _classify_g_command_name(current_cmd)
+        if client is not None:
+            found.add(client)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _probe_g_session_client_from_tmux(session_name: str) -> str | None:
+    """Fallback client detection for a live ``g-`` tmux session lacking metadata files."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", _G_PANE_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return None
+
+    rows: list[tuple[str, str]] = []
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], parts[1]))
+    return _client_from_pane_rows(rows)
+
+
+def _probe_all_g_session_clients_from_tmux() -> dict[str, str | None]:
+    """Batch-probe live ``g-`` tmux sessions in a single ``list-panes -a`` call."""
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("list-panes", "-a", "-F", _G_ALL_PANES_QUERY_FORMAT),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if res.returncode != 0:
+        return {}
+    stdout = _decode_tmux_stdout(res.stdout)
+    if stdout is None:
+        return {}
+
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith("g-"):
+            continue
+        grouped.setdefault(parts[0], []).append((parts[1], parts[2]))
+    return {name: _client_from_pane_rows(rows) for name, rows in grouped.items()}
+
+
+def _g_session_client_from_files(session_name: str) -> str | None:
+    state = _config.get_xdg_state_home()
+    if (state / "sessions" / f"{session_name}.agy.json").is_file():
+        return "agy"
+    meta_path = state / f"session-meta-{session_name}.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None
+        if isinstance(meta, dict):
+            if meta.get("agy_cmd"):
+                return "agy"
+            if meta.get("engine") == "g":
+                return "gemini"
+    return None
+
+
+def _g_session_client(session_name: str, *, live_pane_clients: Mapping[str, str | None] | None = None) -> str | None:
+    """Identify whether a ``g-`` tmux session belongs to Antigravity (``agy``) or legacy ``gemini``."""
+    if not session_name.startswith("g-"):
+        return None
+    from_files = _g_session_client_from_files(session_name)
+    if from_files is not None:
+        return from_files
+    if live_pane_clients is not None:
+        return live_pane_clients.get(session_name)
+    return _probe_g_session_client_from_tmux(session_name)
+
+
+def _verify_live_agy_tmux_session(session_name: str) -> str | None:
+    """Verify a live ``g-`` tmux session carries the authoritative ``@ai_cli_client agy`` marker.
+
+    Trusts only the tmux session option written by ``ai g`` at creation time; refuses when
+    the query fails, when the marker is missing (including pre-marker sessions), or when it
+    names another client.
+    """
+    try:
+        res = subprocess.run(
+            tmux_binary.argv("show-options", "-t", f"={session_name}:", "-v", _TMUX_CLIENT_OPTION),
+            capture_output=True,
+            text=False,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return (
+            f"cannot attach to {session_name} with ai g: failed to read tmux {_TMUX_CLIENT_OPTION} marker. "
+            f"Relaunch with `ai g` or inspect with `ai attach {session_name}`."
+        )
+    raw_out = res.stdout
+    if isinstance(raw_out, bytes):
+        if sys.platform == "win32":
+            # Platform-specific Windows psmux emits CRLF line endings.
+            trimmed = (
+                raw_out[:-2] if raw_out.endswith(b"\r\n") else (raw_out[:-1] if raw_out.endswith(b"\n") else raw_out)
+            )
+        else:
+            trimmed = raw_out[:-1] if raw_out.endswith(b"\n") else raw_out
+        marker = trimmed.decode("utf-8", errors="replace") if res.returncode == 0 else ""
+    else:
+        trimmed_str = raw_out[:-1] if raw_out.endswith("\n") else raw_out
+        marker = trimmed_str if res.returncode == 0 else ""
+    if marker == "agy":
+        return None
+    if marker:
+        return (
+            f"cannot attach to {session_name} with ai g: tmux session marker {_TMUX_CLIENT_OPTION} is {marker!r}, "
+            f"not 'agy'. Relaunch with `ai g` or inspect with `ai attach {session_name}`."
+        )
+    return (
+        f"cannot attach to {session_name} with ai g: tmux session is missing the {_TMUX_CLIENT_OPTION}=agy marker. "
+        f"Relaunch with `ai g` or inspect with `ai attach {session_name}`."
+    )
+
+
+def _is_agy_replay_command(command: list[str]) -> bool:
+    """Return True only when a saved bare replay recipe's launcher prefix runs ``python -m ai_cli.agy_session launch``."""
+    return _agy_session.is_agy_replay_command(command)
+
+
+_TMUX_ONCE_SETUP_TIMEOUT_SECONDS = 10.0
+
+
+def _cleanup_failed_agy_once_session(
+    session_name: str,
+    *,
+    created_session_id: str | None,
+    generation: str | None,
+    identity: _tmux_ownership.TmuxSessionIdentity | None,
+) -> None:
+    """Tear down an unstarted one-shot placeholder session without touching unrelated sessions."""
+    if identity is not None:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+        return
+    if created_session_id is not None:
+        if generation is not None:
+            provisional = _tmux_ownership.TmuxSessionIdentity(created_session_id, session_name, generation)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                if _tmux_ownership.kill_owned_tmux_session(provisional):
+                    return
+        _tmux_ownership.kill_unmarked_tmux_placeholder(
+            created_session_id,
+            session_name,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        return
+    # new-session -d -s <session_name> just returned 0 (so the name did not exist before),
+    # but tmux returned an unexpanded or unusable session id.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            tmux_binary.argv("kill-session", "-t", f"={session_name}"),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+
+
+def _recorded_single_run_exit_status(session_name: str) -> int | None:
+    """Return the exit status recorded by ``sessions _run`` for this launch of ``session_name``."""
+    try:
+        doc = _session_registry.load_registry()
+    except Exception:
+        return None
+    for record in doc.get("sessions", ()):
+        if record.get("kind") != "local" or record.get("name") != session_name:
+            continue
+        if record.get("run_state") != "exited":
+            continue
+        exit_info = record.get("supervisor_exit") or record.get("exit")
+        if not isinstance(exit_info, dict):
+            continue
+        launched_at = record.get("launched_at")
+        exit_at = exit_info.get("at")
+        if isinstance(launched_at, str) and launched_at and (not isinstance(exit_at, str) or exit_at < launched_at):
+            continue
+        evidence = exit_info.get("evidence")
+        if isinstance(evidence, dict) and evidence.get("source") == "single-run":
+            status = evidence.get("status")
+            if isinstance(status, int) and not isinstance(status, bool):
+                return status
+    return None
+
+
+def _handle_once_session_exited_before_attach(
+    session_id: str,
+    launch_log_path: str | None,
+    reporter: LaunchReporter,
+) -> None:
+    """Report cleanly when a fast-exiting one-shot tmux session ends before attach-session."""
+    status = _recorded_single_run_exit_status(session_id)
+    log_suffix = f" (see {launch_log_path})" if launch_log_path else ""
+    if status == 0:
+        reporter.phase("session").outcome(f"one-shot session '{session_id}' finished before attach{log_suffix}")
+        return
+    if status is not None:
+        reporter.error(
+            "session",
+            f"one-shot session '{session_id}' exited with status {status} before attach{log_suffix}",
+        )
+        exit_code = status if status > 0 else (128 - status if status < 0 else 1)
+        sys.exit(exit_code)
+    reporter.error(
+        "session",
+        f"one-shot session '{session_id}' exited before attach{log_suffix}",
+    )
+    sys.exit(1)
+
+
+def _create_marked_agy_once_session(
+    session_id: str,
+    tmux_env_flags: list[str],
+    session_shell: str,
+    pane_command: str,
+    *,
+    pre_respawn: Callable[[_tmux_ownership.TmuxSessionIdentity], None] | None = None,
+) -> _tmux_ownership.TmuxSessionIdentity:
+    """Create a detached one-shot ``ai g`` tmux session with ownership-fenced ``@ai_cli_client agy`` before startup."""
+    try:
+        result = subprocess.run(
+            tmux_binary.argv(
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_id}",
+                "-s",
+                session_id,
+                *tmux_env_flags,
+                "--",
+                session_shell,
+                "-c",
+                "sleep 60",
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                tmux_binary.argv(
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{session_id}",
+                    "-s",
+                    session_id,
+                    *tmux_env_flags,
+                    session_shell,
+                    "-c",
+                    "sleep 60",
+                ),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"could not create one-shot tmux session '{session_id}': {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"could not create one-shot tmux session '{session_id}'")
+
+    created_session_id: str | None = None
+    generation: str | None = None
+    identity: _tmux_ownership.TmuxSessionIdentity | None = None
+    started = False
+    try:
+        id_status, candidate_id = _tmux_ownership.classify_new_session_output(
+            result.stdout if isinstance(result.stdout, str) else ""
+        )
+        if id_status != "ok":
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        created_session_id = candidate_id
+        generation = secrets.token_urlsafe(32)
+        gen_marked = subprocess.run(
+            tmux_binary.argv("set-option", "-t", created_session_id, "@ai_cli_session_generation", generation),
+            capture_output=True,
+            check=False,
+            timeout=_TMUX_ONCE_SETUP_TIMEOUT_SECONDS,
+        )
+        if gen_marked.returncode != 0:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
+        if identity is None:
+            raise RuntimeError(f"failed to establish ownership of tmux session '{session_id}'")
+        if not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            raise RuntimeError(f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+        if pre_respawn is not None:
+            pre_respawn(identity)
+        if not _tmux_ownership.respawn_owned_tmux_pane(identity, (session_shell, "-c", pane_command)):
+            raise RuntimeError(f"failed to start Antigravity one-shot session in tmux session '{session_id}'")
+        started = True
+        return identity
+    except BaseException as exc:
+        if not started:
+            _cleanup_failed_agy_once_session(
+                session_id,
+                created_session_id=created_session_id,
+                generation=generation,
+                identity=identity,
+            )
+        if isinstance(exc, (OSError, subprocess.SubprocessError)):
+            raise RuntimeError(f"failed to initialize one-shot tmux session '{session_id}': {exc}") from exc
+        raise
+
+
 def _do_attach(session_name: str) -> NoReturn:
-    check = subprocess.run(tmux_binary.argv("has-session", "-t", session_name), capture_output=True, check=False)
+    tmux_target = f"={session_name}" if session_name.startswith("g-") else session_name
+    check = subprocess.run(tmux_binary.argv("has-session", "-t", tmux_target), capture_output=True, check=False)
     if check.returncode != 0:
         _out.emit(Tag.ATTACH, "attach", f"No tmux session named '{session_name}'", err=True)
         sys.exit(1)
+    client = _g_session_client(session_name)
+    if client == "agy":
+        _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [agy]")
+    elif client == "gemini":
+        _out.emit(Tag.ATTACH, "attach", f"Attaching to {session_name} [legacy gemini]")
     _resume_suspended_panes(session_name)
-    _exec_tmux(tmux_binary.argv("attach-session", "-t", session_name))
+    _attach_terminal(tmux_target)
 
 
 def _do_ls(show_all: bool) -> None:
@@ -3546,8 +4091,28 @@ def _do_ls(show_all: bool) -> None:
     # installed software nobody asked for.
     fzf = shutil.which("fzf")
 
+    file_clients = {name: _g_session_client_from_files(name) for name, _ in sessions if name.startswith("g-")}
+    live_pane_clients: dict[str, str | None] = (
+        _probe_all_g_session_clients_from_tmux() if any(client is None for client in file_clients.values()) else {}
+    )
+
+    def _client_tag(name: str) -> str:
+        if not name.startswith("g-"):
+            return ""
+        client = file_clients.get(name)
+        if client is None:
+            client = live_pane_clients.get(name)
+        if client == "agy":
+            return " [agy]"
+        if client == "gemini":
+            return " [legacy gemini]"
+        return ""
+
     if fzf:
-        lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
+        lines = [
+            f"{name}\t{_project_from_session(name)}{_client_tag(name)}\t{_human_age(activity)}"
+            for name, activity in sessions
+        ]
         result = subprocess.run(
             [
                 fzf,
@@ -3555,7 +4120,7 @@ def _do_ls(show_all: bool) -> None:
                 "--reverse",
                 "--prompt=session> ",
                 "--delimiter=\t",
-                "--with-nth=1,3",
+                "--with-nth=1,2,3",
                 "--preview-window=hidden",
             ],
             input="\n".join(lines),
@@ -3567,12 +4132,14 @@ def _do_ls(show_all: bool) -> None:
             sys.exit(0)
         selected = result.stdout.strip().split("\t")[0]
         _resume_suspended_panes(selected)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", selected))
+        _attach_terminal(selected)
     else:
         # Plain list fallback
         for i, (name, activity) in enumerate(sessions, 1):
             project = _project_from_session(name)
-            _out.emit(Tag.SESSIONS, "list", f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
+            _out.emit(
+                Tag.SESSIONS, "list", f"  {i}. {name}  ({project}){_client_tag(name)}  {_human_age(activity)} ago"
+            )
         _out.emit(Tag.SESSIONS, "list", "\nTo attach: ai attach <name>")
         _out.emit(Tag.SESSIONS, "list", "Install fzf for an interactive picker.", err=True)
         sys.exit(0)
@@ -3627,6 +4194,8 @@ def _print_launch_plan(
     worktree_enabled: bool,
     sandbox: bool,
     extra_args: "list[str]",
+    probe: bool = False,
+    agy_command: str = "agy",
 ) -> None:
     """Report what a launch would do, having done none of it.
 
@@ -3638,8 +4207,9 @@ def _print_launch_plan(
     # Each of these is a git call, seconds apiece on a loaded host, so the lookup is a timed phase.
     with _launch_reporter.active().phase("worktree", "looking up the session worktree") as lookup:
         repo_root = _session.detect_repo_root()
-        worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
-        branch = f"wt-{ai_name}" if worktree else "n/a"
+        slot = _session.session_worktree_slot(Path(repo_root), ai_name, probe=probe) if repo_root else None
+        worktree = str(slot[0]) if worktree_enabled and slot else None
+        branch = slot[1] if worktree and slot else "n/a"
         reused = None
         if worktree and repo_root:
             # create_worktree reuses a registered slot as-is, so its HEAD is what launches.
@@ -3662,6 +4232,42 @@ def _print_launch_plan(
     if extra_args:
         lines.append(f"  engine args {' '.join(extra_args)}")
     _out.emit(Tag.PLAN, "plan", "\n".join(lines))
+    if engine == "g" and not bare:
+        with _config.inspection_only():
+            record = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+        cwd = Path(worktree).resolve() if worktree else Path.cwd()
+        try:
+            conversation = _agy_session.bound_slot_conversation(record, cwd, session_id)
+        except (OSError, ValueError):
+            conversation = None
+        if conversation is not None:
+            _print_agy_tmux_launch(
+                record, cwd, session_id, ai_name, agy_command, sandbox=sandbox, extra_args=extra_args
+            )
+
+
+def _print_agy_tmux_launch(
+    record: Path,
+    cwd: Path,
+    target: str,
+    title: str,
+    command: str,
+    *,
+    sandbox: bool = False,
+    extra_args: Sequence[str] = (),
+) -> None:
+    argv = _agy_session.launch_command(
+        command,
+        record,
+        cwd,
+        target,
+        title,
+        fresh=False,
+        route="paired-host-tmux" if target.startswith("g-r-") else "local-tmux",
+        sandbox=sandbox,
+        extra_args=extra_args,
+    )
+    _out.raw(Untagged.SHELL_COMMAND, _agy_session.tmux_launch_line(target, cwd, argv))
 
 
 def _remote_agent_diagnostic_setup(path: str) -> str:
@@ -3883,11 +4489,12 @@ def _launch_hosts_text(remote_cfg: dict | None, remote_alias: str, *, is_remote:
 def _tmux_session_has_live_pane(session_name: str) -> bool:
     """True when tmux has a session named exactly ``session_name`` with a live pane.
 
-    The ``=`` target is load-bearing: a bare name is a PREFIX match in tmux, so
-    ``c-x-1`` would answer for a live ``c-x-10``.
+    The ``=name:`` target is load-bearing: a bare name is a PREFIX match in tmux, so
+    ``c-x-1`` would answer for a live ``c-x-10``, and on tmux 3.7 a bare ``=name`` still
+    resolves a window called ``name`` in another session.
     """
     result = subprocess.run(
-        tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}", "-F", "#{pane_dead}"),
+        tmux_binary.argv("list-panes", "-s", "-t", f"={session_name}:", "-F", "#{pane_dead}"),
         capture_output=True,
         text=True,
         check=False,
@@ -3901,6 +4508,33 @@ def _report_detached_launch(session_name: str, reporter: LaunchReporter) -> None
         reporter.error("tmux", f"session '{session_name}' has no live pane after launch")
         sys.exit(1)
     reporter.phase("session").outcome(f"{session_name} running detached")
+
+
+def _await_agy_resume_registration(
+    identity: _tmux_ownership.TmuxSessionIdentity, readiness: str, timeout: float
+) -> None:
+    """Wait for the new pane to finish its best-effort registration before reporting readiness."""
+    deadline = time.monotonic() + timeout
+    pane_format = "#{@ai_cli_session_generation}\t#{pane_dead}\t" + f"#{{{_agy_session.RESUME_READY_OPTION}}}"
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            result = subprocess.run(
+                tmux_binary.argv("list-panes", "-s", "-t", identity.session_id, "-F", pane_format),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=min(remaining, 5),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        live_prefix = f"{identity.generation}\t0\t"
+        live_panes = [row for row in result.stdout.splitlines() if row.startswith(live_prefix)]
+        if result.returncode != 0 or not live_panes:
+            break
+        if live_prefix + readiness in live_panes:
+            return
+        time.sleep(min(remaining, 0.1))
+    raise RuntimeError(f"Antigravity resume in '{identity.session_name}' did not report readiness")
 
 
 #: The launch override for a partial migration. Per invocation only: never read from
@@ -4505,6 +5139,7 @@ def _resolve_session_identity(
             host=host,
             policy_source=_names.policy_source(registry) if registry else "config/session-names.toml",
         )
+        reserved_names = session_title.resolve_reserved_names()
     except session_title.TitleError as exc:
         _naming_exit(reporter, str(exc), 2)
     if not settings["enabled"].value and not naming.custom:
@@ -4563,9 +5198,24 @@ def _resolve_session_identity(
             )
         if kind == session_title.CUSTOM:
             return _reserve_custom_title(
-                engine, slot, naming.custom or "", registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter
+                engine,
+                slot,
+                naming.custom or "",
+                registry,
+                is_remote=is_remote,
+                dry_run=dry_run,
+                reporter=reporter,
+                reserved_names=reserved_names,
             )
-        return _reserve_picked_title(engine, slot, registry, is_remote=is_remote, dry_run=dry_run, reporter=reporter)
+        return _reserve_picked_title(
+            engine,
+            slot,
+            registry,
+            is_remote=is_remote,
+            dry_run=dry_run,
+            reporter=reporter,
+            reserved_names=reserved_names,
+        )
     except name_prompt.PromptExit as exc:
         _naming_exit(reporter, exc.message, exc.code)
     except (_names.NoNameListError, _names.PolicyUnknownError, _names.NameStatusError) as exc:
@@ -4591,7 +5241,11 @@ def _title_held_here(snapshot, naming_prefix: str, positional, host: str) -> str
         return None
     row = snapshot.rows.get(positional.name) or {}
     held = row.get("title") or ""
-    if row.get("machine") == host and held.startswith(f"{naming_prefix}-") and held.endswith(f"-{positional.name}"):
+    if (
+        _session_naming.machine_identity(host).holds(row)
+        and _session_naming.row_stem_is_this_repo(row, naming_prefix)
+        and held.endswith(f"-{positional.name}")
+    ):
         return held
     return None
 
@@ -4618,7 +5272,7 @@ def _held_title(naming_prefix: str, clean: str):
     host = _session_naming.host_id()
     title = _session_naming.compose_session_name(naming_prefix, positional.value)
     row = snapshot.rows.get(positional.name) or {}
-    if row.get("title") == title and row.get("machine") == host:
+    if row.get("title") == title and _session_naming.machine_identity(host).holds(row):
         return title, positional
     return _title_held_here(snapshot, naming_prefix, positional, host), positional
 
@@ -4647,6 +5301,58 @@ def _session_evidence(engine: str, repo_root: "Path | None", title: str) -> str 
         return matches[0].name
     if engine == "c" and _find_cc_session_candidates_by_title(Path(repo_root), title):
         return title
+    if engine == "g":
+        sessions_dir = _config.get_xdg_state_home() / "sessions"
+        resolved_root = Path(repo_root).resolve()
+        for prefix in ("g-", "g-r-"):
+            record_path = sessions_dir / f"{prefix}{title}.agy.json"
+            if not record_path.is_file():
+                continue
+            try:
+                doc = json.loads(record_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or not isinstance(doc.get("cwd"), str):
+                continue
+            try:
+                record_cwd = Path(doc["cwd"]).resolve()
+            except (OSError, ValueError):
+                continue
+            if record_cwd == resolved_root or resolved_root in record_cwd.parents:
+                return title
+    return None
+
+
+def _saved_agy_no_worktree_cwd(session_id: str, repo_root: "Path | None") -> "Path | None":
+    """Return the saved non-worktree cwd for a stopped ``ai g`` slot launched with ``-W``."""
+    if repo_root is None:
+        return None
+    record_path = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+    if not record_path.is_file():
+        return None
+    try:
+        doc = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("slot") != session_id:
+        return None
+    raw_cwd = doc.get("cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        return None
+    saved_path = Path(raw_cwd)
+    if not saved_path.is_absolute():
+        return None
+    try:
+        saved_cwd = saved_path.resolve()
+        resolved_root = Path(repo_root).resolve()
+    except (OSError, ValueError):
+        return None
+    if not saved_cwd.is_dir():
+        return None
+    if saved_cwd == resolved_root:
+        return saved_cwd
+    if resolved_root in saved_cwd.parents and _session.WORKTREE_DIR not in saved_cwd.relative_to(resolved_root).parts:
+        return saved_cwd
     return None
 
 
@@ -4666,7 +5372,7 @@ def _resumable_titles(engine: str, prefixes: "tuple[str, ...]", repo_root: "Path
 def _resolve_resume_target(
     engine: str,
     naming_prefix: str,
-    legacy_prefix: str,
+    legacy_prefix: str | None,
     name: str,
     *,
     is_remote: bool,
@@ -4686,17 +5392,71 @@ def _resolve_resume_target(
     from . import name_registry as _names
 
     remote_seg = "-r" if is_remote else ""
-    prefix = f"{engine}{remote_seg}-{naming_prefix}-"
+    engine_prefix = f"{engine}{remote_seg}-"
+    prefix = f"{engine_prefix}{naming_prefix}-"
     clean = _session._slot_name(name, naming_prefix) if name else ""
     # A full tmux name (what the remote allocator hands back) is matched as given; a
     # title typed in full is reduced to its slot so the prefix is not applied twice.
     query = name if name and _session.session_name_for(prefix, name) == name else clean
+    has_legacy = bool(legacy_prefix and legacy_prefix.casefold() != naming_prefix.casefold())
     if not bare:
-        session = _session.resolve_session(prefix, query)
-        if not session and legacy_prefix.casefold() != naming_prefix.casefold():
-            # Migration window: a session named before the host alias joined the name.
-            session = _session.resolve_session(f"{engine}{remote_seg}-{legacy_prefix}-", name)
+        try:
+            if engine == "g" and has_legacy:
+                assert legacy_prefix is not None
+                legacy_tmux_prefix = f"{engine_prefix}{legacy_prefix}-"
+                legacy_clean = _session._slot_name(name, legacy_prefix) if name else ""
+                legacy_query = (
+                    name if name and _session.session_name_for(legacy_tmux_prefix, name) == name else legacy_clean
+                )
+                exact_targets = {name.casefold(), f"{engine_prefix}{name}".casefold()} if name else set()
+                current_err: _session.SessionSlotAmbiguityError | None = None
+                legacy_err: _session.SessionSlotAmbiguityError | None = None
+                try:
+                    session = _session.resolve_session(prefix, query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    session = ""
+                    current_err = exc
+                try:
+                    legacy_session = _session.resolve_session(legacy_tmux_prefix, legacy_query)
+                except _session.SessionSlotAmbiguityError as exc:
+                    legacy_session = ""
+                    legacy_err = exc
+                # An exact full-title or full-session match wins before ambiguity refusal
+                # (e.g. `ai g myproject-1 -r` with both `g-myproject-1` and `g-myproject-box-myproject-1` live).
+                if session and session.casefold() in exact_targets:
+                    pass
+                elif legacy_session and legacy_session.casefold() in exact_targets:
+                    session = legacy_session
+                elif current_err is not None:
+                    raise current_err
+                elif legacy_err is not None:
+                    raise legacy_err
+                elif session and legacy_session and session.casefold() != legacy_session.casefold():
+                    matches = sorted((session, legacy_session))
+                    if name:
+                        raise _session.SessionSlotAmbiguityError(
+                            f"ambiguous Antigravity resume for {name!r}: {len(matches)} live slots match "
+                            f"({', '.join(matches)}); specify an exact session name"
+                        )
+                    raise _session.SessionSlotAmbiguityError(
+                        f"ambiguous Antigravity resume: {len(matches)} live slots match "
+                        f"({', '.join(matches)}); specify a session name explicitly"
+                    )
+                else:
+                    session = session or legacy_session
+            else:
+                session = _session.resolve_session(prefix, query)
+                if not session and has_legacy:
+                    assert legacy_prefix is not None
+                    # Migration window: a session named before the host alias joined the name.
+                    session = _session.resolve_session(f"{engine_prefix}{legacy_prefix}-", name)
+        except _session.SessionSlotAmbiguityError as exc:
+            _naming_exit(reporter, str(exc), 1)
         if session:
+            if engine == "g":
+                refusal = _verify_live_agy_tmux_session(session)
+                if refusal:
+                    _naming_exit(reporter, refusal, 1)
             return _ResumeTarget(session=session)
     wanted = _session_naming.compose_session_name(naming_prefix, clean) if clean else f"{prefix}*"
     positional = None
@@ -4711,7 +5471,8 @@ def _resolve_resume_target(
                 1,
             )
         candidates = [held, wanted]
-        if legacy_prefix.casefold() != naming_prefix.casefold():
+        if has_legacy:
+            assert legacy_prefix is not None
             candidates.append(
                 _session_naming.compose_session_name(legacy_prefix, _session._slot_name(name, legacy_prefix))
             )
@@ -4720,7 +5481,7 @@ def _resolve_resume_target(
             if found:
                 return _ResumeTarget(title=found)
     host = _session_naming.host_id()
-    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix), repo_root)
+    pool = _resumable_titles(engine, (naming_prefix, legacy_prefix) if legacy_prefix else (naming_prefix,), repo_root)
     close = difflib.get_close_matches(wanted, pool, n=5, cutoff=0.6) or pool[:5]
     holds = "tmux session or worktree" if engine != "c" else "tmux session, worktree or transcript"
     if positional is not None and positional.kind == "title":
@@ -4821,7 +5582,8 @@ def _reattach_title(
     except _names.RegistryUnreachableError:
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(positional.name)
-    if row and row.get("title") == title and row.get("machine") == host:
+    here = _session_naming.machine_identity(host)
+    if row and row.get("title") == title and here.holds(row):
         return _session._new_session_display_name(engine, naming_prefix, positional.value, is_remote), title
     held_title = _title_held_here(snapshot, naming_prefix, positional, host)
     if held_title:
@@ -4831,7 +5593,7 @@ def _reattach_title(
     held_here = [
         str(row.get("title") or "")
         for row in snapshot.rows.values()
-        if row.get("machine") == host and str(row.get("title") or "").startswith(f"{naming_prefix}-")
+        if here.holds(row) and _session_naming.row_stem_is_this_repo(row, naming_prefix)
     ]
     pool = sorted(set(_resumable_titles(engine, (naming_prefix,), None)) | set(held_here))
     close = _closest_titles(positional.value, pool, naming_prefix)
@@ -4883,7 +5645,11 @@ def _reserve_label_title(
         snapshot = registry.snapshot(fetch=False)
     row = snapshot.rows.get(token)
     if row is not None:
-        if row.get("kind") == "label" and row.get("title") == title and row.get("machine") == slot.machine:
+        if (
+            row.get("kind") == "label"
+            and row.get("title") == title
+            and _session_naming.machine_identity(slot.machine).holds(row)
+        ):
             existing = (
                 _session._resolve_explicit_tmux_slot(engine, slot.stem, label)
                 if use_tmux
@@ -4910,7 +5676,17 @@ def _prompt_line(prompt: str) -> str | None:
     return None if line == "" else line.rstrip("\r\n")
 
 
-def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote: bool, dry_run: bool, reporter):
+def _reserve_custom_title(
+    engine: str,
+    slot,
+    value: str,
+    registry,
+    *,
+    is_remote: bool,
+    dry_run: bool,
+    reporter,
+    reserved_names: frozenset[str] | None = None,
+):
     """The ``--name`` flow: the checks, the prompts and the reservation of AC-SM-1."""
     from . import name_prompt
     from . import name_registry as _names
@@ -4946,13 +5722,23 @@ def _reserve_custom_title(engine: str, slot, value: str, registry, *, is_remote:
         io=io,
         words=words,
         added_by=f"{os.environ.get('AI_TMUX_SESSION') or 'cli'}@{slot.machine}",
+        reserved_names=reserved_names,
     )
     added = " and added it to the name database" if reservation.added_to_database else ""
     reporter.detail("session", f"reserved {reservation.name}{added}")
     return _session_id(engine, reservation.title, is_remote), reservation.title
 
 
-def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_run: bool, reporter):
+def _reserve_picked_title(
+    engine: str,
+    slot,
+    registry,
+    *,
+    is_remote: bool,
+    dry_run: bool,
+    reporter,
+    reserved_names: frozenset[str] | None = None,
+):
     """Pick a name, reserve it (or take a spare when the registry is unreachable), and report the pick."""
     from . import name_registry as _names
 
@@ -4969,7 +5755,9 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
             words = _names.common_words(snapshot.policy)
     if dry_run:
         snapshot = snapshot or registry.snapshot(fetch=False)
-        request, warnings = _names.pick_request(registry, snapshot, slot, spool=spool, words=words)
+        request, warnings = _names.pick_request(
+            registry, snapshot, slot, spool=spool, words=words, reserved_names=reserved_names
+        )
         for warning in warnings:
             reporter.warning("session", warning)
         pick = _session_naming.pick_name(request)
@@ -4986,10 +5774,10 @@ def _reserve_picked_title(engine: str, slot, registry, *, is_remote: bool, dry_r
             reporter,
             "reserving a name in the name registry",
             "name reserved",
-            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words),
+            lambda: _names.reserve_picked(registry, slot, spool=spool, words=words, reserved_names=reserved_names),
         )
     except (_names.RegistryUnreachableError, _names.RegistryContendedError) as failure:
-        reservation = _names.take_spare(registry, slot, cause=str(failure))
+        reservation = _names.take_spare(registry, slot, cause=str(failure), reserved_names=reserved_names)
         reporter.warning("session", f"offline: using reserved spare {reservation.name} ({failure})")
         return _session_id(engine, reservation.title, is_remote), reservation.title
     for warning in reservation.warnings:
@@ -5030,6 +5818,7 @@ def _do_session_launch(
     naming: "_NamingRequest | None" = None,
     allow_partial_migration: bool = False,
     probe: bool = False,
+    launch_reason: str = "",
 ) -> None:
     agent_diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
     # One reporter for every line this launch prints. Defaulting to the active one
@@ -5068,6 +5857,16 @@ def _do_session_launch(
         bare = True
         tmux_reason = "[session] use_tmux = false in config.toml"
 
+    agy_cmd = config.get("agy", {}).get("command") or "agy"
+    agy_argv = shlex.split(agy_cmd) if engine == "g" else []
+    agy_print_mode = engine == "g" and not remote and _agy_session.is_print_mode([*agy_argv[1:], *extra_args])
+    if agy_print_mode and not detached:
+        # Headless print runs are synchronous and non-interactive; resolve bare before
+        # the tmux preflight and version gate so tmux is never probed or required.
+        if not bare:
+            tmux_reason = "Antigravity headless print mode runs synchronously without tmux"
+        bare = True
+
     # The runnability preflight and the report are both emitted further down,
     # AFTER input validation: a launch rejected for a bad --project-prefix must
     # reach no probe at all, which is the no-side-effect-before-rejection contract
@@ -5095,7 +5894,7 @@ def _do_session_launch(
         _direnv_root = Path.cwd()
         if project and not remote:
             try:
-                _named_dir = _config._find_project_dir(_config.get_project_aliases().get(project.lower(), project))
+                _named_dir = _config._find_project_dir(_config.resolve_project_alias(project))
             except _config.ProjectPrefixError as exc:
                 reporter.error("request", str(exc))
                 sys.exit(1)
@@ -5153,8 +5952,7 @@ def _do_session_launch(
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
         try:
-            _lp_aliases = _config.get_project_aliases()
-            _lp_name = _lp_aliases.get(project.lower(), project)
+            _lp_name = _config.resolve_project_alias(project)
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
             reporter.error("request", str(exc))
@@ -5213,12 +6011,13 @@ def _do_session_launch(
     if not bare and not remote and not _tmux_setup.tmux_runs():
         if detached:
             raise RuntimeError("detached replay requires a working tmux executable")
-        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
-        # so fall straight through to bare without a notice; every other platform
-        # gets a repair-then-install attempt and then the same fallback, loudly.
+        # No package manager installs a tmux on Windows unattended (psmux, the native
+        # one, and a WSL/MSYS2/Cygwin tmux are installed by hand), so fall straight
+        # through to bare without a notice; every other platform gets a
+        # repair-then-install attempt and then the same fallback, loudly.
         if sys.platform == "win32":
             bare = True
-            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+            tmux_reason = _WINDOWS_NO_TMUX
         else:
             _tmux_present_before = _tmux_setup.tmux_present()
             _tmux_install = _tmux_setup.ensure_tmux(auto_install=not dry_run)
@@ -5342,14 +6141,19 @@ def _do_session_launch(
             )
             sys.exit(1)
 
-    # An attached tmux launch from inside a tmux pane ends in a tmux client that tmux
-    # refuses to nest ("sessions should be nested with care"). That refusal used to come
-    # at the very end, after a name was reserved and the worktree synchronized, leaving
-    # the name held by a session that never ran. Refuse here, above every write.
-    if not remote and not bare and attach and not detached and os.environ.get("TMUX"):
+    # tmux refuses to nest a client, so an attached launch from inside a tmux pane switches
+    # the client already showing this pane to the new session (_attach_terminal), and the
+    # session sends it back here when it ends. Where that switch cannot work, refuse here,
+    # above every write: refused at the handoff, a name would be held by a session that
+    # never ran, after the worktree was synchronized.
+    _tmux_here = (
+        _tmux_client_here() if not remote and not bare and attach and not detached and os.environ.get("TMUX") else None
+    )
+    if isinstance(_tmux_here, str):
         reporter.error(
             "tmux",
-            "this terminal is already inside a tmux session, and tmux refuses to attach a session inside another.\n"
+            "this terminal is already inside a tmux session, and its tmux client cannot be switched to the new "
+            f"session: {_tmux_here}.\n"
             "  Nothing was reserved or created. Either:\n"
             "    - run the command from a terminal outside tmux (or detach this one first), or\n"
             "    - launch with -b/--bare to run the agent in this pane without tmux.",
@@ -5380,8 +6184,16 @@ def _do_session_launch(
     # A remote dispatch is excluded, like the tmux probes above it: the terminal that
     # will own the session is on the REMOTE host, so a local probe would be a verdict
     # about the wrong machine.
+    use_sandbox = sandbox
+    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
+    pi_provider = config.get("pi", {}).get("provider", "openai-codex")
+    if agy_print_mode:
+        # Headless print runs are synchronous and non-interactive; even a detached
+        # invocation that passed the tmux gates above must run bare rather than in tmux.
+        bare = True
+
     compact_transport = None
-    if not remote:
+    if not remote and not agy_print_mode:
         compact_transport = _compact_transport.resolve(
             tmux_usable=not bare,
             tmux_detail=tmux_reason,
@@ -5398,17 +6210,32 @@ def _do_session_launch(
         else:
             reporter.detail("compact", compact_transport.detail)
 
-    use_sandbox = sandbox
-    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
-    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
-    pi_provider = config.get("pi", {}).get("provider", "openai-codex")
-
     if engine == "p" and not shutil.which("pi"):
         reporter.error("request", "pi executable not found on PATH. Install pi, then retry.")
         sys.exit(1)
     if engine == "cx" and not shutil.which("codex"):
         reporter.error("request", "codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
+    if engine == "g":
+        try:
+            _agy_session.validate_launch_args([*agy_argv[1:], *extra_args])
+        except _agy_session.IdentityError as exc:
+            reporter.error("request", str(exc))
+            sys.exit(1)
+    agy_sign_in_token: str | None = None
+    if engine == "g" and not remote and not dry_run:
+        if not agy_argv or not shutil.which(agy_argv[0]):
+            reporter.error(
+                "request",
+                f"Antigravity executable {agy_cmd!r} not found on PATH. "
+                "Install agy or set [agy] command in config.toml, then retry.",
+            )
+            sys.exit(1)
+        refusal = _agy_session.subscription_refusal(executable=agy_argv[0])
+        if refusal:
+            reporter.error("request", refusal)
+            sys.exit(1)
+        agy_sign_in_token = _agy_session.sign_in_cache_token(agy_argv[0])
 
     if not name and extra_args:
         name = extra_args[0]
@@ -5442,7 +6269,7 @@ def _do_session_launch(
         if project and ("/" in project or "\\" in project):
             reporter.error("request", "--project name must not contain path separators")
             sys.exit(1)
-        remote_project = aliases.get(raw_project.lower(), raw_project)
+        remote_project = _config.resolve_project_alias(raw_project, aliases)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
             try:
@@ -5596,6 +6423,8 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
+        if engine == "g" and extra_args:
+            remote_cmd += " -- " + " ".join(shlex.quote(arg) for arg in extra_args)
         remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
         mosh_remote_cmd = _mosh_remote_command(remote_cmd, remote_diagnostic_file)
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
@@ -5643,6 +6472,12 @@ def _do_session_launch(
         mosh_args.append(f"{user}@{host}")
         mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
+        _remote_terminal_exits = (
+            frozenset({_agy_session.EXIT_PRINT_EMPTY, _transport.REMOTE_LAUNCH_REFUSED_EXIT})
+            if engine == "g"
+            else _transport.DEFAULT_REMOTE_TERMINAL_EXIT_CODES
+        )
+
         if transport == "mosh":
             reporter.phase("transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
@@ -5665,6 +6500,7 @@ def _do_session_launch(
                         remote_diagnostic_file=remote_diagnostic_file,
                         on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                         ssh_diagnostic_args=ssh_diagnostic_args,
+                        terminal_exit_codes=_remote_terminal_exits,
                     )
                 )
             finally:
@@ -5707,6 +6543,7 @@ def _do_session_launch(
                     on_exit_receipt=(lambda: _receive_remote_exit(_record_id)) if _record_id else None,
                     diagnostic_ssh_args=ssh_diagnostic_args,
                     remote_diagnostic_file=remote_diagnostic_file,
+                    terminal_exit_codes=_remote_terminal_exits,
                 )
             )
 
@@ -5794,19 +6631,18 @@ def _do_session_launch(
             aliases = _config.get_project_aliases()
             raw_project, project_source = _resolve_remote_project(project, config)
             if raw_project:
-                project_name = aliases.get(raw_project, raw_project)
+                project_name = _config.resolve_project_alias(raw_project, aliases)
                 project_dir = _config._find_project_dir(project_name)
                 if not project_dir.is_dir():
                     _exit_missing_project_dir(project_name, project_dir, project_source, f"ai {engine} -R -p PROJECT")
                 os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
-        # git worktrees and Gemini chats directories resolve relative to the correct root.
+        # worktrees and session data resolve relative to the correct root.
         # Mirrors the is_remote path above, refusal included -- an absent directory
         # strands the session in the wrong root identically either way, and only the
         # remote half of that is reachable without passing -p.
-        aliases = _config.get_project_aliases()
-        _local_project = aliases.get(project, project)
+        _local_project = _config.resolve_project_alias(project)
         _local_project_dir = _config._find_project_dir(_local_project)
         if not _local_project_dir.is_dir():
             _exit_missing_project_dir(_local_project, _local_project_dir, "-p/--project", f"ai {engine} -p PROJECT")
@@ -5898,20 +6734,22 @@ def _do_session_launch(
     # above the dry-run exit and every write: a resume that fell through to naming
     # reserved a fresh first name for a NAME no session held.
     resume_target: _ResumeTarget | None = None
+    _resume_root_path: Path | None = None
     if resume and replay_recipe is None:
         try:
             _resume_root = _session.detect_repo_root()
         except RuntimeError:
             _resume_root = None
+        _resume_root_path = Path(_resume_root) if _resume_root else None
         try:
             resume_target = _resolve_resume_target(
                 engine,
                 naming_prefix,
-                project_prefix,
+                launch_naming.legacy_prefix,
                 name,
                 is_remote=is_remote,
                 bare=bare,
-                repo_root=Path(_resume_root) if _resume_root else None,
+                repo_root=_resume_root_path,
                 reporter=reporter,
             )
         except _session.SessionSlotAmbiguityError as exc:
@@ -5942,15 +6780,26 @@ def _do_session_launch(
         except _session.SessionSlotAmbiguityError as exc:
             reporter.error("session", str(exc))
             sys.exit(1)
+        _dry_run_saved_no_worktree = (
+            engine == "g"
+            and not no_worktree
+            and resume_target is not None
+            and bool(resume_target.title)
+            and _saved_agy_no_worktree_cwd(session_id, _resume_root_path) is not None
+        )
         _print_launch_plan(
             engine=engine,
             session_id=session_id,
             ai_name=ai_name,
             bare=bare,
             remote=remote,
-            worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
+            worktree_enabled=(
+                config.get("worktree", {}).get("enabled", True) and not no_worktree and not _dry_run_saved_no_worktree
+            ),
             sandbox=use_sandbox,
             extra_args=extra_args,
+            probe=probe,
+            agy_command=agy_cmd,
         )
         return
 
@@ -5992,7 +6841,7 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", session))
+        _attach_terminal(session)
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
     # there is no tmux server to query (it may not even be installed), so skip
@@ -6060,6 +6909,28 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = Path(replay_recipe["cwd"]) if replay_recipe is not None else None
     probe_repo = None
+    _attaching_live = False
+    saved_agy_no_worktree_cwd = (
+        _saved_agy_no_worktree_cwd(session_id, _resume_root_path)
+        if engine == "g"
+        and not no_worktree
+        and replay_recipe is None
+        and resume_target is not None
+        and resume_target.title
+        else None
+    )
+    if saved_agy_no_worktree_cwd is not None and _resume_root_path is not None:
+        no_worktree = True
+        if saved_agy_no_worktree_cwd == _resume_root_path.resolve() or bare or once:
+            worktree_path = saved_agy_no_worktree_cwd
+        elif Path.cwd().resolve() != saved_agy_no_worktree_cwd:
+            reporter.error(
+                "worktree",
+                f"stopped Antigravity slot '{session_id}' was launched with --no-worktree in "
+                f"{saved_agy_no_worktree_cwd}; run from that directory to resume it",
+            )
+            sys.exit(1)
+        reporter.phase("worktree").outcome(f"reusing saved --no-worktree directory {saved_agy_no_worktree_cwd}")
     if replay_recipe is None and config.get("worktree", {}).get("enabled", True) and not no_worktree:
         # Repair backstop (AI-CLI-99), early — before any git work this launch does.
         # repo_root is the shared main working tree and must never be
@@ -6171,16 +7042,41 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
+            try:
+                _in_progress_before: str | None = operation_in_progress(worktree_path)
+            except GitProbeError:
+                _in_progress_before = "unknown"
             with reporter.phase("worktree", "synchronizing") as _sync_phase:
-                pull, stranded = pull_rebase_autostash(worktree_path)
+                _sync = sync_worktree_branch(
+                    worktree_path,
+                    published_mode=_config.get_worktree_published_branch_sync(),
+                    pull_fn=pull_rebase_autostash,
+                )
+                pull, stranded = _sync.process, _sync.stranded
                 _detail = ""
                 if pull.returncode and not stranded:
-                    _lines = (pull.stderr or pull.stdout or "").strip().splitlines()
-                    # Git can print autostash progress after a fetch or rebase error.
-                    _errors = [line for line in _lines if line.lstrip().startswith(("error:", "fatal:"))]
-                    if _lines:
-                        _detail = " Last git error: " + " | ".join(_errors[-3:] or _lines[-1:])
-                if pull.returncode != 0 and not stranded and not _conflicted_before:
+                    _detail = _format_git_failure_detail(pull.stderr, pull.stdout)
+                if pull.returncode == 0 and not stranded and _sync.summary:
+                    _sync_phase.outcome(_sync.summary)
+                if pull.returncode != 0 and not stranded and _sync.arm == "published-fetch-failed":
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and _sync.arm == "published-merge-failed":
+                    if not _conflicted_before and not _in_progress_before:
+                        subprocess.run(
+                            ["git", "merge", "--abort"],
+                            capture_output=True,
+                            cwd=worktree_path,
+                            env=_git_env(),
+                            check=False,
+                        )
+                    reporter.warning(
+                        "worktree",
+                        f"{_sync.summary} in worktree {worktree_path.name} — starting on the branch as-is.{_detail}",
+                    )
+                elif pull.returncode != 0 and not stranded and not _conflicted_before and not _in_progress_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can
                     # only ever undo work THIS launch started. Doing it unconditionally
                     # would abort a rebase the user is part-way through and wipe their
@@ -6262,17 +7158,12 @@ def _do_session_launch(
                     )
                 _sync_phase.outcome("ready")
 
-    # For Gemini, always check the chats directory for the latest session — the
-    # session map may be stale if the user exited and restarted directly via gemini CLI.
+    if not _attaching_live:
+        # After the sync, which can change the .envrc a direnv approval is keyed on.
+        _prepare_project_environment(worktree_path or Path.cwd(), config, no_direnv=no_direnv, reporter=reporter)
+
+    # Antigravity (engine "g") resolves its confirmed conversation ID inside agy_session.
     uuid = None
-    if engine == "g":
-        d = _config.get_session_map(engine)
-        uuid = d.get(ai_name)
-        latest = _session._find_latest_gemini_uuid(ai_name)
-        if latest and latest != uuid:
-            uuid = latest
-            d[ai_name] = uuid
-            _config.save_session_map(d, engine)
 
     def _register_run_state(*, new_start):
         try:
@@ -6325,11 +7216,13 @@ def _do_session_launch(
                 ai_name,
                 target_root,
                 uuid,
-                gemini_cmd,
                 sandbox_flag,
                 extra_args,
                 resume=resume,
                 pi_provider=pi_provider,
+                session_id=session_id,
+                agy_cmd=agy_cmd,
+                sandbox=use_sandbox,
             )
         except _transcript_restore.TranscriptRestoreError as exc:
             reporter.error("resume", str(exc))
@@ -6359,10 +7252,13 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             _register_run_state(new_start=True)
+            if agy_sign_in_token:
+                os.environ[_agy_session.SIGN_IN_VERIFIED_ENV] = agy_sign_in_token
             if engine == "c":
                 _refresh_claude_plugins()
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-            on_pty = compact_transport is not None and compact_transport.kind == "pty"
+            agy_print_bare = engine == "g" and _agy_session.is_print_mode([*shlex.split(agy_cmd)[1:], *extra_args])
+            on_pty = compact_transport is not None and compact_transport.kind == "pty" and not agy_print_bare
             handoff = (
                 _pty_handoff(session_id, launch_log=launch_log_path or "", diagnostic_path=agent_diagnostic_path)
                 if on_pty
@@ -6379,12 +7275,38 @@ def _do_session_launch(
     # a server created before this launch cannot select a stale script or agent.
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
-    _tmux_env_flags = build_tmux_env_flags(os.environ)
+    _tmux_env_flags = build_tmux_env_flags(os.environ, launch_reason=launch_reason)
     if agent_diagnostic_path:
         _tmux_env_flags += ["-e", f"{AGENT_DIAGNOSTIC_ENV}={agent_diagnostic_path}"]
+    if agy_sign_in_token:
+        _tmux_env_flags += ["-e", f"{_agy_session.SIGN_IN_VERIFIED_ENV}={agy_sign_in_token}"]
+
+    agy_resume_ready = ""
+    agy_resume_timeout = 0.0
+    if engine == "g" and os.name == "posix" and not agy_print_mode:
+        record = _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json"
+        try:
+            registration = _config.read_session_register_config(config)
+            if registration and _agy_session.bound_slot_conversation(record, worktree_path or Path.cwd(), session_id):
+                agy_resume_ready = secrets.token_urlsafe(16)
+                agy_resume_timeout = registration["timeout_seconds"] + 30
+        except (OSError, ValueError):
+            pass  # The pane diagnoses invalid registration settings or slot state.
+        _tmux_env_flags += ["-e", f"{_agy_session.RESUME_READY_ENV}={agy_resume_ready}"]
 
     replay_bare = replay_recipe is not None and replay_recipe["options"].get("bare")
     if once or replay_bare:
+        if (
+            replay_bare
+            and replay_recipe is not None
+            and engine == "g"
+            and not _is_agy_replay_command(replay_recipe["command"])
+        ):
+            msg = f"cannot replay legacy Gemini CLI recipe for {session_id} with ai g; relaunch with `ai g`."
+            reporter.error("session", msg)
+            if detached:
+                raise RuntimeError(msg)
+            sys.exit(1)
         _register_run_state(new_start=True)
         if engine == "c":
             _refresh_claude_plugins()
@@ -6407,10 +7329,12 @@ def _do_session_launch(
                 ai_name,
                 target_root,
                 uuid,
-                gemini_cmd,
                 sandbox_flag,
                 extra_args,
                 pi_provider=pi_provider,
+                session_id=session_id,
+                agy_cmd=agy_cmd,
+                sandbox=use_sandbox,
             )
         elif engine == "c":
             command = ["claude"]
@@ -6418,15 +7342,64 @@ def _do_session_launch(
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
         elif engine == "g":
-            command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
-            if uuid:
-                command += ["-r", uuid]
-            else:
-                command += ["-i", f"/resume load {ai_name}"]
+            command = _agy_session.launch_command(
+                agy_cmd,
+                _config.get_xdg_state_home() / "sessions" / f"{session_id}.agy.json",
+                target_root,
+                session_id,
+                ai_name,
+                fresh=not resume,
+                route="paired-host-tmux" if is_remote else "local-tmux",
+                sandbox=use_sandbox,
+                extra_args=extra_args,
+            )
         elif engine == "p":
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
+        once_pane_cmd = cd_prefix + _session_launch_state.single_run_shell(
+            session_id, command if replay_bare else [*_direnv, *command], launch_log_path
+        )
+        if engine == "g":
+            if detached and _session_registry._local_session_alive(session_id) is not False:
+                raise RuntimeError("session already exists or tmux could not be checked")
+            loop = _session_wake_watch_loop(config, ai_name) if not is_remote and not detached else None
+            pre_respawn = (
+                (lambda ident: _start_session_wake_watcher(config, ident.session_id, ai_name, loop=loop))
+                if loop is not None
+                else None
+            )
+            try:
+                once_identity = _create_marked_agy_once_session(
+                    session_id,
+                    _tmux_env_flags,
+                    _session_shell,
+                    once_pane_cmd,
+                    pre_respawn=pre_respawn,
+                )
+                if agy_resume_ready:
+                    _await_agy_resume_registration(once_identity, agy_resume_ready, agy_resume_timeout)
+            except RuntimeError as exc:
+                if detached:
+                    raise
+                reporter.error("tmux", str(exc))
+                sys.exit(1)
+            if detached:
+                return
+            if not attach:
+                _report_detached_launch(session_id, reporter)
+                return
+            if (
+                _tmux_ownership.capture_tmux_session_identity(
+                    once_identity.session_id, expected_generation=once_identity.generation
+                )
+                is None
+            ):
+                _handle_once_session_exited_before_attach(session_id, launch_log_path, reporter)
+                return
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            _exec_tmux(tmux_binary.argv("attach-session", "-t", once_identity.session_id))
+            return
         once_argv = tmux_binary.argv(
             "new-session",
             "-s",
@@ -6435,10 +7408,7 @@ def _do_session_launch(
             "--",
             _session_shell,
             "-c",
-            cd_prefix
-            + _session_launch_state.single_run_shell(
-                session_id, command if replay_bare else [*_direnv, *command], launch_log_path
-            ),
+            once_pane_cmd,
         )
         if detached:
             if _session_registry._local_session_alive(session_id) is not False:
@@ -6453,7 +7423,7 @@ def _do_session_launch(
             return
         # Preserve the attached one-shot path when no extra window is needed.
         loop = _session_wake_watch_loop(config, ai_name) if not is_remote else None
-        if loop is None and attach:
+        if loop is None and attach and not os.environ.get("TMUX"):
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_tmux(once_argv)
         result = subprocess.run(
@@ -6469,7 +7439,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-t", f"={session_id}"))
+        _attach_terminal(f"={session_id}")
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -6509,7 +7479,9 @@ def _do_session_launch(
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
-        gemini_cmd=gemini_cmd,
+        agy_cmd=agy_cmd if engine == "g" else None,
+        agy_args=list(extra_args) if engine == "g" and extra_args else None,
+        resume=resume,
         pi_provider=pi_provider,
         launch_log_path=launch_log_path,
     )
@@ -6567,6 +7539,11 @@ def _do_session_launch(
             existing = subprocess.run(
                 tmux_binary.argv("has-session", "-t", f"={session_id}"), capture_output=True, check=False
             )
+    if engine == "g" and existing.returncode == 0:
+        live_refusal = _verify_live_agy_tmux_session(session_id)
+        if live_refusal:
+            reporter.error("session", live_refusal)
+            sys.exit(1)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
@@ -6597,12 +7574,15 @@ def _do_session_launch(
         if not attach:
             _report_detached_launch(session_id, reporter)
             return
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", session_id))
+        _attach_terminal(session_id, detach_others=True)
     else:
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
         _session_shell = _session_shell_or_exit()
+        # For engine g, create the session with a placeholder command first so the
+        # supervisor/agent never starts until @ai_cli_client=agy is durably written.
+        _initial_pane_cmd = (_session_shell, "-c", "sleep 60") if engine == "g" else (_session_shell, _script_path)
         result = subprocess.run(
             tmux_binary.argv(
                 "new-session",
@@ -6614,8 +7594,7 @@ def _do_session_launch(
                 session_id,
                 *_tmux_env_flags,
                 "--",
-                _session_shell,
-                _script_path,
+                *_initial_pane_cmd,
             ),
             capture_output=True,
             text=True,
@@ -6635,8 +7614,7 @@ def _do_session_launch(
                     "-s",
                     session_id,
                     *_tmux_env_flags,
-                    _session_shell,
-                    _script_path,
+                    *_initial_pane_cmd,
                 ),
                 capture_output=True,
                 text=True,
@@ -6699,18 +7677,49 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             reporter.error("tmux", f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
+        if engine == "g" and not _tmux_ownership.set_owned_tmux_option(identity, _TMUX_CLIENT_OPTION, "agy"):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to mark tmux session '{session_id}' as Antigravity (agy)")
+            sys.exit(1)
         tmux_mouse_mode = "off" if engine == "p" else "on"
+        # How the session ends when its supervisor cannot end it (tmux_ownership.configure_session_end).
+        # remain-on-exit is required, as it always was; the rest backs up the supervisor's own
+        # teardown, so a tmux that refuses it (one older than 2.2) is reported and the launch goes on.
+        # Captured before anything else can split it: the session's only pane is its supervisor's.
+        _supervisor_pane = _tmux_ownership.pane_id_of(f"{identity.session_id}:")
+        _end_refused = _tmux_ownership.configure_session_end(identity.session_id, _supervisor_pane)
         tmux_options = (
-            tmux_binary.argv("set-window-option", "-t", identity.session_id, "remain-on-exit", "on"),
             tmux_binary.argv("set-option", "-t", identity.session_id, "mouse", tmux_mouse_mode),
             tmux_binary.argv("set-option", "-s", "set-clipboard", "on"),
         )
-        for tmux_option in tmux_options:
-            configured = subprocess.run(tmux_option, capture_output=True, check=False)
-            if configured.returncode != 0:
-                _tmux_ownership.kill_owned_tmux_session(identity)
-                Path(_script_path).unlink(missing_ok=True)
-                reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
+        configured_ok = "remain-on-exit" not in _end_refused and all(
+            subprocess.run(tmux_option, capture_output=True, check=False).returncode == 0
+            for tmux_option in tmux_options
+        )
+        if not configured_ok:
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to configure tmux session '{session_id}'")
+            sys.exit(1)
+        if _end_refused:
+            reporter.warning(
+                "tmux",
+                f"tmux refused {', '.join(_end_refused)} for session '{session_id}': if its supervisor dies "
+                "without ending it, an attached terminal stays on the dead pane until it detaches",
+            )
+        if engine == "g" and not _tmux_ownership.respawn_owned_tmux_pane(identity, (_session_shell, _script_path)):
+            _tmux_ownership.kill_owned_tmux_session(identity)
+            Path(_script_path).unlink(missing_ok=True)
+            reporter.error("tmux", f"failed to start Antigravity session in tmux session '{session_id}'")
+            sys.exit(1)
+        if agy_resume_ready:
+            try:
+                _await_agy_resume_registration(identity, agy_resume_ready, agy_resume_timeout)
+            except RuntimeError as exc:
+                if detached:
+                    raise
+                reporter.error("session", str(exc))
                 sys.exit(1)
         if detached:
             reporter.phase("session").outcome(f"{session_id} running detached")
@@ -6725,7 +7734,7 @@ def _do_session_launch(
             _report_detached_launch(session_id, reporter)
             return
         reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        _exec_tmux(tmux_binary.argv("attach-session", "-d", "-t", identity.session_id))
+        _attach_terminal(identity.session_id, detach_others=True)
 
 
 # --- Click command tree ---
@@ -6778,6 +7787,7 @@ def _session_command(engine: str):
         # process's stderr and log never outlives the launch that created it.
         previous_reporter = reporter.activate()
         previous_file_sink = _out.attach_file_sink(launch_log.write_line)
+        launch_reason = _take_launch_reason(os.environ)
         try:
             mode = _launch_mode_label(remote=remote or is_remote, bare=bare)
             reporter.start(
@@ -6798,9 +7808,10 @@ def _session_command(engine: str):
                 trigger_background_update()
                 with reporter.phase("install", "checking installed version") as install_phase:
                     origin = _launch_install_origin()
-                    client = _sync_launch_client(config, origin) if remote else None
-                    reexec = _auto_update_if_stale(config) is True
-                    decision = _install_decision(client, reexec)
+                    skip_auto_update = _auto_update_skipped()
+                    client = None if skip_auto_update else (_sync_launch_client(config, origin) if remote else None)
+                    reexec = False if skip_auto_update else (_auto_update_if_stale(config) is True)
+                    decision = _install_decision(client, reexec, skipped=skip_auto_update)
                     reexec = reexec or (client is not None and client.check.state is ClientState.SYNCED)
                     install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
                 if client is not None and client.check.state is ClientState.BEHIND:
@@ -6814,6 +7825,9 @@ def _session_command(engine: str):
                 if reexec:
                     ai_bin = shutil.which("ai") or "ai"
                     os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    if launch_reason:
+                        # The continuation is this same launch, so it takes this reason again.
+                        os.environ[_LAUNCH_REASON_VAR] = launch_reason
                     if launch_log.mirror_path:
                         # The re-run launch is the one that may refuse, so it keeps the copy.
                         os.environ[REMOTE_DIAGNOSTIC_ENV] = launch_log.mirror_path
@@ -6848,6 +7862,7 @@ def _session_command(engine: str):
                 naming=naming,
                 allow_partial_migration=allow_partial_migration,
                 probe=probe,
+                launch_reason=launch_reason,
             )
         finally:
             _launch_reporter.activate(previous_reporter)
@@ -6910,7 +7925,13 @@ def _restart_cli(restart_session, restart_check, restart_json, options=None, *, 
     if restart_json:
         _out.raw(Untagged.JSON, json.dumps(report, sort_keys=True))
     else:
-        _out.emit(Tag.SESSION, "session", "restart; " + "; ".join(f"{key}={value}" for key, value in report.items()))
+        _out.emit(
+            Tag.SESSION,
+            "session",
+            "restart; " + "; ".join(f"{key}={value}" for key, value in report.items() if key != "remedy"),
+        )
+        if report.get("remedy"):
+            _out.emit(Tag.SESSION, "session", report["remedy"])
     raise SystemExit(
         0
         if report["reason"] in ("restarted", "ready", "detached")
@@ -6966,7 +7987,7 @@ def _restart_launch_target(target, check, options, *, json_output=False, event_c
         _config.validate_task_prefix(override)
         if override
         else (
-            _config.resolve_project_prefix_by_name(_config.get_project_aliases().get(project, project))
+            _config.resolve_project_prefix_by_name(_config.resolve_project_alias(project))
             if project
             else _session.get_project_prefix()
         )
@@ -7044,7 +8065,7 @@ class _ChiefAliasGroup(RootHelpGroup):
 @_restart_options
 @click.pass_context
 def _cli_group(ctx, version, restart_session, restart_check, restart_json, event_completion):
-    """Unified AI CLI for Claude, Gemini, Pi, and Codex.
+    """Unified AI CLI for Claude Code, Antigravity (agy), Pi, and Codex.
 
     Every command and subcommand is listed below with its one-line use; `ai COMMAND -h`
     prints a command's full help."""
@@ -7184,7 +8205,9 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
-    func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option(
+        "-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight, auto-install and .envrc approval"
+    )(func)
     func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
     func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
     # MUST be a declared option, not merely handled. SESSION_CONTEXT sets
@@ -7256,7 +8279,7 @@ def _session_options(func):
 
 def _names_chief_project(project: str, chief_project: str) -> bool:
     """True when ``-p PROJECT`` names the chief's project: its directory, an alias, or its task prefix."""
-    if _config.get_project_aliases().get(project, project) == chief_project:
+    if _config.resolve_project_alias(project) == chief_project:
         return True
     try:
         return _config.resolve_project_prefix_by_name(project) == _config.resolve_project_prefix_by_name(chief_project)
@@ -7734,7 +8757,7 @@ def _dispatch_session(engine: str, ctx, options: dict) -> None:
         "Without -r, a NAME that is not an existing title labels a NEW session, and the "
         "launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.\n\n"
         "For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a "
-        "session home, and it can be removed like any scratch worktree once it exits."
+        "session home, and `ai retire-session TITLE` removes it once it exits."
     ),
 )
 @_session_options
@@ -7753,7 +8776,20 @@ def cmd_c(ctx, **options):
     _dispatch_session("c", ctx, options)
 
 
-@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
+@_cli_group.command(
+    "g",
+    context_settings=SESSION_CONTEXT,
+    help=(
+        "Launch an Antigravity (agy) session.\n\n"
+        "Requires Google account sign-in (`~/.gemini/antigravity-cli/antigravity-oauth-token`) and refuses "
+        "API-billed `modelProvider` settings so launches never fall back to API billing. "
+        "Confirmed sessions bind to their native conversation ID and resume with `--conversation`. "
+        "For a stopped legacy or manual slot with no identity record, owner-approved recovery is available "
+        "through `python -m ai_cli.agy_session prepare RECORD CWD SESSION AI_NAME false local-tmux "
+        "--start-fresh SESSION` (short form: -F SESSION) or `--adopt-conversation UUID SESSION` (short form: "
+        "-A UUID SESSION)."
+    ),
+)
 @_session_options
 def cmd_g(ctx, **options):
     # Pure delegation: every option is forwarded by name. Spelling the
@@ -7936,8 +8972,8 @@ def cmd_doctor(dry_run):
     tmux_hosts = tmux_ok and not _tmux_setup.config_opts_out(config)
     if tmux_hosts:
         tmux_detail = "tmux runs here"
-    elif sys.platform == "win32":
-        tmux_detail = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+    elif sys.platform == "win32" and not tmux_ok:
+        tmux_detail = _WINDOWS_NO_TMUX
     else:
         tmux_detail = "tmux does not host sessions here"
     compact = _compact_transport.resolve(tmux_usable=tmux_hosts, tmux_detail=tmux_detail, config=config)
@@ -7965,8 +9001,8 @@ def cmd_doctor(dry_run):
     if _direnv_setup.find_envrc(root) is not None and not _direnv_setup.is_bypassed(config):
         agent_env, agent_env_failure = loaded_environment(root, agent_env)
     where = "the project environment's PATH" if not agent_env_failure else f"PATH ({agent_env_failure})"
-    gemini = (shlex.split(config.get("gemini", {}).get("command", "gemini")) or ["gemini"])[0]
-    for agent in ("claude", "codex", gemini, "pi"):
+    agy = (shlex.split(config.get("agy", {}).get("command", "agy")) or ["agy"])[0]
+    for agent in ("claude", "codex", agy, "pi"):
         found = shutil.which(agent, path=agent_env.get("PATH"))
         note = found or f"not found on {where}; a launch of this engine cannot start it"
         _out.emit(Tag.DOCTOR, "check", f"  {'OK  ' if found else 'MISS'}  {agent:<8} {note}")
@@ -8044,10 +9080,11 @@ def cmd_session_reaper_run():
 
 
 @cmd_quota_group.command("status", help="Print current quota snapshot")
-def cmd_quota_status():
+@click.option("-j", "--json", "as_json", is_flag=True, help="Print Claude and Antigravity quota status as JSON")
+def cmd_quota_status(as_json):
     from .quota import quota_status
 
-    sys.exit(quota_status())
+    sys.exit(quota_status(as_json=as_json))
 
 
 @cmd_quota_group.command("history", help="Print quota history")
@@ -8064,11 +9101,29 @@ def cmd_quota_publish():
     sys.exit(quota_publish())
 
 
-@cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")
-def cmd_quota_statusline_part():
+@cmd_quota_group.command("statusline-part", help="Emit the quota section of a client statusline")
+@click.option(
+    "-p",
+    "--provider",
+    type=click.Choice(["claude", "agy"]),
+    default="claude",
+    show_default=True,
+    help="Quota provider segment to emit",
+)
+def cmd_quota_statusline_part(provider):
     from .quota import quota_statusline_part
 
-    sys.exit(quota_statusline_part())
+    sys.exit(quota_statusline_part(provider=provider))
+
+
+@cmd_quota_group.command(
+    "render-statusline",
+    help="Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state",
+)
+def cmd_quota_render_statusline():
+    from .agy_quota import cmd_render_agy_statusline
+
+    sys.exit(cmd_render_agy_statusline())
 
 
 @cmd_quota_group.command("sync", help="Sync quota snapshot from the remote server")
@@ -8165,19 +9220,7 @@ def cmd_telemetry_writer():
     sys.exit(telemetry_writer())
 
 
-# --- spend, cc-usage, copier-update, layout, color ---
-
-
-@_cli_group.group("spend", help="Usage-cost reports")
-def cmd_spend_group():
-    pass
-
-
-@cmd_spend_group.command("gemini", help="Report historical Gemini CLI spend from local logs")
-def cmd_spend_gemini_cli():
-    from .spend import cmd_spend_gemini
-
-    sys.exit(cmd_spend_gemini(_config.load_config()))
+# --- cc-usage, copier-update, layout, color ---
 
 
 @_cli_group.group("cc-usage", help="Claude Code CLI per-call token usage")
@@ -8721,7 +9764,11 @@ def _adoption_title(repo_root: Path, name: str, human: str):
         def release():
             def build(snapshot):
                 row = snapshot.rows.get(human)
-                if row is None or row.get("title") != title or row.get("machine") != slot.machine:
+                if (
+                    row is None
+                    or row.get("title") != title
+                    or not _session_naming.machine_identity(slot.machine).holds(row)
+                ):
                     return None
                 return _names.Change(
                     {_names.row_path(human): None}, f"session-names: release {human} (adoption failed)"
@@ -8734,10 +9781,58 @@ def _adoption_title(repo_root: Path, name: str, human: str):
     return title, reserve
 
 
+def _adopt_agy(name, repo, source, conversation, pid, tmux_session, paired_host, stopped, dry_run, yes):
+    from . import agy_adopt
+    from .session_adopt import AdoptionError
+
+    if not name or sum(value is not None for value in (conversation, pid, tmux_session)) != 1:
+        raise click.UsageError("Antigravity adoption requires NAME and one of --conversation, --pid or --tmux-session")
+    try:
+        with _config.inspection_only():
+            repo_root = repo or _session.detect_repo_root()
+            if repo_root is None:
+                raise AdoptionError("specify the owning Git repository with --repo")
+            adoption = agy_adopt.plan(
+                Path(repo_root).resolve(),
+                name,
+                conversation=conversation,
+                source=source,
+                pid=pid,
+                tmux=tmux_session,
+                paired_host=paired_host,
+                stopped=stopped,
+            )
+            agy_adopt.register_name(adoption, dry_run=True)
+            command = _config.load_config(read_only=True).get("agy", {}).get("command") or "agy"
+        if dry_run or not yes:
+            action = "create" if adoption.create_worktree else "reuse"
+            _out.emit(Tag.ADOPT, "adopt", f"{adoption.conversation} in {adoption.workspace}")
+            _out.emit(Tag.ADOPT, "adopt", f"  {action} worktree {adoption.worktree} and register {adoption.title}")
+            _out.emit(Tag.ADOPT, "adopt", f"  bind {adoption.target} in {adoption.record}")
+        if not dry_run:
+            if not yes and not adoption.already_adopted and not _out.confirm(Tag.ADOPT, "adopt", f"Adopt {name}?"):
+                raise click.ClickException("Adoption canceled.")
+            agy_adopt.apply(adoption, stopped=stopped, command=command)
+            status = "Already adopted" if adoption.already_adopted else "Adopted"
+            _out.emit(Tag.ADOPT, "adopt", f"{status} {name} ({adoption.conversation})")
+        _print_agy_tmux_launch(
+            adoption.record,
+            adoption.worktree,
+            adoption.target,
+            adoption.title,
+            command,
+            extra_args=("--dangerously-skip-permissions",),
+        )
+    except (AdoptionError, OSError, ValueError, RuntimeError, portalocker.exceptions.LockException) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @_cli_group.command(
     "adopt-session",
     help=(
-        "Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.\n\n"
+        "Register a Claude Code or Antigravity session started outside `ai` for managed resume.\n\n"
+        "Antigravity adoption is explicit and owner-approved. Select `-e agy` with a conversation UUID, "
+        "an agy PID or a tmux session name, and stop the conversation before applying the plan.\n\n"
         "\b\nTo rename a session already in an `ai` slot, use `ai migrate-session`."
     ),
 )
@@ -8779,6 +9874,12 @@ def _adoption_title(repo_root: Path, name: str, human: str):
 @click.option(
     "-m", "--name", "human_name", default="", help="Adopt into a slot named with this first name, reserved first"
 )
+@click.option("-e", "--engine", type=click.Choice(["claude", "agy"]), default="claude", help="Session client")
+@click.option("-u", "--conversation", help="Exact Antigravity conversation UUID")
+@click.option("-P", "--pid", type=click.IntRange(min=1), help="Discover the Antigravity conversation from an agy PID")
+@click.option("-M", "--tmux-session", help="Discover the Antigravity conversation from a tmux session")
+@click.option("-R", "--paired-host", is_flag=True, help="Adopt on the paired host for a g-r- tmux slot")
+@click.option("-S", "--stopped", is_flag=True, help="Confirm Antigravity has stopped when liveness cannot be checked")
 def cmd_adopt_session(
     name,
     source,
@@ -8792,6 +9893,12 @@ def cmd_adopt_session(
     dry_run,
     yes,
     human_name,
+    engine,
+    conversation,
+    pid,
+    tmux_session,
+    paired_host,
+    stopped,
 ):
     """Adopt a session's transcript, tasks, memory and worktree in one pass.
 
@@ -8805,6 +9912,16 @@ def cmd_adopt_session(
     """
     from .cc_migrate import find_transcript
     from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
+
+    if engine == "agy":
+        if adopt_every or transcript is not None or on_collision != "gate" or new_title or new_index is not None:
+            raise click.UsageError("Claude Code transcript, bulk and retitle options require -e claude")
+        if task_namespace or human_name:
+            raise click.UsageError("Claude Code task namespace and retitle options require -e claude")
+        _adopt_agy(name, repo, source, conversation, pid, tmux_session, paired_host, stopped, dry_run, yes)
+        return
+    if conversation is not None or pid is not None or tmux_session is not None or paired_host or stopped:
+        raise click.UsageError("Antigravity adoption options require -e agy")
 
     repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
 
@@ -9028,6 +10145,7 @@ def _migrate_one_to_name(
     """``ai migrate-session OLD --to-name [NAME]``: reserve, rename, complete; 0 on success."""
     from . import migrate_names, session_clients
     from . import name_registry as _names
+    from . import session_title as _session_title
     from .session_adopt import AdoptionError
     from .session_migrate import PartialMigrationError
 
@@ -9067,7 +10185,7 @@ def _migrate_one_to_name(
     name = name.lower() if name else None
     try:
         pending = snapshot.migrations.get(old)
-        if pending and pending.get("machine") == host:
+        if pending and _session_naming.machine_identity(host).holds(pending):
             new = str(pending["new_title"])
             if name and new != slot.title_for(name):
                 raise AdoptionError(f"{old} already has a migration to {new}; refusing a different target")
@@ -9104,6 +10222,7 @@ def _migrate_one_to_name(
             )
             _print_migration(result)
             return 1 if result.references_left else 0
+        reserved_names = _session_title.resolve_reserved_names()
         words = _names.common_words(snapshot.policy) if name or snapshot.manual else frozenset()
         if name:
             verdict, reason = _names.check_hand_chosen(snapshot, name, slot, words, session=old)
@@ -9114,7 +10233,13 @@ def _migrate_one_to_name(
             planned = name
         else:
             request, _warnings = _names.pick_request(
-                registry, snapshot, slot, max_length=max_length, words=words, session=old
+                registry,
+                snapshot,
+                slot,
+                max_length=max_length,
+                words=words,
+                session=old,
+                reserved_names=reserved_names,
             )
             planned = _session_naming.pick_name(request).name
         preview = _migrate_session_for_names(
@@ -9144,12 +10269,13 @@ def _migrate_one_to_name(
             adapters=adapters,
             migrate=_migrate_session_for_names,
             complete=_complete_migration_for_names,
+            reserved_names=reserved_names,
         )
     except PartialMigrationError as exc:
         _out.error(Tag.MIGRATE, "migrate", str(exc))
         _print_migration_refusal(str(exc), partial=True)
         return 1
-    except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+    except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError, _session_title.TitleError) as exc:
         _out.error(Tag.MIGRATE, "migrate", f"{exc}")
         _print_migration_refusal(str(exc))
         return 2
@@ -9169,6 +10295,7 @@ def _migrate_all_to_names(
     from . import migrate_names, session_clients
     from . import name_list as _name_list
     from . import name_registry as _names
+    from . import session_title as _session_title
     from .session_adopt import AdoptionError
 
     registry = _names_registry_or_exit()
@@ -9189,11 +10316,12 @@ def _migrate_all_to_names(
         return 2
     if over_limit:
         limit = _name_list.limits(snapshot.policy)[1]
+        here = _session_naming.machine_identity(host)
         over = {
             row["title"]
             for row in snapshot.rows.values()
             if row["kind"] == "session"
-            and row.get("machine") == host
+            and here.holds(row)
             and len(row["token"]) > limit
             and row.get("repo") == repo_root.name
         }
@@ -9224,6 +10352,11 @@ def _migrate_all_to_names(
     if not write:
         _out.emit(Tag.MIGRATE, "migrate", "nothing was written; run again with -y to migrate the stopped ones")
         return 0
+    try:
+        reserved_names = _session_title.resolve_reserved_names()
+    except _session_title.TitleError as exc:
+        _out.error(Tag.MIGRATE, "migrate", str(exc))
+        return 2
     refused = 0
     for entry in found.items:
         if entry.running:
@@ -9254,10 +10387,18 @@ def _migrate_all_to_names(
                     adapters=adapters,
                     migrate=_migrate_session_for_names,
                     complete=_complete_migration_for_names,
+                    reserved_names=reserved_names,
                 )
             else:
-                done = migrate_names.migrate_transcript_only(registry, entry, slot, max_length=high, words=frozenset())
-        except (AdoptionError, RuntimeError, _session_naming.NamePoolExhaustedError) as exc:
+                done = migrate_names.migrate_transcript_only(
+                    registry, entry, slot, max_length=high, words=frozenset(), reserved_names=reserved_names
+                )
+        except (
+            AdoptionError,
+            RuntimeError,
+            _session_naming.NamePoolExhaustedError,
+            _session_title.TitleError,
+        ) as exc:
             refused += 1
             _out.error(Tag.MIGRATE, "migrate", f"{entry.title}: {exc}")
             continue
@@ -9610,6 +10751,10 @@ def _remote_migration_status(names: list[str], *, every: bool) -> int:
         "--finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the "
         "pair and its repo in this host's migration record, from any directory; a name matching no "
         "pair, or several, is refused with exit 2 and what it matched.\n\n"
+        "Every symlink inside the slot and the moved agent worktrees that names the old slot or an "
+        "OLD-agents container, `.venv` included, is repointed at the same path under NEW, a relative "
+        "link staying relative. A link outside those worktrees is never changed: one a link inside "
+        "resolves through that names an old-name path is listed as NOT fixed, and the run exits 1.\n\n"
         "Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds "
         "nothing left records the migration finished (verified); otherwise the run names each part "
         "left as NOT finished and exits 1. A hook is done only when its --dry-run prints "
@@ -9859,8 +11004,8 @@ def _print_retirement(result) -> None:
 @_cli_group.command(
     "retire-session",
     help=(
-        "Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the "
-        "checkout and its registry entry.\n\n"
+        "Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its "
+        "branch tips, then remove the checkout and its registry entry.\n\n"
         "\b\nTo rename a slot instead, use `ai migrate-session`."
     ),
 )
@@ -9875,7 +11020,10 @@ def _print_retirement(result) -> None:
 @click.option("-n", "--dry-run", is_flag=True, help="Print what would be removed and preserved without writing")
 @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt")
 def cmd_retire_session(name, repo, dry_run, yes):
-    """Retire the session in slot NAME (``.worktrees/NAME``), losing no commit.
+    """Retire session NAME's worktree, losing no commit.
+
+    The worktree is the one NAME's run-state record names (a probe's lives outside the
+    repository), else the slot ``.worktrees/NAME``.
 
     Refused, before anything is written and with ``--dry-run`` too, while the
     session is running (a Claude Code process, its tmux session or a fresh

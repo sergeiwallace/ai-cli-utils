@@ -44,6 +44,9 @@ tasks, memory and resume hand-off:
   (:mod:`ai_cli.session_migrate_agents`), except one a live process is working in; an
   entry of an ``<old>-agents`` container no registered worktree accounts for is archived
   by rename into :data:`MIGRATION_ARCHIVE`, unless some process works in it;
+* every symlink inside the slot and the moved agent worktrees that names an old-name path,
+  repointed at the new one; one resolving through a link outside them that names such a path
+  is named as ``NOT fixed`` and fails the run (:mod:`ai_cli.session_migrate_links`);
 * every slot still named ``<repo>/.worktrees/<old>`` in another repo, retired through
   :func:`ai_cli.session_retire.retire_session` (tips anchored, checkout removed) once
   that proves it clean and landed, and kept and named, failing the run, otherwise; and
@@ -110,6 +113,7 @@ from pathlib import Path
 from . import config as _config
 from . import session_migrate_agents as _agents
 from . import session_migrate_hooks as _hooks
+from . import session_migrate_links as _links
 from . import session_registry as _session_registry
 from .background_attach import is_copy_title
 from .branch_rename import rename_branch_anchored
@@ -2201,6 +2205,8 @@ def _start_session(
     slot_record = stale_checkout_record(old_wt / ".venv", old_wt)
     if slot_record is not None:
         moves.append(PlannedMove("venv back-pointer", str(slot_record), str(new_wt), "rewrite"))
+    slot_links = _links.scan([(old_wt, new_wt)], agent_plan.link_pairs)
+    moves += [PlannedMove(*line) for line in _links.describe(slot_links)]
 
     # The canonical branch is renamed whether the slot has it checked out or parks it
     # while a topic branch is checked out: either way it still names the old session.
@@ -2310,6 +2316,7 @@ def _start_session(
             repoint_checkout_record(slot_record, old_wt, new_wt)
         except (OSError, UnicodeDecodeError) as exc:
             result.warnings.append(f"venv back-pointer {slot_record} FAILED to name {new_wt}: {_one_line(str(exc))}")
+    result.warnings += _links.apply(slot_links)
     if new_branch:
         renamed = rename_branch_anchored(repo_root, old_branch, new_branch)
         if not renamed.ok:
@@ -2357,6 +2364,7 @@ def _start_session(
     _run_live_hooks(hooks, old, new, repo_root, result, state, progress)
     _clean_other_repos(result, leftovers, agent_plan, live_cwds, **others)
     _apply_beads(old, new, beads, result, progress)
+    result.warnings += _links.check([new_wt, *agent_plan.moved_trees()], agent_plan.link_pairs)
 
     if titled:
         result.resolved = probe_resolves(new_wt, new, home)
@@ -2600,7 +2608,7 @@ def finish_session(
     moves = result.moves
     from .session_migrate_resume import apply_home, plan_home
 
-    home_plan = plan_home(repo_root, old_wt, new_wt, old, new, home)
+    home_plan = plan_home(repo_root, old_wt, new_wt, old, new, home, link_pairs=agent_plan.link_pairs)
     moves += home_plan.moves
     markers = _session_home_markers(repo_root, old_wt.resolve(strict=False))
     home_renames = {f"wt-{old}": f"wt-{new}"} if any(move.kind == "branch" for move in home_plan.moves) else {}
@@ -2691,6 +2699,7 @@ def finish_session(
             _append_ledger(
                 state, old, new, repo_root, deferred=deferred, live=_one_line(result.live), deferred_recorded=True
             )
+    result.warnings += _links.check([new_wt, *agent_plan.moved_trees()], agent_plan.link_pairs)
     if record_finish:
         from .session_migrate_status import verify
 

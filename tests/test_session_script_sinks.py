@@ -26,6 +26,8 @@ from pathlib import Path
 from test_output_sinks import _event_fields, _fields
 from test_reload_progress import Session, session_factory  # noqa: F401  (the fixture)
 
+pytestmark = pytest.mark.real_pty
+
 DIRENV_TEXT = "direnv could not load"
 SHELL_TEXT = "Auto-restart stopped. Returning to the calling shell."
 _SEED = "launch log started for session test-session"

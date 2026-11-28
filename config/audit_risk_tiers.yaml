@@ -1,4 +1,3 @@
-# Policy, not code: values are calibrated from fleet receipt telemetry.
 research:
   research_refine_cap: 3
 low:

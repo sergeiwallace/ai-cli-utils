@@ -176,6 +176,29 @@ def test_given_an_alias_longer_than_max_length_when_launching_then_it_refuses(re
     assert "invalid" in err and str(real_alias_lookup["environment"]) in err
 
 
+def test_given_a_malformed_former_host_ids_entry_when_launching_then_it_refuses_naming_the_file(real_alias_lookup):
+    _write_aliases(
+        real_alias_lookup["environment"], '[aliases]\ntest-box = "abc"\n\n[former_host_ids]\ntest-box = "old-box"\n'
+    )
+    code, _out, err = _dry_run()
+    assert code == 1
+    assert "former_host_ids" in err and str(real_alias_lookup["environment"]) in err
+
+
+def test_given_former_host_ids_in_two_files_when_identity_is_read_then_every_joined_id_is_this_machine(
+    real_alias_lookup,
+):
+    _write_aliases(
+        real_alias_lookup["environment"], '[aliases]\ntest-box = "abc"\n\n[former_host_ids]\ntest-box = ["mid-box"]\n'
+    )
+    _write_aliases(real_alias_lookup["local"], '[former_host_ids]\nmid-box = ["old-box"]\nother-box = ["far-box"]\n')
+
+    here = session_naming.machine_identity("test-box")
+
+    assert here.spellings == {"test-box", "mid-box", "old-box"}
+    assert here.holds({"machine": "old-box"}) and not here.holds({"machine": "other-box"})
+
+
 def test_given_an_alias_with_a_digit_after_a_letter_when_launching_then_it_names_the_session(real_alias_lookup):
     # A letters-only rule refused a real alias like `ec2`, and every `ai c` on that host exited.
     _write_aliases(real_alias_lookup["environment"], 'max_length = 5\n[aliases]\ntest-box = "ec2"\n')
