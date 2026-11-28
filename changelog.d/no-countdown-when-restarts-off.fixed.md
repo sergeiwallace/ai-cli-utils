@@ -1,0 +1,1 @@
+- A clean exit no longer prints `restarting in 3s` when restarts are off (an owner-set `never` relaunch policy or `[session] auto_restart = false`); it prints only why it is not restarting.
