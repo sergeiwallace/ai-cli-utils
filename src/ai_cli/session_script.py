@@ -2079,6 +2079,14 @@ with open(path, 'w') as f:
         _restart_window=$({_restart_window_command} 2>/dev/null)
         [[ "$_restart_window" =~ ^[0-9]+$ ]] || _restart_window=3
       fi
+    # BEGIN RUN STATE exit-policy
+      if (( _restart_window > 0 )); then
+        _exit_policy=$({_relaunch_policy_command} 2>/dev/null)
+        if [[ "$_exit_policy" == never || "$_exit_policy" == auto_restart_off ]]; then
+          _restart_window=0
+        fi
+      fi
+    # END RUN STATE
       if (( _restart_window > 0 )); then
         # Armed twice on purpose. The first write makes a Ctrl+C during the notice's
         # Python start count as a stop, not as a first press that would only arm the
