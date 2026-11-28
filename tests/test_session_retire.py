@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -522,31 +523,82 @@ def test_given_a_live_process_working_in_an_interrupted_home_when_retiring_then_
 
 
 class _UnreadableProcess:
-    """A process of this user, started just now, whose working directory the OS will not disclose."""
+    """A process whose working directory the OS will not disclose; by default this user's, started just now."""
 
     pid = 999_999
+
+    def __init__(self, *, started: float | None = None, other_user: bool = False, exe: str | None = None) -> None:
+        self.started = time.time() if started is None else started
+        self.other_user = other_user
+        self.executable = exe
 
     def oneshot(self):
         return contextlib.nullcontext()
 
     def create_time(self):
-        return time.time()
+        return self.started
 
     def username(self):
-        return psutil.Process().username()
+        return "someone-else" if self.other_user else psutil.Process().username()
 
     def uids(self):
-        return psutil.Process().uids()
+        euid = os.geteuid() + 1 if self.other_user else os.geteuid()
+        return types.SimpleNamespace(real=euid, effective=euid, saved=euid)
 
     def cwd(self):
         raise psutil.AccessDenied(self.pid)
 
-    open_files = memory_maps = cmdline = exe = cwd
+    def exe(self):
+        if self.executable is None:
+            raise psutil.AccessDenied(self.pid)
+        return self.executable
+
+    open_files = memory_maps = cmdline = cwd
+
+
+def _only_process(monkeypatch, proc: _UnreadableProcess) -> None:
+    monkeypatch.setattr("ai_cli.session_retire.psutil.process_iter", lambda: iter([proc]))
 
 
 def test_given_a_process_whose_details_cannot_be_read_when_retiring_an_interrupted_home_then_it_is_refused(
     interrupted, monkeypatch
 ):
-    monkeypatch.setattr("ai_cli.session_retire.psutil.process_iter", lambda: iter([_UnreadableProcess()]))
+    _only_process(monkeypatch, _UnreadableProcess())
+    err = _refused(interrupted, "-y")
+    assert f"process {_UnreadableProcess.pid} cannot be read" in err
+
+
+def test_given_an_unreadable_process_older_than_the_checkout_when_retiring_an_interrupted_home_then_it_is_removed(
+    interrupted, monkeypatch
+):
+    _only_process(monkeypatch, _UnreadableProcess(started=0.0))
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+
+
+def test_given_an_unreadable_process_of_another_user_when_retiring_an_interrupted_home_then_it_is_removed(
+    interrupted, monkeypatch
+):
+    _only_process(monkeypatch, _UnreadableProcess(other_user=True))
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the OS executable directories are POSIX paths")
+def test_given_an_unreadable_os_agent_of_this_user_when_retiring_an_interrupted_home_then_it_is_removed(
+    interrupted, monkeypatch
+):
+    _only_process(monkeypatch, _UnreadableProcess(exe="/usr/libexec/someagent"))
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+
+
+def test_given_an_unreadable_process_running_a_user_executable_when_retiring_an_interrupted_home_then_it_is_refused(
+    interrupted, monkeypatch
+):
+    _only_process(monkeypatch, _UnreadableProcess(exe=str(interrupted["repo"].parent / "bin" / "tool")))
     err = _refused(interrupted, "-y")
     assert f"process {_UnreadableProcess.pid} cannot be read" in err
