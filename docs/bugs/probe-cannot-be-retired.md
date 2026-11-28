@@ -101,6 +101,13 @@ Real entry points: the `ai retire-session` and `ai c -t -d` command lines throug
   and `test_given_a_record_naming_another_worktree_than_the_slot_when_retiring_then_it_is_refused_naming_both`:
   constraints on the fix, so a record never makes retirement remove the main checkout or
   pick one of two worktrees. Both pass before and after.
+- `tests/test_probe_launch.py`
+  `test_given_an_exited_probe_whose_record_was_pruned_when_retired_by_name_then_its_worktree_is_removed`:
+  the fix above read only the run-state record, and `ai iterm2-sessions --prune` drops an
+  exited probe's record by design, so a probe retired after the next prune was refused again
+  with `no session record names one`. Measured live on four exited probes after the fix was
+  installed. `session_worktree` now also checks the probe directory for the name, beside the
+  `.worktrees/<name>` slot.
 
 ## Outside this repository
 

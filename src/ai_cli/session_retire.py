@@ -592,11 +592,12 @@ def session_worktree(repo_root: Path, name: str, registered: list[Path]) -> Path
     ``cwd``), which is where its worktree really is: ``<repo>/.worktrees/<name>`` for a
     session home, the probe directory for an ``ai c -t`` probe. A recorded directory counts
     only when it is a linked worktree of ``repo_root``; the repository's own checkout, which a
-    ``--no-worktree`` session records, is never one. With no such record the slot
-    ``<repo>/.worktrees/<name>`` is used. A record and a slot naming different worktrees, or
-    records naming two, refuse rather than pick one.
+    ``--no-worktree`` session records, is never one. The slots ``<repo>/.worktrees/<name>``
+    and the probe directory for ``name`` count too, since pruning drops an exited probe's
+    record. A record and a slot naming different worktrees, or records naming two, refuse
+    rather than pick one.
     """
-    from .session import _registered_worktree_at
+    from .session import _registered_worktree_at, probe_worktree_base
 
     slot = repo_root / ".worktrees" / name
     variants = set(_session_variants(name))
@@ -614,10 +615,11 @@ def session_worktree(repo_root: Path, name: str, registered: list[Path]) -> Path
                 found = _registered_worktree_at(Path(cwd), registered) if isinstance(cwd, str) and cwd else None
                 if found is not None and found != repo_root and found not in recorded:
                     recorded.append(found)
-    at_slot = _registered_worktree_at(slot, registered)
     worktrees: list[Path] = list(recorded)
-    if at_slot is not None and at_slot not in worktrees:
-        worktrees.append(at_slot)
+    for candidate in (slot, probe_worktree_base(repo_root) / name):
+        found = _registered_worktree_at(candidate, registered)
+        if found is not None and found not in worktrees:
+            worktrees.append(found)
     if not worktrees:
         raise RetireError(f"{slot} is not a registered worktree of {repo_root}, and no session record names one")
     if len(worktrees) > 1:
