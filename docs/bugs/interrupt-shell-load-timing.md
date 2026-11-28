@@ -76,11 +76,11 @@ twice before the deadline.
 
 * The wrapper polls for the recorded stop through the window instead of sleeping
   it out, so a stop ends the window at once.
-* The recovery test pins the wrapper's clock (`quick_clean`, the pin the
-  early-interrupt test already used), so the run is a failed start however long
-  setup takes. A pending rework of how a session ends removes the recovery shell
-  and replaces this test with a failed-start test that already carries the same
-  pin, so this part matters only until that rework lands.
+* The recovery test needs no change on this branch. Main pinned its clock first
+  (`f789cf17`), then removed the remote recovery shell and its "close this session"
+  prompt (`548f0a32`). Its replacement,
+  `test_given_failed_start_when_launch_loop_stops_then_original_shell_returns`,
+  carries the same pin (`quick_exit`), so cause 1 is fixed on main.
 * The restart-window tests configure `restart_stop_window_seconds` longer than
   their own waits. A press still ends the window at once, and a window waited out
   to its end fails the test.
@@ -88,13 +88,13 @@ twice before the deadline.
   deadline, then ends the retry loop with SIGTERM. Exit 77 and the deny-boot
   record still prove the exit is denied. The deadline path itself stays covered by
   `test_given_permanent_failure_when_deadline_expires_then_generation_is_denied_without_respawn`.
+  Main separately made the attempt counter an atomic append (`13e44690`), so a mark
+  killed at its timeout no longer erases the count; this fix keeps that counter.
 
 ## Regression tests
 
 Each fails on the unfixed tree on every run, at any load:
 
-* The recovery test waits 3.2 s before the exit, past the guard in wall time.
-  Unfixed: 4 of 4 variants fail.
 * The clean-exit restart-window test presses 4.2 s after the notice, past the
   default window. Measured with a 3.5 s delay on the unfixed tree, 3 of 4 failed;
   the fourth passed because `date +%s` works in whole seconds, which can stretch a
