@@ -890,7 +890,7 @@ The proof holds only when all of these are true, and a refusal names each one th
 | no resident process | no live process has its working directory, an open file, a memory mapping (where the platform reports them; macOS does not), its `argv[0]` or its executable inside the checkout or its admin dir |
 | unreadable process | a process whose details the OS will not disclose fails the proof unless it started before the checkout existed, runs as another user, or runs an executable from `/System` or `/usr/libexec` (where macOS keeps the sandboxed system agents that refuse their details to the user they run as) |
 | contained HEAD | HEAD is an ancestor of the branch's upstream or of `origin/main` |
-| HEAD's bytes only | every file on disk is HEAD's blob or a strict prefix of it, and no file or directory exists outside HEAD's tree |
+| HEAD's bytes only | every file on disk is HEAD's blob or a strict prefix of it, and no file or directory exists outside HEAD's tree, except a symlink that resolves outside the checkout (such as a provisioned `.venv`), which removal unlinks without touching its target |
 
 A checkout that passes is anchored like any other and removed with
 `git worktree remove --force --force`.

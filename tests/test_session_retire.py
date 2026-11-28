@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import types
 from pathlib import Path
@@ -481,6 +482,40 @@ def test_given_a_file_outside_heads_tree_when_retiring_an_interrupted_home_then_
     (interrupted["wt"] / "debug.log").write_text("scratch\n")
     err = _refused(interrupted, "-y")
     assert "debug.log is not in HEAD's tree" in err
+
+
+def _symlinks_supported() -> bool:
+    with tempfile.TemporaryDirectory() as scratch:
+        try:
+            (Path(scratch) / "link").symlink_to(Path(scratch))
+        except OSError:
+            return False
+    return True
+
+
+needs_symlinks = pytest.mark.skipif(not _symlinks_supported(), reason="this host cannot create symlinks")
+
+
+@needs_symlinks
+def test_given_a_symlink_out_of_the_checkout_when_retiring_an_interrupted_home_then_it_is_removed_and_its_target_kept(
+    interrupted, tmp_path
+):
+    target = tmp_path / "provisioned-env"
+    target.mkdir()
+    (target / "marker").write_text("kept\n")
+    (interrupted["wt"] / ".venv").symlink_to(target, target_is_directory=True)
+
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+    assert (target / "marker").read_text() == "kept\n"
+
+
+@needs_symlinks
+def test_given_a_symlink_into_the_checkout_when_retiring_an_interrupted_home_then_it_is_refused_naming_it(interrupted):
+    (interrupted["wt"] / "alias.md").symlink_to(interrupted["wt"] / "README.md")
+    err = _refused(interrupted, "-y")
+    assert "alias.md is not in HEAD's tree" in err
 
 
 def test_given_a_file_diverging_from_heads_blob_when_retiring_an_interrupted_home_then_it_is_refused(interrupted):
