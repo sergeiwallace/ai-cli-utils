@@ -1,0 +1,1 @@
+- `ai retire-session NAME` also finds an exited `ai c -t` probe after `ai iterm2-sessions --prune` has dropped its run-state record, by checking the probe directory for the name.
