@@ -86,7 +86,7 @@
   "src/ai_cli/process_manager.py": 12,
   "src/ai_cli/process_probe.py": 24,
   "src/ai_cli/pty_host.py": 22,
-  "src/ai_cli/quota.py": 34,
+  "src/ai_cli/quota.py": 33,
   "src/ai_cli/quota_db.py": 12,
   "src/ai_cli/session.py": 136,
   "src/ai_cli/session_adopt.py": 120,
