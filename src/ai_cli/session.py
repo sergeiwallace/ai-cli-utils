@@ -1357,6 +1357,16 @@ def _require_probe_base_outside(repo_root: Path) -> Path:
     return base
 
 
+def session_worktree_slot(repo_root: Path, ai_name: str, *, probe: bool = False) -> tuple[Path, str]:
+    """The worktree directory and branch a launch of ``ai_name`` uses: ``create_worktree``'s and the dry run's.
+
+    A session's is ``<repo>/.worktrees/<title>`` on ``wt-<title>``; a probe's is under
+    :func:`probe_worktree_base` on ``probe-<title>``.
+    """
+    base = probe_worktree_base(repo_root) if probe else Path(repo_root) / WORKTREE_DIR
+    return base / ai_name, f"{PROBE_BRANCH_PREFIX if probe else SESSION_BRANCH_PREFIX}{ai_name}"
+
+
 @overload
 def create_worktree(
     ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None, probe: bool = False
@@ -1401,11 +1411,12 @@ def create_worktree(
     # Check + repair BEFORE any worktree op, regardless of what corrupted it.
     repair_bare_worktree_config(repo_root)
 
-    wt_dir = (_require_probe_base_outside(repo_root) if probe else repo_root / WORKTREE_DIR) / ai_name
+    if probe:
+        _require_probe_base_outside(repo_root)
     # A probe's branch has its own prefix, so a session and a probe that share a title never
     # share a branch, and neither launch finds the other's checkout holding its branch and
     # relocates it (a move Windows refuses while a process stands in the directory).
-    branch_name = f"{PROBE_BRANCH_PREFIX if probe else SESSION_BRANCH_PREFIX}{ai_name}"
+    wt_dir, branch_name = session_worktree_slot(repo_root, ai_name, probe=probe)
     if probe:
         # Only a canonical session checks out wt-<title>, and the relocation below would
         # move its checkout into the probe directory; a probe refuses instead.

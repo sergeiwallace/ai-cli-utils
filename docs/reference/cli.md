@@ -74,7 +74,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai register`](#ai-register) | Register a repository root and its task prefix |
 | [`ai release-name`](#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](#ai-remove-name) | Session names: remove a name that was added by hand |
-| [`ai retire-session`](#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai retire-session`](#ai-retire-session) | Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry. |
 | [`ai seed-name-verdicts`](#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
@@ -255,7 +255,7 @@ Launch a Claude Code session. A migration to the session's name that this host r
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
-For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and it can be removed like any scratch worktree once it exits.
+For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and `ai retire-session TITLE` removes it once it exits.
 
 Arguments:
 
@@ -1276,7 +1276,7 @@ Arguments:
 ai retire-session [OPTIONS] NAME
 ```
 
-Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry.
+Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry.
 
 To rename a slot instead, use `ai migrate-session`.
 

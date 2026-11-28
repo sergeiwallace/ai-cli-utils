@@ -82,7 +82,11 @@ the other's checkout. The worktree's `.envrc` is approved the same way as a
 `.worktrees/` slot's.
 
 The run record keeps its boot recipe because the session supervisor refuses to start an
-engine without one. `relaunch: never` makes `boot_veto` refuse it. Both columns' policies are
+engine without one. `relaunch: never` makes `boot_veto` refuse it. It is a boot policy
+only: after an exit inside tmux the supervisor restarts a probe like any session, under
+`[session] auto_restart`. Only a `never` someone chose stops that restart
+(`stops_restart_after_exit` in `src/ai_cli/session_run_state.py`;
+[probe-never-stops-clean-exit-restart.md](../bugs/probe-never-stops-clean-exit-restart.md)). Both columns' policies are
 written with `relaunch_set_by: default`; a policy set with `ai sessions policy` is recorded as
 `owner` and later launches keep it
 ([enrolled-sessions-default-to-relaunch-never.md](../bugs/enrolled-sessions-default-to-relaunch-never.md)). `iterm2_restore`
@@ -97,7 +101,8 @@ record's process still runs in the current boot.
 `-F/--chief` (or `ai cos`, or a chief positional name) and `-R/--remote`. Each one would
 name, reach or host a canonical session. `-W/--no-worktree` is accepted: the probe then
 runs in the current directory and creates no worktree at all. `-d/--dry-run` plans the
-probe title and writes nothing.
+probe title, its worktree under the probe directory and its `probe-<title>` branch, and
+writes nothing.
 
 A probe also exits 1, before it touches any worktree, when its title already belongs to
 a canonical session: a non-probe run record of that name, a `<repo>/.worktrees/<title>`
@@ -110,15 +115,18 @@ bare launch, from live worktrees in both `.worktrees/` and the probe directory.
 
 ### Removing a probe
 
-A probe worktree is scratch. Nothing records it as a session home, so the ordinary
-worktree tools remove it once its session has exited:
+A probe worktree is scratch. Nothing records it as a session home. Once its session has
+exited, `ai retire-session <title>` removes it: the command reads the worktree from the
+probe's run record (`session_worktree` in `src/ai_cli/session_retire.py`), applies the same
+liveness and content checks as for a session home, anchors the `probe-<title>` tip and
+keeps the branch ([probe-cannot-be-retired.md](../bugs/probe-cannot-be-retired.md)). The
+ordinary worktree tools work too:
 
 ```bash
 git -C <repo> worktree remove <state>/probe-worktrees/<repo>-<digest>/<title>
 git -C <repo> branch -d probe-<title>
 ```
 
-`ai retire-session` is for session homes under `.worktrees/` and does not handle probes.
 The launcher never removes a probe worktree itself: a probe may have produced work worth
 keeping, and the person who ran it decides.
 

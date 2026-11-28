@@ -209,6 +209,17 @@ def default_relaunch(record: dict) -> None:
     record.update(relaunch="never" if record.get("probe") else "auto", relaunch_set_by="default")
 
 
+def stops_restart_after_exit(record: dict) -> bool:
+    """Whether ``record``'s policy keeps the supervisor from restarting an agent that exited.
+
+    ``relaunch`` is the boot relaunch policy. Only a ``never`` someone chose (``ai sessions
+    policy``, or a value from before ``relaunch_set_by`` existed) also stops the restart after
+    an exit. The ``never`` an automatic writer gives a probe keeps it out of boot relaunch and
+    restore, and says nothing about an exit, so ``[session] auto_restart`` decides that.
+    """
+    return record.get("relaunch") == "never" and record.get("relaunch_set_by") != "default"
+
+
 def tombstone_path(name: str, host: str) -> Path:
     key = hashlib.sha256(f"{host}\0{name}".encode()).hexdigest()
     return registry.registry_path().parent / "session-safety" / f"{key}.json"

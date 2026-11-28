@@ -253,7 +253,7 @@ after changing a command's help, never edit it by hand.
 | [`ai register`](docs/reference/cli.md#ai-register) | Register a repository root and its task prefix |
 | [`ai release-name`](docs/reference/cli.md#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](docs/reference/cli.md#ai-remove-name) | Session names: remove a name that was added by hand |
-| [`ai retire-session`](docs/reference/cli.md#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai retire-session`](docs/reference/cli.md#ai-retire-session) | Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry. |
 | [`ai seed-name-verdicts`](docs/reference/cli.md#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](docs/reference/cli.md#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](docs/reference/cli.md#ai-session-reaper-start) | Register the stale-session reaper with Circus |
@@ -417,9 +417,11 @@ not find it. Its run record is never relaunched at boot, the iTerm2 restore skip
 `-w`, `-u`, `-S`, `-F` and `-R`, each of which would name, reach or host a canonical
 session; run `ai c -t` on the remote host itself for a remote probe.
 
-Once the probe has exited, remove its worktree and branch with the ordinary git
-commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`).
-The launcher never removes them itself. Design:
+Once the probe has exited, `ai retire-session <title>` removes its worktree with the same
+checks and anchors as a session home's, keeping its `probe-<title>` branch; the ordinary
+git commands (`git -C <repo> worktree remove <path>`, `git -C <repo> branch -d probe-<title>`)
+work too. The launcher never removes them itself. A probe is never relaunched at boot,
+but inside tmux it restarts after an exit like any session. Design:
 [docs/designs/probe-sessions.md](docs/designs/probe-sessions.md).
 
 #### Auto-restart and stopping a session
@@ -432,7 +434,9 @@ session and returns to the shell you launched from. `ai exit-session` ends it fr
 from another terminal. A clean exit in the first three seconds of a run ends the session
 without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
 0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
-read at each exit, so an edit applies at the next one.
+read at each exit, so an edit applies at the next one. A session whose relaunch policy its
+owner set to `never` (`ai sessions policy <slug> never`) is not restarted either, and the
+exit says so. The `never` a probe gets by default only keeps it from boot relaunch.
 
 #### Restarting an idle Claude Code session
 
@@ -944,7 +948,9 @@ command, and exits 1. `-P/--allow-partial-migration` starts it anyway and writes
 parts left into the launch log ([details](docs/tools/cc-session-adoption.md#migrating-a-session-that-already-has-a-slot-ai-migrate-session)).
 
 A session that is finished for good has its home slot retired by its owner with
-`ai retire-session NAME`; no automatic reap removes a session home. The command
+`ai retire-session NAME`; no automatic reap removes a session home. The worktree is the
+one NAME's run-state record names, so an exited `ai c -t` probe is retired the same way,
+else `.worktrees/NAME`. The command
 refuses while the session runs (a Claude Code process, its tmux session, or a
 heartbeat fresher than the reaper's `stale_after_seconds`), while the checkout
 has uncommitted or untracked work, or while its checked-out commit is in neither
@@ -1288,7 +1294,7 @@ On pull, transcript `cwd` and `originalCwd` fields are rewritten to the receivin
 ai audit-sessions                    # Find titled sessions that cannot resume
 ai audit-sessions -a/--adopt         # Adopt every safe session
 ai adopt-session <name>              # Adopt one session into this repository
-ai retire-session <name>             # Retire a dead session's home slot
+ai retire-session <name>             # Retire a dead session's worktree (home slot or probe)
 ai migrate-transcript <destination>  # Move a transcript between project roots
 ```
 

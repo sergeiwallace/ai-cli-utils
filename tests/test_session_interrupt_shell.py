@@ -152,6 +152,7 @@ def pane_session(request, tmp_path, monkeypatch):
             remote=False,
             mode="signal",
             policy="auto",
+            probe=False,
             caller=False,
             quick_exit=False,
             begin_gate=None,
@@ -195,9 +196,12 @@ def pane_session(request, tmp_path, monkeypatch):
                     f'else exec {shlex.quote(shutil.which("date"))} "$@"; fi\n'
                 )
                 date.chmod(0o755)
-            state.register(self.name, recipe={"argv": ["ai", engine, "1"], "cwd": str(tmp_path)}, host="host-a")
+            state.register(
+                self.name, recipe={"argv": ["ai", engine, "1"], "cwd": str(tmp_path)}, host="host-a", probe=probe
+            )
             generation = state.begin(self.name)
-            self.set_policy(policy)
+            if not probe:
+                self.set_policy(policy)
             script = tmp_path / "session.sh"
             script.write_text(
                 get_engine_script(
@@ -378,9 +382,9 @@ def pane_session(request, tmp_path, monkeypatch):
             assert "KeyboardInterrupt" not in self.output.read_text()
             assert "Traceback" not in self.output.read_text()
 
-        def set_policy(self, policy):
+        def set_policy(self, policy, *, by="owner"):
             def change(doc):
-                doc["sessions"][0]["relaunch"] = policy
+                doc["sessions"][0].update(relaunch=policy, relaunch_set_by=by)
                 return True
 
             registry._mutate(change)
@@ -701,6 +705,26 @@ def test_given_relaunch_reason_when_agent_restarts_then_only_the_first_agent_car
         check=False,
     ).stdout.strip()
     assert shown in ("-AI_CLI_LAUNCH_REASON", ""), shown
+
+
+def test_given_a_probe_when_agent_exits_cleanly_then_wrapper_restarts_it(pane_session):
+    pane_session.start(probe=True)
+    assert registry.load_registry()["sessions"][0]["relaunch"] == "never"
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
+
+
+def test_given_a_probe_its_owner_set_to_never_when_agent_exits_then_original_shell_returns_naming_why(
+    pane_session,
+):
+    pane_session.start(probe=True, caller=True)
+    pane_session.set_policy("never", by="owner")
+    time.sleep(3.2)
+    pane_session.exit_agent("0")
+    pane_session.assert_caller()
+    assert pane_session.count() == 1
+    assert "not restarting: relaunch policy never" in pane_session.output.read_text()
 
 
 @pytest.mark.parametrize("remote", [False, True])

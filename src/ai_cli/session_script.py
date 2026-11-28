@@ -420,11 +420,12 @@ def get_engine_script(
         pinned_python(
             "import json; from pathlib import Path; "
             "from ai_cli.config import auto_restart_enabled; "
+            "from ai_cli.session_run_state import stops_restart_after_exit; "
             f"doc = json.loads(Path({registry_path().as_posix()!r}).read_text()); "
-            f"policy = next((r.get('relaunch', 'auto') for r in doc['sessions'] "
-            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), 'auto'); "
-            f"print('auto_restart_off' if policy != 'never' and not auto_restart_enabled({config_file_text()!r}) "
-            "else policy)"
+            f"record = next((r for r in doc['sessions'] "
+            f"if r.get('kind') == 'local' and r.get('name') == {session!r}), {{}}); "
+            "print('never' if stops_restart_after_exit(record) "
+            f"else 'auto' if auto_restart_enabled({config_file_text()!r}) else 'auto_restart_off')"
         )
     )
 
@@ -1083,8 +1084,11 @@ def get_engine_script(
         if (( _child_status != 78 )); then
           _relaunch_policy=$({_relaunch_policy_command} 2>/dev/null)
           if [[ "$_relaunch_policy" == never || "$_relaunch_policy" == auto_restart_off ]]; then
-            [[ "$_relaunch_policy" == auto_restart_off ]] && \
+            if [[ "$_relaunch_policy" == auto_restart_off ]]; then
               _ai_emit info exit {shlex.quote(f"not restarting: [session] auto_restart = false in {config_file_text()}")}
+            else
+              _ai_emit info exit {shlex.quote(f"not restarting: relaunch policy never (`ai sessions policy {session} auto` restores restarts)")}
+            fi
             _ai_final_manual_exit
             break
           fi
