@@ -1,0 +1,1 @@
+- `ai retire-session` now accepts a symlink that points outside an interrupted checkout, such as a provisioned `.venv` link, when proving the checkout never started: removal unlinks it and leaves its target in place.

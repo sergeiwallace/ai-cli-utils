@@ -286,6 +286,11 @@ def _inside(path: str | None, roots: tuple[Path, ...]) -> bool:
     return any(candidate == root or root in candidate.parents for root in roots)
 
 
+def _points_outside(link: Path, wt: Path) -> bool:
+    """Whether the symlink ``link`` resolves to a path outside the checkout ``wt``."""
+    return not _inside(os.path.realpath(link), (Path(os.path.normcase(os.path.realpath(wt))),))
+
+
 def _resident_detail(proc: psutil.Process, roots: tuple[Path, ...]) -> str | None:
     """What of ``proc`` lies inside ``roots``, or None; psutil errors propagate.
 
@@ -426,7 +431,8 @@ def _off_head_files(wt: Path, head: str) -> list[str] | None:
             for name in files:
                 full, rel = Path(root, name), f"{prefix}{name}"
                 if rel not in blobs:
-                    off.append(f"{rel} is not in HEAD's tree")
+                    if not (full.is_symlink() and _points_outside(full, wt)):
+                        off.append(f"{rel} is not in HEAD's tree")
                     continue
                 mode, sha, size = blobs[rel]
                 if full.is_symlink():
