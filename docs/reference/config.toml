@@ -267,80 +267,11 @@ stale_session_timeout = 15
 # max_name_length = 4
 ## Seconds one push of a shared name registry may take before the registry counts as
 ## unreachable, read on every push. Separate from the registry's publish timeout. A
-## fetch's budget and retries are [retry.registry_fetch] below.
+## fetch's budget and retries are the [retry.registry_fetch] policy (README, Retries).
 # registry_push_timeout_seconds = 60
 ## Seconds a host's first clone of a shared Dolt registry may take; 60 by default,
 ## 300 on Windows.
 # registry_clone_timeout_seconds = 60
-
-[retry]
-## One retry policy for the bounded waits a launch performs. Attempt n may take
-## min(timeout_seconds * growth^(n-1), max_timeout_seconds) seconds. After a failed attempt
-## the launch waits min(delay_seconds * growth^(n-1), max_delay_seconds) seconds, less a
-## random share of up to `jitter` of that wait (0 waits it in full; 1 is full jitter). The
-## whole wait, delays included, ends within max_total_seconds, and each retry's timeout is
-## cut to what remains of it, however many attempts are left. The first attempt always gets
-## its full timeout, so the total is never shorter than timeout_seconds. A total too short
-## for every attempt it allows, or one a single timeout fills, is reported when read. Only
-## a timeout or a lost connection is retried: a definite answer, such as a refused
-## credential, is reported once with its cause. Read on every call, so an edit applies to
-## the next one. A [retry.<site>] table overrides any of these keys for one site. A key
-## your file leaves out takes the shipped value, the one shown here; your own [retry]
-## values apply to every site, ahead of the shipped per-site tables. The waits kept
-## outside this policy, and why, are listed under "Retries" in the README.
-# attempts = 3
-# timeout_seconds = 10
-# growth = 2.0
-# max_timeout_seconds = 60
-# delay_seconds = 1
-# max_delay_seconds = 10
-# jitter = 0.5
-# max_total_seconds = 300
-
-[retry.wake_sidecar]
-## The optional wake-sidecar ensure before a local launch, and its `show` lookup. The ensure
-## is idempotent, so a retry cannot start the unit twice. On a loaded host its interpreter
-## start and unit-manager query took about 3 s, the old fixed budget, so it timed out.
-## The sidecar is optional, so the total keeps a hung one from holding a launch: each of
-## the ensure and the show lookup ends within it, 24 s for the two together at worst. Two
-## attempts of 4 and then 6 s, with up to 1 s between them, fit the 12 s total.
-# attempts = 2
-# timeout_seconds = 4
-# growth = 1.5
-# max_timeout_seconds = 6
-# max_total_seconds = 12
-
-[retry.dolt_server]
-## The optional local Dolt supervisor's ensure before a launch. It used to wait with no
-## bound. Asked once: a hung ensure would hang again. Stopping the ensure stops only the
-## wait; a server it asked the unit manager to start keeps starting, and the launch
-## continues as it does when the supervisor reports its embedded fallback.
-# attempts = 1
-# timeout_seconds = 120
-# max_timeout_seconds = 120
-
-[retry.remote_allocation]
-## The ssh call that asks a remote host which session a remote launch attaches to. A call
-## that overruns its timeout, or is killed from outside, never answered, so it is asked
-## again; any exit it reports itself is final.
-# attempts = 2
-# timeout_seconds = 60
-# max_timeout_seconds = 120
-
-[retry.client_fetch]
-## The fetch of this machine's own editable ai-cli-utils checkout before a remote launch.
-## A fetch that times out or loses its connection is retried; when every attempt fails the
-## launch says it could not check origin/main and continues on the client it has.
-# timeout_seconds = 20
-# max_timeout_seconds = 60
-
-[retry.registry_fetch]
-## Every fetch of a shared name registry, git or Dolt. In a checkout with thousands of refs
-## on a loaded host one fetch measured 16 to 27 s. A timed-out or unreachable fetch is
-## retried; a credential the remote refuses is not.
-# attempts = 2
-# timeout_seconds = 60
-# max_timeout_seconds = 120
 
 [session_relaunch]
 on_boot = false

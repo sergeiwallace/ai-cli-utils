@@ -1663,9 +1663,9 @@ max_timeout_seconds = 120
 ```
 
 A key your file leaves out takes the shipped value
-([src/ai_cli/data/retry.toml](src/ai_cli/data/retry.toml)); the template
-([docs/reference/config.toml](docs/reference/config.toml)) shows each one commented out,
-so a new config file never pins today's default. Your own `[retry]` values
+([src/ai_cli/data/retry.toml](src/ai_cli/data/retry.toml)). The template
+([docs/reference/config.toml](docs/reference/config.toml)) leaves `[retry]` out, so a new
+config file never pins today's default; this section is where the policy is documented. Your own `[retry]` values
 apply to every site, ahead of the shipped per-site tables; a `[retry.<site>]` table of
 yours overrides one site. An invalid value is reported, naming the key, and the shipped
 value is used.

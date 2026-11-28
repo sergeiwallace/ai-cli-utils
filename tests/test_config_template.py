@@ -200,16 +200,19 @@ def test_given_a_table_config_py_validates_with_defaults_when_checked_then_its_k
         assert unread == set(), f"[{table}] lists keys nothing reads: {sorted(unread)}"
 
 
-def test_given_the_shipped_retry_policy_when_the_template_documents_it_then_every_value_matches():
-    """The template's commented ``[retry]`` lines are the shipped ``data/retry.toml``, uncommented."""
+def test_given_the_shipped_retry_policy_when_the_readme_documents_it_then_every_value_matches():
+    """The README's ``[retry]`` example under "Retries" is the shipped ``data/retry.toml``."""
     from ai_cli import retry
 
-    lines = DEFAULT_CONFIG[DEFAULT_CONFIG.index("\n[retry]\n") : DEFAULT_CONFIG.index("\n[session_relaunch]\n")]
-    uncommented = "\n".join(
-        line[2:] if line.startswith("# ") else line for line in lines.splitlines() if not line.startswith("##")
-    )
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    section = readme[readme.index("\n### Retries\n") :]
+    block = section[section.index("```toml\n") + len("```toml\n") : section.index("\n```\n")]
 
-    assert tomllib.loads(uncommented)["retry"] == retry.shipped_table()
+    assert tomllib.loads(block)["retry"] == retry.shipped_table()
+
+
+def test_given_the_shipped_template_when_read_then_it_sets_no_retry_value():
+    assert "retry" not in tomllib.loads(DEFAULT_CONFIG)
 
 
 def test_given_a_config_written_from_the_template_when_the_shipped_retry_default_changes_then_a_site_follows_it(

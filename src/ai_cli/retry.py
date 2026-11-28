@@ -21,9 +21,10 @@ captured at launch and never taken from an environment variable. ``[retry]`` hol
 policy and ``[retry.<site>]`` overrides it for one site. Layers apply in this order, later
 winning: the shipped ``[retry]``, the shipped ``[retry.<site>]``, the user's ``[retry]``, the
 user's ``[retry.<site>]``. A key missing from the user's file therefore takes the shipped value.
-The shipped values live in ``data/retry.toml``, never at a call site, and the config template
-repeats them as commented lines: an active template value would be copied into every new
-user's file and pin it there when the shipped default later changes.
+The shipped values live in ``data/retry.toml``, never at a call site, and the README's
+"Retries" section documents them. The config template leaves ``[retry]`` out: an active
+template value would be copied into every new user's file and pin it there when the shipped
+default later changes.
 """
 
 from __future__ import annotations
