@@ -32,14 +32,10 @@ def test_given_credential_names_when_classified_then_only_credentials_are_named(
     assert names == sorted(PLANTED_CREDENTIALS)
 
 
-def test_given_the_session_when_it_starts_then_no_credential_variable_remains():
-    assert _credential_environment_names(os.environ) == []
-
-
 @pytest.mark.skipif(os.environ.get("AI_CLI_SCRUB_INNER") != "1", reason="reports from the inner session only")
 def test_inner_session_reports_surviving_names():
-    survivors = sorted(name for name in os.environ if name.startswith(("PLANTED_", "DOPPLER_", "AWS_")))
-    print("SURVIVORS=" + json.dumps(survivors))
+    print("SURVIVORS=" + json.dumps(_credential_environment_names(os.environ)))
+    print("KEPT=" + json.dumps(sorted(name for name in PLANTED_BENIGN if name in os.environ)))
 
 
 def test_given_credentials_in_the_launching_environment_when_a_session_starts_then_none_reaches_it():
@@ -66,6 +62,8 @@ def test_given_credentials_in_the_launching_environment_when_a_session_starts_th
     )
     reported = [line for line in completed.stdout.splitlines() if line.startswith("SURVIVORS=")]
     assert len(reported) == 1, completed.stdout[-2000:]
-    survivors = json.loads(reported[0].removeprefix("SURVIVORS="))
-    assert survivors == ["PLANTED_BENIGN_SETTING", "PLANTED_TOKENIZERS_PARALLELISM"]
+    kept = [line for line in completed.stdout.splitlines() if line.startswith("KEPT=")]
+    assert len(kept) == 1, completed.stdout[-2000:]
+    assert json.loads(reported[0].removeprefix("SURVIVORS=")) == []
+    assert json.loads(kept[0].removeprefix("KEPT=")) == sorted(PLANTED_BENIGN)
     assert not any(value in completed.stdout + completed.stderr for value in PLANTED_CREDENTIALS.values())
