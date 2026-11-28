@@ -16,6 +16,7 @@ and the engine faked at the process boundary. The launch is bare (``-b``), so it
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
@@ -309,6 +310,7 @@ def test_given_an_exited_probe_when_retired_by_name_then_its_worktree_is_removed
     worktree = env.started[0][0]
     branch = f"probe-{STEM}-probe-1"
     tip = git(env.repo, "rev-parse", f"refs/heads/{branch}").strip()
+    os.chdir(env.repo)
 
     code, out, err = run_cli(["ai", "retire-session", f"{STEM}-probe-1", "-r", str(env.repo), "-y"])
 

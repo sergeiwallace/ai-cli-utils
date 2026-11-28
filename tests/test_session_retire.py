@@ -400,7 +400,6 @@ def _session_row_at(name: str, cwd: Path) -> None:
 
 
 def test_given_a_record_naming_the_repository_root_when_retiring_a_name_with_no_slot_then_it_is_refused(slot):
-    # A --no-worktree session records the directory it started in; that is never a slot to remove.
     _session_row_at("c-myrepo-9", slot["repo"])
     before = _everything(slot)
     code, out, err = run_cli(["ai", "retire-session", "myrepo-9", "-r", str(slot["repo"]), "-y"])
