@@ -37,6 +37,21 @@ _STATE_SUBDIRECTORIES = {
     "APPDATA": "appdata",
 }
 _ISOLATION_ERROR = "Cannot isolate pytest user state. Start pytest with a temporary HOME and XDG_STATE_HOME."
+_CREDENTIAL_NAME = re.compile(
+    r"(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIALS?|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|DSN|COOKIE|KEY)($|_)"
+    r"|DATABASE_URL|^DOPPLER_|^AWS_",
+    re.IGNORECASE,
+)
+
+
+def _credential_environment_names(environ) -> list[str]:
+    """Name the variables whose value is a credential, so none reaches a test process."""
+    return sorted(name for name in environ if _CREDENTIAL_NAME.search(name))
+
+
+def _scrub_credential_environment() -> None:
+    for name in _credential_environment_names(os.environ):
+        os.environ.pop(name, None)
 
 
 def _account_home() -> Path:
@@ -102,6 +117,7 @@ def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
         os.environ.update(_state_environment(root))
         for key in ("HOMEDRIVE", "HOMEPATH", "AI_CLI_CANONICAL_WORKTREE_REGISTRY"):
             os.environ.pop(key, None)
+        _scrub_credential_environment()
         if breach := _user_state_breach(root):
             raise pytest.UsageError(f"{_ISOLATION_ERROR} {breach}")
     except (KeyError, OSError, RuntimeError) as exc:
