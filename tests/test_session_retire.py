@@ -9,13 +9,16 @@ nothing written; the dead arm anchors, removes and records.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
 
+import psutil
 import pytest
 from conftest import run_cli, snapshot_tree
 
@@ -415,3 +418,135 @@ def test_given_a_record_naming_another_worktree_than_the_slot_when_retiring_then
     err = _refused(slot, "-y")
     assert str(slot["wt"]) in err and str(other.resolve()) in err
     assert other.is_dir()
+
+
+def _admin_dir(wt: Path) -> Path:
+    return Path(_git("rev-parse", "--absolute-git-dir", cwd=wt).strip()).resolve()
+
+
+@pytest.fixture
+def interrupted(slot, monkeypatch):
+    """The slot as a launch killed mid ``git worktree add`` leaves it, quiet past the threshold.
+
+    Git locks the new checkout as ``initializing``, takes ``index.lock`` and writes the
+    files before the index, so a kill leaves no index and each file empty or cut short.
+    """
+    admin = _admin_dir(slot["wt"])
+    (admin / "index").unlink()
+    (admin / "index.lock").write_bytes(b"")
+    (admin / "locked").write_text("initializing\n")
+    (slot["wt"] / ".gitignore").write_bytes(b"")
+    (slot["wt"] / "README.md").write_bytes(b"h")
+    monkeypatch.setattr("ai_cli.session_retire.DEAD_CHECKOUT_QUIET_SECONDS", 0)
+    return {**slot, "admin": admin}
+
+
+def test_given_an_interrupted_never_started_home_when_retired_then_it_is_anchored_and_removed(interrupted):
+    repo, wt = interrupted["repo"], interrupted["wt"]
+    tip = _ref(repo, f"refs/heads/{BRANCH}")
+
+    code, out, err = _retire(repo, "-y")
+    assert code == 0, out + err
+    assert "interrupted checkout" in out and "--force --force" in out
+    assert not wt.exists()
+    assert not interrupted["admin"].exists()
+    assert f"worktree {wt.as_posix()}\n" not in _git("worktree", "list", "--porcelain", cwd=repo)
+    assert _ref(repo, f"{ANCHORS}/{BRANCH}") == tip == _ref(repo, f"refs/heads/{BRANCH}")
+    assert str(wt) not in _registry_paths()
+    (row,) = (interrupted["state"] / "session-retirements.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(row)["anchors"] == {f"{ANCHORS}/{BRANCH}": tip}
+
+
+def test_given_an_interrupted_home_missing_files_when_retired_then_it_is_removed(interrupted):
+    (interrupted["wt"] / "README.md").unlink()
+    code, out, err = _retire(interrupted["repo"], "-y")
+    assert code == 0, out + err
+    assert not interrupted["wt"].exists()
+
+
+def test_given_a_lock_reason_other_than_initializing_when_retiring_then_it_is_refused_naming_the_lock(interrupted):
+    (interrupted["admin"] / "locked").write_text("kept on purpose\n")
+    err = _refused(interrupted, "-y")
+    assert "lock reason is `kept on purpose`, not `initializing`" in err
+
+
+def test_given_a_locked_home_with_an_index_and_another_reason_when_retiring_then_it_is_refused_before_any_write(slot):
+    _git("worktree", "lock", "--reason", "on a removable drive", str(slot["wt"]), cwd=slot["repo"])
+    err = _refused(slot, "-y")
+    assert "lock reason is `on a removable drive`, not `initializing`" in err
+
+
+def test_given_a_file_outside_heads_tree_when_retiring_an_interrupted_home_then_it_is_refused_naming_it(interrupted):
+    (interrupted["wt"] / "debug.log").write_text("scratch\n")
+    err = _refused(interrupted, "-y")
+    assert "debug.log is not in HEAD's tree" in err
+
+
+def test_given_a_file_diverging_from_heads_blob_when_retiring_an_interrupted_home_then_it_is_refused(interrupted):
+    (interrupted["wt"] / "README.md").write_bytes(b"hX")
+    err = _refused(interrupted, "-y")
+    assert "README.md is neither HEAD's blob nor a prefix of it" in err
+
+
+def test_given_a_file_longer_than_heads_blob_when_retiring_an_interrupted_home_then_it_is_refused(interrupted):
+    (interrupted["wt"] / "README.md").write_bytes(b"hi\nmore\n")
+    err = _refused(interrupted, "-y")
+    assert "README.md is neither HEAD's blob nor a prefix of it" in err
+
+
+def test_given_an_admin_dir_changed_moments_ago_when_retiring_an_interrupted_home_then_it_is_refused(
+    interrupted, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.session_retire.DEAD_CHECKOUT_QUIET_SECONDS", 3600)
+    err = _refused(interrupted, "-y")
+    assert "admin dir" in err and "changed" in err and "3600s" in err
+
+
+def test_given_a_head_not_contained_in_the_target_when_retiring_an_interrupted_home_then_it_is_refused(interrupted):
+    repo = interrupted["repo"]
+    tree = _git("rev-parse", f"refs/heads/{BRANCH}^{{tree}}", cwd=repo).strip()
+    local = _git("commit-tree", tree, "-p", f"refs/heads/{BRANCH}", "-m", "local only", cwd=repo).strip()
+    _git("update-ref", f"refs/heads/{BRANCH}", local, cwd=repo)
+    err = _refused(interrupted, "-y")
+    assert f"HEAD {local[:12]} is not contained in" in err
+
+
+def test_given_a_live_process_working_in_an_interrupted_home_when_retiring_then_it_is_refused_naming_it(interrupted):
+    resident = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], cwd=interrupted["wt"])
+    try:
+        err = _refused(interrupted, "-y")
+    finally:
+        resident.kill()
+        resident.wait()
+    assert f"process {resident.pid}" in err and "inside the checkout" in err
+
+
+class _UnreadableProcess:
+    """A process of this user, started just now, whose working directory the OS will not disclose."""
+
+    pid = 999_999
+
+    def oneshot(self):
+        return contextlib.nullcontext()
+
+    def create_time(self):
+        return time.time()
+
+    def username(self):
+        return psutil.Process().username()
+
+    def uids(self):
+        return psutil.Process().uids()
+
+    def cwd(self):
+        raise psutil.AccessDenied(self.pid)
+
+    open_files = memory_maps = cmdline = exe = cwd
+
+
+def test_given_a_process_whose_details_cannot_be_read_when_retiring_an_interrupted_home_then_it_is_refused(
+    interrupted, monkeypatch
+):
+    monkeypatch.setattr("ai_cli.session_retire.psutil.process_iter", lambda: iter([_UnreadableProcess()]))
+    err = _refused(interrupted, "-y")
+    assert f"process {_UnreadableProcess.pid} cannot be read" in err
