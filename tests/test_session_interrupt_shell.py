@@ -715,16 +715,16 @@ def test_given_a_probe_when_agent_exits_cleanly_then_wrapper_restarts_it(pane_se
     assert _wait(lambda: pane_session.count() == 2), pane_session.capture()
 
 
-def test_given_a_probe_its_owner_set_to_never_when_agent_exits_then_same_pane_returns_to_shell_naming_why(
+def test_given_a_probe_its_owner_set_to_never_when_agent_exits_then_original_shell_returns_naming_why(
     pane_session,
 ):
-    pane_session.start(probe=True)
+    pane_session.start(probe=True, caller=True)
     pane_session.set_policy("never", by="owner")
     time.sleep(3.2)
     pane_session.exit_agent("0")
-    pane_session.assert_shell()
+    pane_session.assert_caller()
     assert pane_session.count() == 1
-    assert "not restarting: relaunch policy never" in pane_session.capture()
+    assert "not restarting: relaunch policy never" in pane_session.output.read_text()
 
 
 @pytest.mark.parametrize("remote", [False, True])
