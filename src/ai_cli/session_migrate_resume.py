@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import session_migrate as m
+from . import session_migrate_links as _links
 from .venv_relocate import needs_relocation, repoint_checkout_record, stale_checkout_record
 
 # Include absent optional parts so dry and real runs expose the same inventory.
@@ -17,6 +18,7 @@ PARTS = (
     "name registry",
     "virtual environment",
     "venv back-pointer",
+    "stale link",
     "branch",
     "canonical registry",
     "provenance owner",
@@ -58,6 +60,7 @@ class HomePlan:
     moves: list[m.PlannedMove] = field(default_factory=list)
     #: ``(part, action)``: each write and the part it is reported under.
     actions: list[tuple[str, Callable[[], object]]] = field(default_factory=list)
+    links: list[_links.StaleLink] = field(default_factory=list)
 
 
 def _stale_transcript(path: Path, old_wt: Path, new_wt: Path, old: str) -> bool:
@@ -81,8 +84,20 @@ def _stale_transcript(path: Path, old_wt: Path, new_wt: Path, old: str) -> bool:
     return False
 
 
-def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: Path) -> HomePlan:
-    """Plan the steps a worktree move may have preceded, without changing any files."""
+def plan_home(
+    repo: Path,
+    old_wt: Path,
+    new_wt: Path,
+    old: str,
+    new: str,
+    home: Path,
+    *,
+    link_pairs: list[tuple[Path, Path]],
+) -> HomePlan:
+    """Plan the steps a worktree move may have preceded, without changing any files.
+
+    ``link_pairs`` are the roots the migration renames; each link in the slot naming one is planned.
+    """
     plan = HomePlan()
 
     def add(kind, source, dest, action):
@@ -120,6 +135,8 @@ def plan_home(repo: Path, old_wt: Path, new_wt: Path, old: str, new: str, home: 
     record = stale_checkout_record(venv, old_wt)
     if record is not None:
         add("venv back-pointer", record, new_wt, lambda: repoint_checkout_record(record, old_wt, new_wt))
+    plan.links = _links.scan([(new_wt, new_wt)], link_pairs)
+    plan.moves += [m.PlannedMove(*line) for line in _links.describe(plan.links)]
     old_pd, new_pd = m.cc_project_dir(old_wt, home), m.cc_project_dir(new_wt, home)
     if old_pd.exists() and new_pd.exists():
         raise m.MigrationError(f"both project directories exist: {old_pd} and {new_pd}; refusing to merge")
@@ -155,10 +172,11 @@ def _ownership(plan, branch):
 
 
 def apply_home(plan: HomePlan, result: m.MigrationResult, *, skip: frozenset[str] = frozenset()) -> None:
-    """Run each planned write, except those of a part in ``skip``."""
+    """Run each planned write, except those of a part in ``skip``, then repoint stale links."""
     for kind, action in plan.actions:
         if kind not in skip:
             action()
+    result.warnings += _links.apply(plan.links)
 
 
 def proven_pair(repo: Path, old: str, new: str, state: Path) -> bool:

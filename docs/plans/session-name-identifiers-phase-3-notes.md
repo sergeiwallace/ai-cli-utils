@@ -1,5 +1,7 @@
 # Human-name session identifiers: implementation notes
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 These notes record the measurements the human-name session identifier work takes before
 it writes code that depends on them: each AI client's session store, and the size of the
 generated name list. The design that asks for them is kept in the environment
@@ -60,14 +62,19 @@ thread without renaming the session or changing any old native records:
 
 ```text
 python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION
-ai cx NAME -r
+ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r
 ```
 
 `RECORD` is the absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json`
 path (the same path the generated launcher uses); `CWD` is the worktree. Both
-`SESSION` values must be the exact tmux session name, for example `cx-myproject-1`;
-`NAME` is the existing title used by `ai cx`. Substitute actual values, quoting paths
-as required by the invoking shell. For a paired host, run preparation on the owning
+`SESSION` values passed to preparation must be the exact tmux session name. Then
+relaunch from the session's worktree with the slot's original launch flags
+(`--is-remote`, `--project-prefix`, `--project`). The relaunch above is a remote-slot
+example: `PREFIX`, `PROJECT` and `SESSION` stand for the original project prefix,
+project and exact tmux session name, for example `cx-r-myproject-session-1`.
+Substitute actual values, quoting paths as required by the invoking shell; local
+slots repeat their original flags without adding `--is-remote`.
+For a paired host, run preparation on the owning
 host with its paths and use route `paired-host-tmux` instead of `local-tmux`.
 
 The module's existing `prepare` and `launch` operations accept trailing
@@ -334,7 +341,15 @@ The bridge is a child of the exec-preserving writer and lives only while that
 owner's process identity and parent relationship still match. It starts unconfirmed.
 The existing callback notifies it after validating the native event. Confirmation
 requires the current token and a kernel peer PID whose ancestry includes the owner,
-with the same effective UID. A `get` request returns a live `waiting` snapshot only
+with the same effective UID. The callback holds the slot lock while writing the
+confirmed record, notifying the bridge and, on failure, restoring the prior record.
+The original bytes are staged on the same filesystem before the confirmed write;
+rollback uses an atomic rename rather than another file write after rejection.
+This ordering lets the bridge validate the confirmed phase during its handshake
+without retaining a rejected identity. The prior in-flight token is preserved on
+rollback, so an unconfirmed launch still follows the existing recovery rules.
+A missing bridge keeps the diagnostic confirmation behavior unchanged.
+A `get` request returns a live `waiting` snapshot only
 after this confirmation, including the thread, cwd and nullable rollout path. A
 changed committed binding invalidates that snapshot until another valid callback.
 Requests and replies are bounded JSON lines on a private Unix socket; the bridge

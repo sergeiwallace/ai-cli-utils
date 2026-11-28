@@ -1,0 +1,1 @@
+- Clean up the placeholder tmux pane on one-shot Antigravity (`ai g --once`) ownership failures or multiplexer errors (including under `remain-on-exit on`), bound setup calls with timeouts, and report cleanly when a fast-exiting one-shot session finishes before attach.

@@ -126,3 +126,23 @@ def test_given_tmux_hosts_the_session_when_doctor_runs_then_compaction_is_ok():
 
     row = next((line for line in stdout.splitlines() if " compact " in line), "")
     assert "OK" in row, stdout
+
+
+def test_given_windows_with_a_working_tmux_opted_out_when_doctor_runs_then_it_does_not_claim_tmux_is_missing():
+    """psmux answers to ``tmux`` natively on Windows: an opted-out host has tmux, it just does not use it."""
+    from conftest import run_cli
+
+    with ExitStack() as stack:
+        for target, kwargs in [
+            ("ai_cli.main.sys", {"new": _WindowsSys()}),
+            ("ai_cli.tmux_setup.tmux_runs", {"return_value": True}),
+            ("ai_cli.tmux_setup.config_opts_out", {"return_value": True}),
+            ("ai_cli.compact_transport.probe_pty", {"return_value": NO_PTY_PLATFORM}),
+            ("ai_cli.direnv_setup.is_bypassed", {"return_value": True}),
+        ]:
+            stack.enter_context(patch(target, **kwargs))
+        _code, stdout, _err = run_cli(["ai", "doctor", "--dry-run"])
+
+    row = next((line for line in stdout.splitlines() if " compact " in line), "")
+    assert "tmux does not host sessions here" in row, stdout
+    assert "no native tmux" not in stdout

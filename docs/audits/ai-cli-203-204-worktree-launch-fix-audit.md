@@ -18,6 +18,8 @@ delegation_provenance:
 
 # AI-CLI-203/AI-CLI-204 worktree launch fix — audit
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Status:** converged-with-follow-up
 
 **Created:** 2026-08-10

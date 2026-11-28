@@ -64,8 +64,12 @@ def test_given_every_client_with_a_record_when_probed_then_each_case_passes_and_
 
     assert result.exit_code == 0, result.output
     for client in CLIENTS:
+        can_absent = sc.ADAPTERS[client].can_probe_absence
         for state in (sc.PRESENT, sc.ABSENT, sc.UNKNOWN):
-            assert f"{client} {state}: expected {state}, got {state} (ok)" in result.output
+            if state == sc.ABSENT and not can_absent:
+                assert f"{client} {state} skipped: " in result.output
+            else:
+                assert f"{client} {state}: expected {state}, got {state} (ok)" in result.output
 
 
 def test_given_every_client_with_a_record_when_probed_as_json_then_the_object_names_each_case(home, on_path, worktree):
@@ -79,10 +83,15 @@ def test_given_every_client_with_a_record_when_probed_as_json_then_the_object_na
     for entry in report["clients"]:
         assert entry["installed"] is True
         assert [case["case"] for case in entry["cases"]] == [sc.PRESENT, sc.ABSENT, sc.UNKNOWN]
+        can_absent = sc.ADAPTERS[entry["client"]].can_probe_absence
         for case in entry["cases"]:
             assert set(case) == {"case", "expected", "actual", "reason", "skipped", "ok"}
-            assert case["actual"] == case["expected"] and case["ok"] is True and case["reason"]
-            assert case["skipped"] is False
+            assert case["ok"] is True and case["reason"]
+            if case["case"] == sc.ABSENT and not can_absent:
+                assert case["skipped"] is True and case["actual"] is None
+            else:
+                assert case["actual"] == case["expected"]
+                assert case["skipped"] is False
     [unknown] = [case for case in report["clients"][0]["cases"] if case["case"] == sc.UNKNOWN]
     assert "is missing" in unknown["reason"]
 
@@ -158,17 +167,19 @@ def test_given_an_empty_store_when_probed_as_json_then_present_is_a_passing_skip
 def test_given_a_store_root_that_cannot_be_read_when_probed_then_present_fails_naming_the_problem_and_it_exits_1(
     home, on_path
 ):
-    make_root("gemini", home)
-    (home / ".gemini" / "projects.json").write_text("not json")
+    make_root("agy", home)
+    cache = home / ".gemini" / "antigravity-cli" / "cache" / "last_conversations.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("not json", encoding="utf-8")
 
     code, report = _json()
 
-    [gemini] = [entry for entry in report["clients"] if entry["client"] == "gemini"]
-    [present] = [case for case in gemini["cases"] if case["case"] == sc.PRESENT]
+    [agy] = [entry for entry in report["clients"] if entry["client"] == "agy"]
+    [present] = [case for case in agy["cases"] if case["case"] == sc.PRESENT]
     assert code == 1 and report["ok"] is False
     assert present["ok"] is False and present["skipped"] is False
-    assert "gemini project registry" in present["reason"] and "is not readable" in present["reason"]
-    assert "gemini present: gemini project registry" in _run().output
+    assert "Antigravity conversation cache" in present["reason"] and "is unavailable" in present["reason"]
+    assert "agy present: Antigravity conversation cache" in _run().output
 
 
 def test_given_a_store_with_an_unreadable_record_when_probed_then_absent_fails_with_the_probe_reason(

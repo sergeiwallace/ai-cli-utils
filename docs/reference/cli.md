@@ -11,7 +11,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | Command | Summary |
 |---|---|
 | [`ai add-name`](#ai-add-name) | Session names: add a name to the name database without a prompt |
-| [`ai adopt-session`](#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai adopt-session`](#ai-adopt-session) | Register a Claude Code or Antigravity session started outside `ai` for managed resume. |
 | [`ai attach`](#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -33,7 +33,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai doctor`](#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](#ai-g) | Launch an Antigravity (agy) session. |
 | [`ai import-names`](#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -42,6 +42,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai layout list`](#ai-layout-list) | List the available layout files |
 | [`ai layout profiles`](#ai-layout-profiles) | Regenerate a layout's iTerm2 Dynamic Profiles without relaunching it |
 | [`ai layout validate`](#ai-layout-validate) | Check a layout file against the layout schema without applying it |
+| [`ai list-capabilities`](#ai-list-capabilities) | Print the optional behaviours this launcher has enabled, one per line |
 | [`ai list-migrations`](#ai-list-migrations) | Session names: list every recorded rename with its state |
 | [`ai list-name-candidates`](#ai-list-name-candidates) | Session names: count the free names per length and the letter tiers the picker would use |
 | [`ai list-names`](#ai-list-names) | Session names: list every held name with its title, host, client, kind and general status |
@@ -63,8 +64,9 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai quota history`](#ai-quota-history) | Print quota history |
 | [`ai quota publish`](#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](#ai-quota-record) | Record a single AI-usage event into the quota DB |
+| [`ai quota render-statusline`](#ai-quota-render-statusline) | Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state |
 | [`ai quota status`](#ai-quota-status) | Print current quota snapshot |
-| [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
+| [`ai quota statusline-part`](#ai-quota-statusline-part) | Emit the quota section of a client statusline |
 | [`ai quota sync`](#ai-quota-sync) | Sync quota snapshot from the remote server |
 | [`ai reassign-name`](#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
@@ -72,7 +74,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai register`](#ai-register) | Register a repository root and its task prefix |
 | [`ai release-name`](#ai-release-name) | Session names: release one name once its worktree and transcript are both gone |
 | [`ai remove-name`](#ai-remove-name) | Session names: remove a name that was added by hand |
-| [`ai retire-session`](#ai-retire-session) | Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry. |
+| [`ai retire-session`](#ai-retire-session) | Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry. |
 | [`ai seed-name-verdicts`](#ai-seed-name-verdicts) | Session names: apply the owner's approvals from a seed file, after checking it part by part against the owner-approved oracle the cutover record pins |
 | [`ai session-reaper`](#ai-session-reaper) | Independently managed stale-session reaper |
 | [`ai session-reaper start`](#ai-session-reaper-start) | Register the stale-session reaper with Circus |
@@ -93,6 +95,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai sessions publish-timer status`](#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions render-title`](#ai-sessions-render-title) | Render a plain-text terminal window title from Antigravity stdin JSON |
 | [`ai sessions repair-policy`](#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
@@ -100,8 +103,6 @@ the [CLI guide](../tools/ai-cli-usage.md).
 | [`ai set-name-verdict`](#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -130,7 +131,7 @@ the [CLI guide](../tools/ai-cli-usage.md).
 ai [OPTIONS] [COMMAND] [ARGS]...
 ```
 
-Unified AI CLI for Claude, Gemini, Pi, and Codex.
+Unified AI CLI for Claude Code, Antigravity (agy), Pi, and Codex.
 
 Every command and subcommand is listed below with its one-line use; `ai COMMAND -h` prints a command's full help.
 
@@ -166,7 +167,9 @@ Arguments:
 ai adopt-session [OPTIONS] [NAME]
 ```
 
-Register a Claude Code session started outside `ai` so `ai c <n>` resumes it.
+Register a Claude Code or Antigravity session started outside `ai` for managed resume.
+
+Antigravity adoption is explicit and owner-approved. Select `-e agy` with a conversation UUID, an agy PID or a tmux session name, and stop the conversation before applying the plan.
 
 To rename a session already in an `ai` slot, use `ai migrate-session`.
 
@@ -187,6 +190,12 @@ Arguments:
 | `-n` | `--dry-run` |  | Show what would happen without writing anything |
 | `-y` | `--yes` |  | Skip the confirmation prompt (never covers a title collision) |
 | `-m` | `--name` | `TEXT` | Adopt into a slot named with this first name, reserved first |
+| `-e` | `--engine` | `[claude\|agy]` | Session client |
+| `-u` | `--conversation` | `TEXT` | Exact Antigravity conversation UUID |
+| `-P` | `--pid` | `INTEGER RANGE` | Discover the Antigravity conversation from an agy PID  [x>=1] |
+| `-M` | `--tmux-session` | `TEXT` | Discover the Antigravity conversation from a tmux session |
+| `-R` | `--paired-host` |  | Adopt on the paired host for a g-r- tmux slot |
+| `-S` | `--stopped` |  | Confirm Antigravity has stopped when liveness cannot be checked |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai attach
@@ -246,7 +255,7 @@ Launch a Claude Code session. A migration to the session's name that this host r
 
 Resume an existing session by name with `ai c TITLE -r`, or `ai c TITLE -R -r` for one on the remote host. TITLE is the session's title, ending in a first name (myrepo-box-ada) or a legacy index (myrepo-box-2); a first name alone also works. Without -r, a NAME that is not an existing title labels a NEW session, and the launch says so before it creates anything. The chief of staff resumes with `ai cos -r`.
 
-For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and it can be removed like any scratch worktree once it exits.
+For a throwaway probe or test session, use `ai c -t [NAME]`: nothing treats it as a session home, and `ai retire-session TITLE` removes it once it exits.
 
 Arguments:
 
@@ -269,7 +278,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -466,7 +475,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -484,7 +493,7 @@ ai cx [OPTIONS] [NAME]
 
 Launch a Codex session.
 
-For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch with `ai cx NAME -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
+For a stopped legacy slot with no identity record, owner-approved recovery is available through `python -m ai_cli.codex_session prepare RECORD CWD SESSION false local-tmux --start-fresh SESSION` (short form: -F SESSION). RECORD is the slot's absolute `<state>/ai-cli-utils/sessions/<SESSION>.codex.json` path, and CWD is its worktree. Both SESSION values must be the exact tmux session name. Then relaunch from the session's worktree with the slot's original launch flags (--is-remote, --project-prefix, --project); for example `ai cx --is-remote --project-prefix PREFIX --project PROJECT SESSION -r`. Approval creates only a missing record, starts a new thread, preserves old native records, and is never saved in the launch recipe. This is an option on the prepare/launch module, not on ai cx. Windows launch retains its existing exec-identity refusal.
 
 Arguments:
 
@@ -507,7 +516,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -589,7 +598,9 @@ Session names: find pool names by status, verdict scope, holder and hold state, 
 ai g [OPTIONS] [NAME]
 ```
 
-Launch a Gemini CLI session
+Launch an Antigravity (agy) session.
+
+Requires Google account sign-in (`~/.gemini/antigravity-cli/antigravity-oauth-token`) and refuses API-billed `modelProvider` settings so launches never fall back to API billing. Confirmed sessions bind to their native conversation ID and resume with `--conversation`. For a stopped legacy or manual slot with no identity record, owner-approved recovery is available through `python -m ai_cli.agy_session prepare RECORD CWD SESSION AI_NAME false local-tmux --start-fresh SESSION` (short form: -F SESSION) or `--adopt-conversation UUID SESSION` (short form: -A UUID SESSION).
 
 Arguments:
 
@@ -612,7 +623,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -741,6 +752,18 @@ Arguments:
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai list-capabilities
+
+```text
+ai list-capabilities [OPTIONS]
+```
+
+Print the optional behaviours this launcher has enabled, one per line
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai list-migrations
 
 ```text
@@ -849,6 +872,8 @@ Afterwards it cleans up the old name in every other repo: a clean, landed `.work
 Every Beads issue assigned to exactly OLD and not closed, in each store under the projects dir, is re-keyed to NEW with `bd --actor OLD update --if-assignee OLD` and a comment; a store bd cannot read is named and the command exits 1, and each changed store is named as needing its publish step. With --finish it re-keys only when this host records that OLD was migrated to NEW; --beads-only does just that re-key, and runs while NEW is live.
 
 --finish given one name (OLD, NEW or NEW's first name, positionally or with -t) finds the pair and its repo in this host's migration record, from any directory; a name matching no pair, or several, is refused with exit 2 and what it matched.
+
+Every symlink inside the slot and the moved agent worktrees that names the old slot or an OLD-agents container, `.venv` included, is repointed at the same path under NEW, a relative link staying relative. A link outside those worktrees is never changed: one a link inside resolves through that names an old-name path is listed as NOT fixed, and the run exits 1.
 
 Every writing run ends with a read-only re-plan of the pair. Only a re-plan that finds nothing left records the migration finished (verified); otherwise the run names each part left as NOT finished and exits 1. A hook is done only when its --dry-run prints `migrate-status: done`.
 
@@ -978,7 +1003,7 @@ Arguments:
 | `-d` | `--dry-run` |  | Print the resolved launch plan and exit; creates and starts nothing |
 | `-v` | `--verbose` |  | Show additional launch progress details |
 | `-q` | `--quiet` |  | Suppress launch progress output |
-| `-D` | `--no-direnv` |  | Skip the direnv preflight and auto-install |
+| `-D` | `--no-direnv` |  | Skip the direnv preflight, auto-install and .envrc approval |
 | `-W` | `--no-worktree` |  | Disable git worktree isolation |
 | `-s` | `--sandbox` |  | Enable sandboxing (default: off) |
 | `-n` | `--notify` |  | Fire system notifications on task completion |
@@ -1099,6 +1124,18 @@ Arguments:
 |---|---|---|---|
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai quota render-statusline
+
+```text
+ai quota render-statusline [OPTIONS]
+```
+
+Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai quota status
 
 ```text
@@ -1109,6 +1146,7 @@ Print current quota snapshot
 
 | Short | Long | Value | Description |
 |---|---|---|---|
+| `-j` | `--json` |  | Print Claude and Antigravity quota status as JSON |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai quota statusline-part
@@ -1117,10 +1155,11 @@ Print current quota snapshot
 ai quota statusline-part [OPTIONS]
 ```
 
-Emit the quota section of the CC statusline
+Emit the quota section of a client statusline
 
 | Short | Long | Value | Description |
 |---|---|---|---|
+| `-p` | `--provider` | `[claude\|agy]` | Quota provider segment to emit  [default: claude] |
 | `-h` | `--help` |  | Show this message and exit. |
 
 ## ai quota sync
@@ -1237,7 +1276,7 @@ Arguments:
 ai retire-session [OPTIONS] NAME
 ```
 
-Retire a dead session's home slot `.worktrees/NAME`: anchor its branch tips, then remove the checkout and its registry entry.
+Retire a dead session's worktree (its home slot `.worktrees/NAME`, or a probe's): anchor its branch tips, then remove the checkout and its registry entry.
 
 To rename a slot instead, use `ai migrate-session`.
 
@@ -1536,6 +1575,18 @@ Arguments:
 | `-P` | `--allow-partial-migration` |  | Relaunch a session even though a recorded migration to its name is partial; the parts left are written into its launch log |
 | `-h` | `--help` |  | Show this message and exit. |
 
+## ai sessions render-title
+
+```text
+ai sessions render-title [OPTIONS]
+```
+
+Render a plain-text terminal window title from Antigravity stdin JSON
+
+| Short | Long | Value | Description |
+|---|---|---|---|
+| `-h` | `--help` |  | Show this message and exit. |
+
 ## ai sessions repair-policy
 
 ```text
@@ -1646,30 +1697,6 @@ ai show-name-config [OPTIONS]
 ```
 
 Session names: print each naming setting, its value and the layer that set it
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend
-
-```text
-ai spend [OPTIONS] COMMAND [ARGS]...
-```
-
-Usage-cost reports
-
-| Short | Long | Value | Description |
-|---|---|---|---|
-| `-h` | `--help` |  | Show this message and exit. |
-
-## ai spend gemini
-
-```text
-ai spend gemini [OPTIONS]
-```
-
-Report historical Gemini CLI spend from local logs
 
 | Short | Long | Value | Description |
 |---|---|---|---|

@@ -11,6 +11,7 @@ Client     Store                                                 Working directo
 claude     ``~/.claude/projects/<slug>/*.jsonl``                 the slug; ``sessionId``; ``customTitle``
 codex      ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl``      first record ``payload.cwd``, ``payload.id``
 pi         ``~/.pi/agent/sessions/--<cwd>--/*.jsonl``            first record ``cwd``, ``id``; ``session_info.name``
+agy        ``~/.gemini/antigravity-cli/``                        ``conversation_summaries.db``, ``last_conversations.json``
 gemini     ``~/.gemini/tmp/<project id>/chats/*``                ``~/.gemini/projects.json`` maps path to id
 ========== ===================================================== ===================================
 
@@ -25,9 +26,13 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+from uuid import UUID
 
 from .cc_migrate import RECORD_NAME_KEYS, cc_project_dir
 
@@ -131,6 +136,7 @@ def rollback(changes: Iterable[Changed]) -> list[str]:
 
 class Adapter:
     client = ""
+    can_probe_absence = True
 
     def __init__(self, home: Path | None = None) -> None:
         self.home = home if home is not None else Path.home()
@@ -531,19 +537,209 @@ class Gemini(Adapter):
         return result
 
 
+def _file_uri_to_path(uri: str) -> str | None:
+    if not isinstance(uri, str) or not uri:
+        return None
+    if uri.startswith("file://"):
+        parsed = urlparse(uri)
+        raw = url2pathname(parsed.path)
+        if parsed.netloc and parsed.netloc not in ("", "localhost"):
+            raw = f"//{parsed.netloc}{raw}"
+        return raw or None
+    return uri
+
+
+class Antigravity(Adapter):
+    """Antigravity CLI (``agy``): SQLite conversation index plus workspace last-conversation cache."""
+
+    client = "agy"
+    can_probe_absence = False
+
+    def store_root(self) -> Path:
+        return self.home / ".gemini" / "antigravity-cli"
+
+    def summary_db(self) -> Path:
+        return self.store_root() / "conversation_summaries.db"
+
+    def conversation_cache(self) -> Path:
+        return self.store_root() / "cache" / "last_conversations.json"
+
+    def conversations_dir(self) -> Path:
+        return self.store_root() / "conversations"
+
+    def _read_cache(self) -> dict[str, str]:
+        cache = self.conversation_cache()
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise OSError(f"Antigravity conversation cache {cache} is unavailable") from exc
+        if not isinstance(data, dict):
+            raise OSError(f"Antigravity conversation cache {cache} is malformed")
+        out: dict[str, str] = {}
+        for workspace, value in data.items():
+            if isinstance(workspace, str) and isinstance(value, str):
+                try:
+                    out[workspace] = str(UUID(value))
+                except ValueError:
+                    continue
+        return out
+
+    def _read_db_rows(self) -> list[tuple[str, list[str], str | None]]:
+        db = self.summary_db()
+        if not db.is_file():
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=2.0)
+            try:
+                rows = conn.execute(
+                    "SELECT conversation_id, workspace_uris, title FROM conversation_summaries"
+                ).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            raise OSError(f"Antigravity summary database {db} is unavailable: {exc}") from exc
+        parsed: list[tuple[str, list[str], str | None]] = []
+        for conv_id, raw_uris, title in rows:
+            if not isinstance(conv_id, str):
+                continue
+            try:
+                norm_id = str(UUID(conv_id))
+            except ValueError:
+                continue
+            paths: list[str] = []
+            if isinstance(raw_uris, str) and raw_uris:
+                try:
+                    uris = json.loads(raw_uris)
+                except ValueError:
+                    uris = []
+                if isinstance(uris, list):
+                    for uri in uris:
+                        path = _file_uri_to_path(uri)
+                        if path:
+                            paths.append(path)
+            parsed.append((norm_id, paths, title if isinstance(title, str) and title else None))
+        return parsed
+
+    def _root_problem(self) -> str | None:
+        problem = super()._root_problem()
+        if problem:
+            return problem
+        try:
+            self._read_cache()
+            self._read_db_rows()
+        except OSError as exc:
+            return str(exc)
+        return None
+
+    def all_records(self) -> list[Record]:
+        records: list[Record] = []
+        seen: set[tuple[str, str]] = set()
+        db_path = self.summary_db()
+        for conv_id, paths, title in self._read_db_rows():
+            if not paths:
+                records.append(Record(self.client, db_path, None, conv_id, title))
+                continue
+            for path in paths:
+                key = (conv_id, path)
+                if key not in seen:
+                    seen.add(key)
+                    records.append(Record(self.client, db_path, path, conv_id, title))
+        cache_path = self.conversation_cache()
+        for cwd, conv_id in self._read_cache().items():
+            key = (conv_id, cwd)
+            if key not in seen:
+                seen.add(key)
+                records.append(Record(self.client, cache_path, cwd, conv_id, None))
+        return records
+
+    def records_for(self, worktree: Path) -> list[Record]:
+        target = worktree.resolve()
+        matched: list[Record] = []
+        for record in self.all_records():
+            if record.cwd is not None:
+                try:
+                    if Path(record.cwd).resolve() == target:
+                        matched.append(record)
+                        continue
+                except OSError:
+                    if record.cwd == str(worktree):
+                        matched.append(record)
+                        continue
+            if self._could_be(record, worktree):
+                matched.append(record)
+        return matched
+
+    def probe_conversation(self, worktree: Path, conversation_id: str) -> Probe:
+        """Corroborate one exact native conversation ID against persisted Antigravity state."""
+        try:
+            norm_id = str(UUID(conversation_id))
+        except ValueError:
+            return Probe(UNKNOWN, "recorded Antigravity conversation ID is malformed")
+        problem = self._root_problem()
+        if problem:
+            return Probe(UNKNOWN, problem)
+        resolved = worktree.resolve()
+        try:
+            db_rows = self._read_db_rows()
+            matching_db = [row for row in db_rows if row[0] == norm_id]
+            if matching_db:
+                for _, paths, _ in matching_db:
+                    for path in paths:
+                        try:
+                            if Path(path).resolve() == resolved:
+                                return Probe(PRESENT, str(self.summary_db()))
+                        except OSError:
+                            continue
+                return Probe(UNKNOWN, "recorded Antigravity conversation working directory cannot be corroborated")
+            cache = self._read_cache()
+            conv_file = self.conversations_dir() / f"{norm_id}.db"
+            brain_dir = self.store_root() / "brain" / norm_id
+            for cwd, cached_id in cache.items():
+                if cached_id != norm_id:
+                    continue
+                try:
+                    if Path(cwd).resolve() == resolved and (conv_file.is_file() or brain_dir.is_dir()):
+                        return Probe(PRESENT, str(conv_file if conv_file.is_file() else brain_dir))
+                except OSError:
+                    continue
+            return Probe(UNKNOWN, "recorded Antigravity conversation has missing or uncorroborated state")
+        except (OSError, ValueError, RuntimeError):
+            return Probe(UNKNOWN, "recorded Antigravity conversation store is unreadable")
+
+    def probe_transcript(self, worktree: Path | None, title: str) -> Probe:
+        if worktree is None:
+            return Probe(UNKNOWN, "Antigravity identifies conversations by worktree path")
+        probe = super().probe_transcript(worktree, title)
+        if probe.state == ABSENT:
+            return Probe(UNKNOWN, "Antigravity store cannot prove conversation absence")
+        return probe
+
+    def rename(self, record: Record, old_title: str, new_title: str, new_worktree: Path | None) -> RenameResult:
+        raise ValueError("rename the Antigravity conversation from Antigravity")
+
+
 ADAPTERS: dict[str, type[Adapter]] = {
     "claude-code": ClaudeCode,
     "codex": Codex,
     "pi": Pi,
+    "agy": Antigravity,
+}
+
+# Historical rows created before `ai g` switched from Gemini CLI to Antigravity
+# still resolve for reconciliation and migration without advertising Gemini CLI
+# as an active launch client.
+LEGACY_ADAPTERS: dict[str, type[Adapter]] = {
     "gemini": Gemini,
 }
 
 
 def adapter(client: str, home: Path | None = None) -> Adapter:
-    try:
-        return ADAPTERS[client](home)
-    except KeyError:
-        raise KeyError(f"no session-store adapter for client {client!r}") from None
+    cls = ADAPTERS.get(client) or LEGACY_ADAPTERS.get(client)
+    if cls is not None:
+        return cls(home)
+    raise KeyError(f"no session-store adapter for client {client!r}")
 
 
 def all_adapters(home: Path | None = None) -> list[Adapter]:

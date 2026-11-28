@@ -405,3 +405,27 @@ def test_given_tmux_panes_when_inspected_then_only_one_exact_live_leader_is_acce
         with pytest.raises(ValueError, match="live pane check failed"):
             inspect_pane(w.name)
     assert run.call_args.args[0][:2] == ["tmux", "list-panes"]
+
+
+def test_given_pane_leader_whose_argv_read_raises_systemerror_when_enrolled_then_refuses_without_change(
+    enrolled_world, monkeypatch
+):
+    """psutil on macOS can raise SystemError reading another process's argv. An unreadable
+    leader is an unproven one: enrolment refuses with its usual error, never a traceback."""
+    w = enrolled_world
+    monkeypatch.setattr(session_enrol, "inspect_pane", inspect_pane)
+    monkeypatch.setattr(
+        session_enrol.subprocess, "run", Mock(return_value=SimpleNamespace(stdout=f"{w.name}\t123\t{w.cwd}\n"))
+    )
+
+    def unreadable():
+        raise SystemError("sysctl(KERN_PROCARGS2) failed")
+
+    monkeypatch.setattr(session_enrol.psutil, "Process", Mock(return_value=SimpleNamespace(cmdline=unreadable)))
+    before = registry.registry_path().read_bytes()
+    result = invoke(w, "--dry-run")
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "live pane check failed" in result.output
+    assert registry.registry_path().read_bytes() == before
+    w.signal.assert_not_called()

@@ -90,6 +90,18 @@ def exit_shell(request, tmp_path, monkeypatch):
     return shell, env, render, attempts, generation
 
 
+def _count_attempt(attempts):
+    """How a fault endpoint counts its run: append one byte, so a later kill cannot erase it.
+
+    A read-then-rewrite truncates the file before it writes, so a mark killed at its command
+    timeout in between left the count at zero on a loaded runner.
+    """
+    return (
+        f"import os\nfd = os.open({str(attempts)!r}, os.O_WRONLY | os.O_CREAT | os.O_APPEND)\n"
+        "os.write(fd, b'x')\nos.close(fd)\n"
+    )
+
+
 def run_exit(exit_shell, program=None, prefix="", suffix=""):
     shell, env, render, _, _ = exit_shell
     return subprocess.run(
@@ -123,9 +135,7 @@ def test_given_shadow_cli_when_exit_persists_then_verified_installation_is_used(
 @pytest.mark.parametrize("failure", ["exit", "hang", "missing"])
 def test_given_permanent_failure_when_deadline_expires_then_generation_is_denied_without_respawn(exit_shell, failure):
     _, _, _, attempts, generation = exit_shell
-    program = (
-        f"from pathlib import Path\np=Path({str(attempts)!r})\np.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
-    )
+    program = _count_attempt(attempts)
     program += "import time\ntime.sleep(60)\n" if failure == "hang" else "raise SystemExit(1)\n"
     if failure == "missing":
         program = (
@@ -199,9 +209,9 @@ def test_given_failed_fallback_storage_when_retries_end_then_failure_is_reported
 def test_given_failing_mark_when_sequence_succeeds_then_mark_is_bounded_and_exit_is_denied(exit_shell, failure):
     _, _, _, attempts, generation = exit_shell
     program = (
-        "import sys, time\nfrom pathlib import Path\n"
+        "import sys, time\n"
         "if sys.argv[2] == '_sequence':\n print(time.monotonic_ns())\n raise SystemExit(0)\n"
-        f"p=Path({str(attempts)!r})\np.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
+        + _count_attempt(attempts)
         + ("time.sleep(60)\n" if failure == "hang" else "raise SystemExit(1)\n")
     )
     result = run_exit(exit_shell, program, suffix="printf agent-started")

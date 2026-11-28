@@ -87,9 +87,12 @@
 ## Optional: a command that names the background session id. It is run as
 ## `<command> --session <ai session name> --pane-capture <file>`, where the file
 ## holds the pane text (scrollback included). Exit 0 with exactly one 8-character
-## id on stdout is an answer; anything else is no answer. The id is only a hint:
-## it is attached only if `claude agents --json` lists it as a live background
-## session. Unset (the default) skips the command; ai then attaches only when exactly
+## id on stdout is an answer; anything else is no answer. Exit 3 is the command
+## saying nothing is pending for this session, which is recorded in the launch log,
+## not shown; any other non-zero exit, a timeout, a command that cannot run or one
+## that prints something other than one id is a warning, quoting its last stderr
+## line, and reaches the launch log too. The id is only a hint: it is attached only if
+## `claude agents --json` lists it as a live background session. Unset (the default) skips the command; ai then attaches only when exactly
 ## one live background session has this session's name and directory.
 # background_session_resolver = "/path/to/resolver-command"
 # background_session_resolver_timeout_seconds = 10
@@ -109,16 +112,10 @@
 ## launcher's state directory).
 # background_hold_log = "/path/to/log"
 
-[gemini]
-## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["session"]
-## Set true only after AI-CLI-43 confirms billing credit status.
-## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
-# paid_fallback_enabled = false
-## Command used to launch gemini-cli. Override if the binary is not on PATH
-## (e.g. "npx @google/gemini-cli" for npx-only installs).
-# command = "gemini"
+[agy]
+## Command used to launch Antigravity (`ai g`). Override if the binary is not on PATH.
+## Quote paths containing spaces.
+# command = "agy"
 
 [pi]
 ## Provider passed to `pi --provider ...` on every launch. pi's own built-in
@@ -150,6 +147,9 @@ notify_on_exit = true
 ## reads it on every call. A window counts as current while its newest reading is at most
 ## max_age_seconds old and its reset time has not passed.
 # state_file = "~/.claude/state/quota.json"
+## State file written by `ai quota render-statusline` from Antigravity's statusLine quota payload.
+## Defaults to $XDG_STATE_HOME/ai-cli-utils/agy-quota.json (e.g. ~/.local/state/ai-cli-utils/agy-quota.json).
+# agy_state_file = "~/.local/state/ai-cli-utils/agy-quota.json"
 # max_age_seconds = 1800
 ## Fallback weekly reset anchor, used until a reading carries its own reset time.
 # reset_anchor_utc = "2026-04-04T06:00:00Z"
@@ -157,6 +157,7 @@ notify_on_exit = true
 [worktree]
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
+published_branch_sync = "report"
 ## Prefix of the git-config markers your worktree tooling writes on a session's branches
 ## (branch.<branch>.<prefix>-session-home, branch.<branch>.<prefix>-agent-worktree) and of
 ## its <prefix>-provenance.json file, and of the .<prefix>-checkout record a venv kept in a
@@ -176,9 +177,14 @@ enabled = true
 ## package manager when running as root) and otherwise print per-OS remediation.
 ## A launch is never blocked by this -- direnv only supplies the project
 ## environment, so its absence degrades a session rather than ending it.
+## Before every agent start (launch and restart alike) the .envrc of a session
+## worktree is approved when its content matches the repository root's copy or
+## the one on origin/HEAD; one that cannot be approved stops the start and names
+## the `direnv allow` command to run after reviewing it.
 ##
-## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
-## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Set false to skip the preflight and the approval entirely on this machine.
+## Equivalent one-offs: AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv
+## on the launch.
 ## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
 ## additionally needs bash on PATH (Git for Windows supplies one).
 # enabled = true
@@ -222,6 +228,32 @@ stale_session_timeout = 15
 ## every clean exit, so a change applies at the next one.
 # restart_stop_window_seconds = 3
 
+[resume_restore]
+## A command run before every Claude Code resume (`ai c`, its automatic restarts and the
+## bare launch), for a deployment that archives idle transcripts, for example as
+## <session-id>.jsonl.zst. Point it at your own restore tool. "{session_id}" in any
+## argument is replaced by the session's id. It runs without a shell: when no live
+## transcript is the one to resume, once for each archived <session-id>.jsonl.zst in the
+## session's project directory before choosing again; then for the session being resumed. Exit 0: the resume goes ahead.
+## Any other exit, or a timeout: the resume stops and its output and exit status are
+## printed. Read on every resume. Unset: nothing runs. Guide: docs/guides/resume-restore.md.
+# command = ["restore-transcript", "--session-id", "{session_id}"]
+## Seconds the command may run before it is stopped and the resume refused. Default 300.
+# timeout_seconds = 300
+
+[session_register]
+## A command run by the Codex (`ai cx`) and Antigravity (`ai g`) session-start hooks
+## after launch confirmation, for deployments with a registry of live agent sessions.
+## Session-start hooks run inside the client's process tree.
+## On an Antigravity tmux resume, the launcher runs it after the control bridge binds
+## the conversation and sets AI_TMUX_SESSION to the tmux slot name.
+## "{client}" in any argument is replaced by "codex" or "agy". The command runs without
+## a shell, and its output is captured. A failure or timeout prints one warning line
+## and the session starts unregistered. Unset: nothing runs.
+# command = ["register-session", "--client", "{client}"]
+## Seconds the command may run before it is stopped. Default 15.
+# timeout_seconds = 15
+
 [tmux]
 ## The multiplexer executable every tmux call runs: the launch, attach, ls and every
 ## query. Read on every call. Unset or empty: `tmux`, found on PATH. Set it where more
@@ -252,6 +284,10 @@ stale_session_timeout = 15
 ## registry's limits apply to every machine that uses it, and these then have no effect.
 # min_name_length = 3
 # max_name_length = 4
+## Session names skipped by automatic launch pickers (ai c, ai cx, ai p, ai g),
+## even when no live session currently holds them. Read on every call and matched
+## case-insensitively; explicit -N/--name still allows launching one directly.
+# reserved = ["ada", "max"]
 ## Seconds one fetch, and one push, of a shared name registry may take before the
 ## registry counts as unreachable, each read on every call. Separate from the
 ## registry's publish timeout.
@@ -470,16 +506,6 @@ boot = false
 ## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
 # profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
 ## Port `ai cdp start` opens when -p/--port is not given.
-# port = 9222
-
-[gemini_billing]
-## GCP project that holds the BigQuery billing export dataset.
-## Required for `ai spend gemini` to show actual billed amounts.
-# gcp_project_id = "my-gcp-project"
-## Fully-qualified BigQuery table ID for the GCP detailed billing export.
-## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
-# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
-## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 
 [workspace]

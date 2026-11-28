@@ -52,6 +52,7 @@ def _run_on_pty(command: str) -> bytes:
         os.close(leader)
 
 
+@pytest.mark.real_pty
 def test_given_a_rendered_session_script_when_the_agent_reset_runs_on_a_terminal_then_it_sends_the_transport_restore():
     script = get_engine_script("c", "myproject-1", "c-myproject-1", "c-myproject-", "myproject")
 

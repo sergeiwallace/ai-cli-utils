@@ -263,7 +263,6 @@ def detached_launch(boot_record, monkeypatch):
     monkeypatch.setattr(main, "_finish_recorded_migrations", Mock())
     monkeypatch.setattr(main._iterm2, "_load_iterm2_config", dict)
     monkeypatch.setattr(main._iterm2, "_assign_iterm2_color_slot", lambda *a, **kw: None)
-    monkeypatch.setattr(main._config, "get_session_map", lambda *a: {})
     monkeypatch.setattr(
         main._session_naming, "resolve_or_prompt_host_alias", Mock(side_effect=AssertionError("prompt"))
     )
@@ -506,9 +505,7 @@ def test_given_settled_terminal_exit_when_reserved_then_resume_receives_original
         boot_decision={"cause": "terminal_quit_or_crash"},
     )
     reasons = []
-    monkeypatch.setattr(
-        main, "_do_session_launch", lambda **kwargs: reasons.append(session_commands.os.environ[LAUNCH_REASON_VAR])
-    )
+    monkeypatch.setattr(main, "_do_session_launch", lambda **kwargs: reasons.append(kwargs["launch_reason"]))
     monkeypatch.setattr(state.config, "load_config", dict)
     monkeypatch.setenv(LAUNCH_REASON_VAR, "previous-reason")
     session_commands._launch_recipe(boot_record)
@@ -640,9 +637,7 @@ def test_given_remote_request_when_recipe_runs_then_cause_overrides_boot_and_env
 ):
     boot_record["boot_decision"] = {"cause": "host_reboot"}
     reasons = []
-    monkeypatch.setattr(
-        main, "_do_session_launch", lambda **kwargs: reasons.append(session_commands.os.environ[LAUNCH_REASON_VAR])
-    )
+    monkeypatch.setattr(main, "_do_session_launch", lambda **kwargs: reasons.append(kwargs["launch_reason"]))
     monkeypatch.setenv(LAUNCH_REASON_VAR, "previous-reason")
     session_commands._launch_recipe(boot_record, cause="remote_request")
     assert reasons == ["remote_request"]

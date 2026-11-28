@@ -22,7 +22,7 @@ import _pytest.pathlib
 import _pytest.tmpdir
 import psutil
 import pytest
-from process_ownership import watch_tmux_directory
+from process_ownership import reap_pid_tree, watch_tmux_directory
 
 SUITE_TEMPROOT_NAME = "aipt"
 _STATE_SUBDIRECTORIES = {
@@ -37,6 +37,21 @@ _STATE_SUBDIRECTORIES = {
     "APPDATA": "appdata",
 }
 _ISOLATION_ERROR = "Cannot isolate pytest user state. Start pytest with a temporary HOME and XDG_STATE_HOME."
+_CREDENTIAL_NAME = re.compile(
+    r"(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIALS?|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|DSN|COOKIE|KEY)($|_)"
+    r"|DATABASE_URL|^DOPPLER_|^AWS_",
+    re.IGNORECASE,
+)
+
+
+def _credential_environment_names(environ) -> list[str]:
+    """Name the variables whose value is a credential, so none reaches a test process."""
+    return sorted(name for name in environ if _CREDENTIAL_NAME.search(name))
+
+
+def _scrub_credential_environment() -> None:
+    for name in _credential_environment_names(os.environ):
+        os.environ.pop(name, None)
 
 
 def _account_home() -> Path:
@@ -102,6 +117,7 @@ def _bootstrap_user_state() -> tuple[Path, tempfile.TemporaryDirectory, Path]:
         os.environ.update(_state_environment(root))
         for key in ("HOMEDRIVE", "HOMEPATH", "AI_CLI_CANONICAL_WORKTREE_REGISTRY"):
             os.environ.pop(key, None)
+        _scrub_credential_environment()
         if breach := _user_state_breach(root):
             raise pytest.UsageError(f"{_ISOLATION_ERROR} {breach}")
     except (KeyError, OSError, RuntimeError) as exc:
@@ -198,7 +214,10 @@ _TMUX_BINARY = shutil.which("tmux")
 # where it happens to exist.
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+_PROTECTED_TEST_BINARIES = (
+    frozenset({"tmux", "claude", "agy", "agy.exe", "circusd", "circusd.exe", "direnv", "ssh", "mosh"})
+    | _DESKTOP_ESCAPE_BINARIES
+)
 
 # Programs that RUN a command string handed to them, which is what makes a guard on the
 # program name alone insufficient (AI-CLI-013v). Measured: a test drove
@@ -743,8 +762,130 @@ def tmux_skip_regression_message(skips, tmux_is_runnable: bool) -> str | None:
     )
 
 
+def _normalize_guard_path(path: str | Path) -> str:
+    """Return a canonical, case-normalized filesystem path for root prefix matching."""
+    return os.path.normcase(os.path.realpath(str(path))).rstrip("\\/")
+
+
+def _is_python_executable(token: str) -> bool:
+    """Return whether *token* names a Python interpreter executable."""
+    base = Path(token).name.lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base.startswith(("python", "pypy"))
+
+
+def _cmdline_is_circusd(cmdline: list[str]) -> bool:
+    """Return whether *cmdline* invokes a circusd daemon process."""
+    if not cmdline:
+        return False
+    first = Path(cmdline[0]).name.lower()
+    if first in {"circusd", "circusd.exe"}:
+        return True
+    if len(cmdline) >= 2 and _is_python_executable(cmdline[0]):
+        second = Path(cmdline[1]).name.lower()
+        if second in {"circusd", "circusd.exe"}:
+            return True
+        if len(cmdline) >= 3 and cmdline[1] == "-m" and cmdline[2] == "circus.circusd":
+            return True
+    return False
+
+
+def _cmdline_references_roots(cmdline: list[str], roots: tuple[str, ...]) -> bool:
+    """Return whether any path-like argument in *cmdline* sits under one of *roots*."""
+    normalized_roots = tuple(_normalize_guard_path(root) for root in roots if root)
+    if not normalized_roots:
+        return False
+    for token in cmdline:
+        candidates = [token]
+        if "=" in token:
+            candidates.append(token.split("=", 1)[1])
+        for candidate in candidates:
+            if candidate.startswith("ipc://"):
+                candidate = candidate[len("ipc://") :]
+            if not candidate or not Path(candidate).is_absolute():
+                continue
+            try:
+                resolved = _normalize_guard_path(candidate)
+            except (OSError, ValueError):
+                continue
+            for root in normalized_roots:
+                if resolved == root or resolved.startswith(root + os.sep):
+                    return True
+    return False
+
+
+def _session_circusd_roots(config) -> tuple[str, ...]:
+    """Return the temp and isolated-state roots owned by this pytest session."""
+    roots: list[str] = [_normalize_guard_path(_SESSION_STATE_ROOT)]
+    tmp_factory = getattr(config, "_tmp_path_factory", None)
+    basetemp = getattr(tmp_factory, "_basetemp", None)
+    if basetemp is not None:
+        normalized_base = _normalize_guard_path(basetemp)
+        if normalized_base not in roots:
+            roots.append(normalized_base)
+    return tuple(roots)
+
+
+def find_surviving_pytest_circusd(
+    roots: tuple[str, ...],
+    *,
+    processes=None,
+) -> list[tuple[int, list[str]]]:
+    """Return ``(pid, cmdline)`` for every live circusd process referencing *roots*."""
+    if not roots:
+        return []
+    own_pid = os.getpid()
+    matches: list[tuple[int, list[str]]] = []
+    iterator = processes if processes is not None else psutil.process_iter(["pid", "cmdline"])
+    for proc in iterator:
+        try:
+            info = proc if isinstance(proc, dict) else getattr(proc, "info", {})
+            pid = int(info["pid"])
+            cmdline = list(info.get("cmdline") or [])
+        except (psutil.Error, KeyError, TypeError, ValueError, OSError):
+            continue
+        if pid == own_pid:
+            continue
+        if _cmdline_is_circusd(cmdline) and _cmdline_references_roots(cmdline, roots):
+            matches.append((pid, cmdline))
+    return sorted(matches, key=lambda item: item[0])
+
+
+def reap_surviving_pytest_circusd(leaks: list[tuple[int, list[str]]]) -> None:
+    """Stop every leaked pytest circusd daemon and its watcher children."""
+    for pid, _cmdline in leaks:
+        reap_pid_tree(pid)
+
+
+def circusd_leak_failure_message(leaks: list[tuple[int, list[str]]]) -> str | None:
+    """Format a failure message for leaked pytest circusd daemons, or ``None``."""
+    if not leaks:
+        return None
+    listed = "\n".join(f"  pid {pid}: {' '.join(cmdline)}" for pid, cmdline in leaks)
+    return (
+        f"{len(leaks)} pytest-path circusd daemon(s) survived the test run and were reaped "
+        "(AI-CLI-hl1z). Stop any test-owned circusd and its watchers at teardown via "
+        "managed_circusd / stop_circusd_by_pidfile, or mock _ensure_circusd / subprocess.Popen:\n"
+        f"{listed}"
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _fail_on_leaked_circusd(request):
+    """Fail and reap if any circusd daemon referencing this session's roots survives."""
+    yield
+    leaks = find_surviving_pytest_circusd(_session_circusd_roots(request.config))
+    if not leaks:
+        return
+    reap_surviving_pytest_circusd(leaks)
+    message = circusd_leak_failure_message(leaks)
+    if message is not None:
+        pytest.fail(message)
+
+
 def pytest_sessionfinish(session, exitstatus):
-    """Fail a run that skipped tmux tests despite tmux being usable (AI-CLI-qzf2).
+    """Fail a run that skipped tmux tests despite tmux being usable or leaked circusd.
 
     Session-scoped rather than per test because the signal is a COUNT: each individual
     skip looks reasonable in isolation, and it is only the total moving between two runs
@@ -760,14 +901,21 @@ def pytest_sessionfinish(session, exitstatus):
     """
     if hasattr(session.config, "workerinput"):
         return
-    message = tmux_skip_regression_message(_tmux_unusable_skips, tmux_runnable()[0])
-    if message is None:
-        return
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    if reporter is not None:
-        reporter.write_sep("=", "tmux coverage regression", red=True, bold=True)
-        reporter.write_line(message)
-    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    tmux_message = tmux_skip_regression_message(_tmux_unusable_skips, tmux_runnable()[0])
+    if tmux_message is not None:
+        if reporter is not None:
+            reporter.write_sep("=", "tmux coverage regression", red=True, bold=True)
+            reporter.write_line(tmux_message)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    leaks = find_surviving_pytest_circusd(_session_circusd_roots(session.config))
+    circusd_message = circusd_leak_failure_message(leaks)
+    if circusd_message is not None:
+        reap_surviving_pytest_circusd(leaks)
+        if reporter is not None:
+            reporter.write_sep("=", "leaked pytest circusd daemon", red=True, bold=True)
+            reporter.write_line(circusd_message)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def _command_argv(command) -> list[str]:
@@ -1124,7 +1272,12 @@ def _reject_real_agent_processes(request, monkeypatch):
     # os.execvp (a real execvp("tmux", ...) call never returns on success, so
     # letting one slip through would silently replace the pytest worker
     # process instead of failing loudly), and libtmux never calls it.
-    allowed_binaries = frozenset({"tmux"}) if request.node.get_closest_marker("real_tmux") else frozenset()
+    allowed: set[str] = set()
+    if request.node.get_closest_marker("real_tmux"):
+        allowed.add("tmux")
+    if request.node.get_closest_marker("real_circusd"):
+        allowed.update({"circusd", "circusd.exe"})
+    allowed_binaries = frozenset(allowed)
     real_run = subprocess.run
     real_popen = subprocess.Popen
     real_execvp = os.execvp
@@ -1178,6 +1331,22 @@ def _reject_real_agent_processes(request, monkeypatch):
     monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=guarded_run))
     monkeypatch.setattr(subprocess, "Popen", MagicMock(side_effect=guarded_popen))
     monkeypatch.setattr(os, "execvp", MagicMock(side_effect=guarded_execvp))
+
+
+@pytest.fixture(autouse=True)
+def _windows_handoff_is_an_exec(monkeypatch):
+    """Hand the launcher's Windows run-and-wait handoff to ``os.execvp``.
+
+    ``main._exec_handoff`` runs its program as a waited-for child on Windows, which
+    has no exec. The suite's launch tests intercept the handoff by patching
+    ``os.execvp``, so this routes it there, and every such test intercepts it on
+    Windows, or with ``sys.platform`` faked as Windows, too. Looked up at call time,
+    so a test's own ``os.execvp`` patch applies. Tests of the Windows handoff itself
+    put back the function they imported.
+    """
+    from ai_cli import main
+
+    monkeypatch.setattr(main, "_run_on_this_console", lambda file, args: os.execvp(file, args))
 
 
 @pytest.fixture(autouse=True)
@@ -1612,6 +1781,20 @@ def _strip_inherited_supervisor_vars(monkeypatch):
         name for name in os.environ if name == "AI_CLI_RUN_GENERATION" or name.startswith("AI_CLI_SUPERVISOR_")
     ]:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _strip_inherited_launch_reason(monkeypatch):
+    """Never inherit the runner's own launch reason into test subprocesses.
+
+    A suite launched from inside a relaunched session carries that session's
+    ``AI_CLI_LAUNCH_REASON``. A session script started by a test reads it and treats its first
+    agent start as a restart, so it resumes a transcript or refuses to launch where the test
+    expected a fresh start. A test that needs a reason sets one itself.
+    """
+    from ai_cli.iterm2_restore import LAUNCH_REASON_VAR
+
+    monkeypatch.delenv(LAUNCH_REASON_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)

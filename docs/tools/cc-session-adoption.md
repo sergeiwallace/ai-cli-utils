@@ -20,6 +20,40 @@ it is not enough to adopt a session: several other pieces of state are keyed by
 the **project slug** or the session's **name** rather than by the session UUID,
 and those are exactly the ones that break. Adoption is the whole job.
 
+## Adopting an Antigravity conversation
+
+Antigravity adoption is explicit and owner-approved. On the host that owns the
+conversation, stop agy and close its tmux session. Preview the binding, confirm
+it, then resume through the launcher.
+
+```sh
+ai adopt-session myrepo-box-ada -e agy -r . -u 11111111-2222-4333-8444-555555555555 -n
+ai adopt-session myrepo-box-ada -e agy -r . -u 11111111-2222-4333-8444-555555555555 -y
+ai g myrepo-box-ada -r -p myrepo
+```
+
+For a session launched from a paired host, add `-R` to both adoption commands on
+the conversation's host. Resume from the paired machine with
+`ai g ada -R -p myrepo`. To preview that slot on the conversation's host, add
+`--is-remote` to the `ai g -d` command there.
+
+`-P PID` and `-M TMUX_SESSION` can identify a conversation while its process is
+still present. A single match appears in the stop message. Use its UUID after
+the process exits. If workspace evidence is ambiguous, supply the original
+directory with `-s/--source`. Where a liveness check is unavailable, use
+`-S/--stopped` after verifying agy has exited.
+
+The worktree uses the same setup as `ai g`. The slot record retains the verified
+source workspace because agy resumes an exact UUID across directories. The native
+conversation, artifacts and indexes stay in place. A successful rerun reports
+the existing binding.
+
+Adoption prints a tmux command that runs the managed agy launcher with
+`--dangerously-skip-permissions`. For a confirmed local slot, add
+`-d -- --dangerously-skip-permissions` to an `ai g` launch to preview the pane
+command with the same permission flag. The managed launcher checks the slot
+identity and subscription settings before it runs agy.
+
 ## What is keyed by what
 
 Per-session state is split across four keying schemes. Only the last is safe to
@@ -479,7 +513,7 @@ A rename that finished but whose completion was never published completes itself
 next `ai reconcile-names` or `ai migrate-session`.
 
 The host sweep inventories, for one repository, every index-named worktree, tmux session
-and resumable record in each client's session store (Claude Code, Codex, Pi, Gemini CLI),
+and resumable record in each client's session store (Claude Code, Codex, Pi, Antigravity CLI),
 including sessions whose worktree was already retired. Such a transcript-only session is
 named by retitling its client records; no worktree is made for it. A record the sweep
 cannot read stops it with the record named, so a sweep never reports a host as finished
@@ -816,7 +850,11 @@ a machine-specific source path. If the rewrite fails, the command warns and
 
 A session home is never reaped automatically: the reaper refuses it by design,
 because only its owner knows the session is finished. `ai retire-session NAME`
-is that owner's route for `.worktrees/NAME`.
+is that owner's route. The worktree it retires is the one NAME's run-state record names
+(`c-NAME` or another engine's variant), which is how an exited `ai c -t` probe, whose
+worktree lives under the probe directory, is retired; with no such record it is
+`.worktrees/NAME`. A record naming the repository's own checkout (a `-W/--no-worktree`
+session) never counts.
 
 ```bash
 ai retire-session myrepo-3 -n   # what would be removed and preserved, nothing written
@@ -828,7 +866,8 @@ Refused before anything is written, `-n` included, with every blocking item name
 
 | Refusal | Why |
 |---|---|
-| `.worktrees/NAME` is not a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
+| neither NAME's run-state record nor `.worktrees/NAME` names a registered worktree, or another registered worktree lives inside it | there is no checkout to retire, or removing it would orphan a registration |
+| NAME's record and `.worktrees/NAME` (or two records) name different worktrees | it cannot tell which one is the session's |
 | a Claude Code process named NAME or working inside the slot; a tmux session `c-NAME`, `c-r-NAME` or any other engine's variant | the same liveness rule as `migrate-session` |
 | a heartbeat in `session-heartbeats/` for one of those tmux sessions, written in this boot within the reaper's `[stale_session_reaper] stale_after_seconds` | the reaper's own freshness rule; an unreadable record or one that cannot be dated counts as fresh |
 | an uncommitted change, or an untracked file that is not ignored | removing the checkout would lose it (ignored files are removed with it) |

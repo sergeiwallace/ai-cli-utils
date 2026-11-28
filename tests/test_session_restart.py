@@ -187,6 +187,22 @@ def test_given_npx_root_when_descendant_unresolvable_then_background_refuses(npx
         restart.descendants_gate(1, tree.home)
 
 
+@pytest.mark.parametrize("unreadable", ["server-root", "helper"])
+def test_given_mcp_process_whose_argv_read_raises_systemerror_when_descendants_checked_then_background_refuses(
+    npx_tree, unreadable
+):
+    """psutil on macOS can raise SystemError reading another process's argv. A descendant
+    whose argv cannot be read is unclassified, so the gate refuses rather than restarting."""
+
+    def fails():
+        raise SystemError("sysctl(KERN_PROCARGS2) failed")
+
+    (npx_tree.root if unreadable == "server-root" else npx_tree.helper).cmdline = fails
+    with pytest.raises(restart.Refusal, match="background-work") as caught:
+        restart.descendants_gate(1, npx_tree.home)
+    assert caught.value.detail == "process tree unavailable"
+
+
 def test_given_non_npx_root_when_descendant_unclassified_then_legacy_behavior_passes(npx_tree):
     tree = npx_tree
     contents = tree.allowlist.read_text(encoding="utf-8")
@@ -1621,6 +1637,68 @@ def test_given_the_pane_holds_a_claude_attach_client_when_restart_then_the_refus
     assert world.signals == []
 
 
+@pytest.mark.parametrize("unreadable", ["child-argv", "supervisor-environment"])
+def test_given_supervisor_process_read_raises_systemerror_when_restart_then_upgrade_refusal_without_signal(
+    world, monkeypatch, unreadable
+):
+    """psutil on macOS can raise SystemError reading another process's argv or environment
+    (both come from sysctl KERN_PROCARGS2). Ownership that cannot be read is not proven:
+    restart refuses before any signal instead of crashing."""
+    read = restart.psutil.Process.cmdline
+
+    def cmdline(process):
+        if unreadable == "child-argv" and process.pid == 102:
+            raise SystemError("sysctl(KERN_PROCARGS2) failed")
+        return read(process)
+
+    def environ(process):
+        raise SystemError("sysctl(KERN_PROCARGS2) failed")
+
+    monkeypatch.setattr(restart.psutil.Process, "cmdline", cmdline)
+    if unreadable == "supervisor-environment":
+        monkeypatch.setattr(restart.psutil.Process, "environ", environ)
+    code, report, _ = world.cli("-X", SESSION_ID)
+    assert code == 1 and report["reason"] == "supervisor-upgrade-required"
+    assert not world.signals and not world.injected and not world.ended
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tmux panes are POSIX-only")
+def test_given_pane_process_whose_argv_read_raises_systemerror_when_restart_then_attach_client_is_still_named(world):
+    """The attach-client lookup only sharpens a refusal. One pane process whose argv read raises
+    SystemError (psutil on macOS) is skipped as unknown; the other processes are still read."""
+    world.registry.unlink()
+    fake_run = restart.subprocess.run
+    with (
+        owned_process([sys.executable, "-c", "import time; time.sleep(60)"]) as unreadable,
+        owned_process([sys.executable, "-c", "import time; time.sleep(60)", "claude", "attach", "fe7ea124"]) as client,
+    ):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not _REAL_PROCESS(client.pid).cmdline():
+            time.sleep(0.01)
+        read = _REAL_PROCESS.cmdline
+
+        def cmdline(process):
+            if process.pid == unreadable.pid:
+                raise SystemError("sysctl(KERN_PROCARGS2) failed")
+            return read(process)
+
+        def run(argv, **kwargs):
+            if argv[:2] == ["tmux", "list-panes"]:
+                return SimpleNamespace(returncode=0, stdout=f"{unreadable.pid}\n{client.pid}\n")
+            return fake_run(argv, **kwargs)
+
+        with (
+            patch.object(restart.subprocess, "run", run),
+            patch.object(restart.psutil, "Process", _REAL_PROCESS),
+            patch.object(_REAL_PROCESS, "cmdline", cmdline),
+        ):
+            code, report, _ = world.cli("-X", "myproject-box-1")
+
+    assert code == 1 and report["reason"] == "target"
+    assert "claude attach fe7ea124" in report["detail"]
+    assert world.signals == []
+
+
 @pytest.mark.parametrize("kind", ["busy", "waiting", "settling", "unfinished"])
 def test_given_busy_when_restart_then_refusal(world, kind):
     if kind == "busy":
@@ -2479,6 +2557,8 @@ def test_given_mac_refresh_when_revalidated_then_original_program_proof_is_fence
     monkeypatch.setattr(
         main._session_script, "resolve_session_shell", lambda: "bash" if sys.platform == "darwin" else "bash.exe"
     )
+    # A macOS launcher renders the POSIX program, whatever host renders it here.
+    monkeypatch.setattr(main._session_script, "_native_windows_launcher", lambda: False)
     world = request.getfixturevalue("world")
     # Executable discovery stays native while this test simulates macOS provenance.
     monkeypatch.setattr(restart.shutil, "which", lambda name, *, path: str(world.pane_ai))

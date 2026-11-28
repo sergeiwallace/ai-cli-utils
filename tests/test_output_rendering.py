@@ -95,6 +95,7 @@ def _stale_launcher_commits():
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_tty_reattach_when_run_through_cli_then_transport_and_dolt_server_lines_are_styled_per_element(
     tmp_path,
 ):
@@ -134,6 +135,7 @@ def _reattach_with_stale_launcher(tmp_path: Path, terminal: Terminal) -> None:
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_pre_styled_text_when_emitted_then_only_element_styles_reach_the_terminal(terminal, tmp_path):
     child = "dolt_server: \x1b[1;31mALERT\x1b[0m healthy \x1b[38;5;208mamber\x1b[0m\n"
 
@@ -153,6 +155,7 @@ def test_given_pre_styled_text_when_emitted_then_only_element_styles_reach_the_t
 
 @posix_pty
 @pytest.mark.parametrize(("variable", "value"), [("NO_COLOR", "1"), ("TERM", "dumb")])
+@pytest.mark.real_pty
 def test_given_no_color_or_dumb_term_when_ai_c_runs_on_a_pty_then_no_sgr_is_written(
     terminal, tmp_path, monkeypatch, variable, value
 ):
@@ -170,6 +173,7 @@ def test_given_no_color_or_dumb_term_when_ai_c_runs_on_a_pty_then_no_sgr_is_writ
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_narrow_pty_when_a_long_record_is_emitted_then_one_line_is_written(tmp_path):
     narrow = Terminal(columns=40, rows=60)
     long_line = "dolt_server: " + "healthy and accepting connections on the socket " * 4

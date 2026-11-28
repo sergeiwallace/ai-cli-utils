@@ -1,0 +1,1 @@
+- Resolve `-p`/`--project` aliases case-insensitively across all local, remote, chief-of-staff, and session-registry lookups while preserving the operator's original casing in unknown-project error messages.

@@ -132,6 +132,49 @@ def test_given_a_remote_session_that_ends_cleanly_over_mosh_when_it_ends_then_no
 
 
 @posix_shell
+@pytest.mark.parametrize("mode", ["mosh", "ssh"])
+def test_given_a_failed_remote_agent_when_transport_and_tmux_exit_zero_then_the_launch_log_keeps_the_agent_diagnostic(
+    tmp_path, capsys, monkeypatch, mode
+):
+    from ai_cli import output
+    from ai_cli.launch_logging import open_launch_log
+    from ai_cli.main import _remote_agent_diagnostic_setup
+
+    message = "agent exited with status 7: Agent could not initialize the workspace"
+    remote_cmd = (
+        'if [ -n "${AI_CLI_AGENT_DIAGNOSTIC_FILE:-}" ]; then '
+        f'printf "%s\\n" {shlex.quote(message)} >> "$AI_CLI_AGENT_DIAGNOSTIC_FILE"; fi'
+    )
+    path = tmp_path / "local-launch.log"
+    path.touch()
+    log = open_launch_log(str(path))
+    previous = output.attach_file_sink(log.write_line)
+    try:
+        if mode == "mosh":
+            code = _remote_loop(tmp_path, remote_cmd, seconds=12.0)
+        else:
+            home = tmp_path / "home"
+            home.mkdir()
+            monkeypatch.setenv("HOME", str(home))
+            code = transport.run_ssh_with_reconnect(
+                ["bash", "-c", _remote_agent_diagnostic_setup(DIAGNOSTIC) + remote_cmd],
+                ["true"],
+                diagnostic_ssh_args=["bash", "-c"],
+                remote_diagnostic_file=DIAGNOSTIC,
+            )
+    finally:
+        output.attach_file_sink(previous)
+        log.close()
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert message in err
+    assert message in path.read_text()
+    assert "transient session-name collision" not in err
+    assert not (tmp_path / "home" / (DIAGNOSTIC + ".agent")).exists()
+
+
+@posix_shell
 def test_given_the_mosh_wrapper_when_the_remote_command_writes_progress_then_stderr_stays_on_the_terminal(tmp_path):
     """The remote side's progress lines must reach the screen while it works, not a file."""
     from ai_cli.main import _mosh_remote_command

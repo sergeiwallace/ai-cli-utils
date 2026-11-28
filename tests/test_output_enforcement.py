@@ -45,9 +45,10 @@ INHERITED_TERMINAL_ALLOWLIST = {
         "the bare-path agent's own interactive session: it writes to a launcher-owned pty, which "
         "is relayed to the terminal byte for byte; that output is the agent's, not a launcher line"
     ),
-    ("session_commands.py", "_run_on_this_terminal"): (
-        "the --once agent owns the tmux pane's terminal; captured, Claude Code reads a pipe as "
-        "--print and exits at once, so its output must not be relayed"
+    ("foreground.py", "run_in_foreground"): (
+        "the agent or tmux client run in the foreground owns the terminal: the --once agent in "
+        "its tmux pane (captured, Claude Code reads a pipe as --print and exits at once), and on "
+        "Windows, which has no exec, the program the launcher hands off to"
     ),
     ("extensions.py", "_run"): (
         "not the terminal: a launch extension writes to a temporary file (a pipe would hold the "

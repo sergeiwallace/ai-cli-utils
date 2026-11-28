@@ -19,3 +19,9 @@ Repeatable workflows, operational how-tos, and development processes.
 |------|-------------|
 | [exiting-a-cc-session.md](exiting-a-cc-session.md) | Exiting a Claude Code session so its name can be resumed, and verifying the process is actually gone |
 | [uv-disk-usage-troubleshooting.md](uv-disk-usage-troubleshooting.md) | Understanding uv's cache vs. tools directories and safe disk reclamation |
+
+## Session launcher clients
+
+| Command | Client | Executable |
+|---------|--------|------------|
+| `ai g` | Antigravity CLI | `agy` |

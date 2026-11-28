@@ -22,6 +22,7 @@ from . import (
     output,
     session_boot_unit,
     session_list_view,
+    session_naming,
     session_publish_timer,
     session_reconcile,
     session_state_publish,
@@ -30,7 +31,6 @@ from . import (
 from . import session_registry as registry
 from . import session_run_state as state
 from .cli_help import HelpGroup
-from .iterm2_restore import LAUNCH_REASON_VAR
 from .output import Untagged
 from .process_probe import StartTimeMatch, normalize_proc_start, probe_for
 from .session_enrol import enrol, heal_live_sessions
@@ -488,7 +488,7 @@ class StopReport:
 def _pane_pids(tmux_session: str) -> list[int]:
     try:
         listed = subprocess.run(
-            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}", "-F", "#{pane_pid}"),
+            tmux_binary.argv("list-panes", "-s", "-t", f"={tmux_session}:", "-F", "#{pane_pid}"),
             capture_output=True,
             text=True,
             check=False,
@@ -636,8 +636,9 @@ def _owned_record(doc: dict, slug: str) -> dict:
     if not matches:
         raise click.ClickException(f"unknown session: {slug}")
     host = state.config.load_config().get("machine", {}).get("host_id") or doc["machine"]
+    here = session_naming.machine_identity(host)
     for record in matches:
-        if record.get("kind") == "local" and record.get("owning_host") == host:
+        if record.get("kind") == "local" and here.matches(record.get("owning_host")):
             return record
     owners = sorted({str(r.get("owning_host")) for r in matches if r.get("kind") == "local"})
     detail = f"; its owning_host is {', '.join(map(repr, owners))} and this host is {host!r}" if owners else ""
@@ -730,11 +731,11 @@ def repair_policy(dry_run):
     found = []
 
     def change(doc):
-        host = _local_host(doc)
+        here = session_naming.machine_identity(_local_host(doc))
         for record in doc["sessions"]:
             if (
                 record.get("kind") == "local"
-                and record.get("owning_host") == host
+                and here.matches(record.get("owning_host"))
                 and not record.get("probe")
                 and record.get("relaunch") == "never"
                 and "relaunch_set_by" not in record
@@ -763,16 +764,12 @@ def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migr
     argv = recipe["argv"]
     prefix = argv[argv.index("--project-prefix") + 1] if "--project-prefix" in argv else ""
     previous_cwd = Path.cwd()
-    previous_reason = os.environ.get(LAUNCH_REASON_VAR)
     # A replay writes a launch log like `ai c` does, so what it reported, such as the parts of
     # a partial migration it was told to start past, can be read after the fact.
     launch_log = create_launch_log(record["name"])
     previous_sink = output.attach_file_sink(launch_log.write_line)
     try:
         os.chdir(recipe["cwd"])
-        os.environ[LAUNCH_REASON_VAR] = (
-            cause or record.get("boot_decision", {}).get("cause") or state.cause(record, registry.current_boot_id())
-        )
         _do_session_launch(
             engine=recipe["engine"],
             name=recipe["session_name"],
@@ -792,15 +789,14 @@ def _launch_recipe(record: dict, *, cause: str | None = None, allow_partial_migr
             detached=True,
             replay_recipe=recipe,
             allow_partial_migration=allow_partial_migration,
+            launch_reason=(
+                cause or record.get("boot_decision", {}).get("cause") or state.cause(record, registry.current_boot_id())
+            ),
         )
     finally:
         output.attach_file_sink(previous_sink)
         launch_log.close()
         os.chdir(previous_cwd)
-        if previous_reason is None:
-            os.environ.pop(LAUNCH_REASON_VAR, None)
-        else:
-            os.environ[LAUNCH_REASON_VAR] = previous_reason
 
 
 def _launch_failure(exc: BaseException) -> str:
@@ -817,7 +813,7 @@ def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None, booted:
     if (
         cfg["on_boot"]
         and record.get("kind") == "local"
-        and record.get("owning_host") == host
+        and session_naming.machine_identity(host).matches(record.get("owning_host"))
         and not state.tombstone_path(record["name"], host).exists()
     ):
         alive = registry._local_session_alive(record["name"])
@@ -826,7 +822,9 @@ def _boot_check(record: dict, cfg: dict, host: str, boot_id: str | None, booted:
 
 def _earlier_boot_run(record: dict, host: str, boot: str | None) -> bool:
     """Whether ``record`` still claims a run of this host that an earlier boot started."""
-    if record.get("kind") != "local" or record.get("owning_host") != host or not boot:
+    if record.get("kind") != "local" or not session_naming.machine_identity(host).matches(record.get("owning_host")):
+        return False
+    if not boot:
         return False
     if state.tombstone_path(record["name"], host).exists():
         return False
@@ -1056,7 +1054,7 @@ def relaunch(slug, boot, dry_run, allow_partial_migration):
                     if (
                         item.get("kind") == "local"
                         and item.get("name") == record["name"]
-                        and item.get("owning_host") == host
+                        and session_naming.machine_identity(host).matches(item.get("owning_host"))
                         and item.get("relaunched_boot_id") == boot_id
                     ):
                         item.setdefault("boot_decision", record["boot_decision"])["reason"] = reason
@@ -1147,57 +1145,12 @@ def _run_on_this_terminal(command: list[str]) -> int:
     The agent inherits stdin, stdout and stderr untouched. An interactive agent decides
     from them whether it is interactive: with stdout captured, Claude Code took the
     launch as ``--print``, refused for want of a prompt and exited at once, so every
-    tmux --once session ended as a bare ``[exited]``.
-
-    Ctrl+C reaches the whole foreground process group, so this process ignores it
-    while the agent runs: the agent decides what an interrupt means, and this owner
-    stays alive to record the exit.
+    tmux --once session ended as a bare ``[exited]``. This process ignores Ctrl+C while
+    the agent runs, so it stays alive to record the exit.
     """
-    proc = subprocess.Popen(command)
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    try:
-        return proc.wait()
-    finally:
-        signal.signal(signal.SIGINT, previous)
+    from .foreground import run_in_foreground
 
-
-def _agent_program(command: list[str]) -> str:
-    """The agent's own program name, past a ``direnv exec <dir>`` prefix."""
-    if command[:2] == ["direnv", "exec"] and len(command) > 3:
-        command = command[3:]
-    return Path(command[0]).name
-
-
-def _exit_description(program: str, status: int, failure: OSError | None) -> str:
-    if failure is not None:
-        return f"{program} could not be started: {failure}"
-    if status < 0:
-        try:
-            signame = signal.Signals(-status).name
-        except ValueError:
-            signame = f"signal {-status}"
-        return f"{program} was ended by {signame}"
-    return f"{program} exited with status {status}"
-
-
-def _record_exit_cause(name: str, launch_log: str, description: str, status: int) -> None:
-    """Say why the agent ended, on the terminal and in the launch's log when it names one.
-
-    A detached session's pane closes with its agent, so the log is the only place the
-    reason survives.
-    """
-    from .launch_logging import open_launch_log
-
-    log = open_launch_log(launch_log) if launch_log else None
-    previous = output.attach_file_sink(log.write_line if log is not None and log.path is not None else None)
-    try:
-        level = output.Level.INFO if status == 0 else output.Level.WARNING
-        output.emit(output.Tag.SESSION, "exit", f"{name}: {description}", err=True, level=level)
-        output.flush_sinks()
-    finally:
-        output.attach_file_sink(previous)
-        if log is not None:
-            log.close()
+    return run_in_foreground(command)
 
 
 @sessions.command("_run", hidden=True, context_settings={"ignore_unknown_options": True})
@@ -1206,20 +1159,52 @@ def _record_exit_cause(name: str, launch_log: str, description: str, status: int
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
 def run_once(launch_log, name, command):
     """Keep a local lifecycle owner around bare and once-only agent processes."""
+    from .launch_logging import AGENT_DIAGNOSTIC_ENV, agent_program, record_agent_exit
+
     generation = state.begin(name, command=list(command))
     sequence = time.monotonic_ns()
     if not state.mark_running(name, generation=generation, sequence=sequence):
         raise click.ClickException("startup persistence failed; agent was not started")
     cause = "manual_exit"
     failure: OSError | None = None
+    diagnostic_path = os.environ.pop(AGENT_DIAGNOSTIC_ENV, "")
+    started = time.monotonic()
     try:
         status = _run_on_this_terminal(list(command))
     except OSError as exc:
         cause, status, failure = "unknown", 1, exc
-    _record_exit_cause(name, launch_log, _exit_description(_agent_program(list(command)), status, failure), status)
+    record_agent_exit(
+        name=name,
+        path=launch_log,
+        program=agent_program(list(command)),
+        status=status,
+        elapsed=time.monotonic() - started,
+        failure=failure,
+        diagnostic_path=diagnostic_path,
+        record_clean_exit=True,
+    )
     while not state.mark_exited(
         name, cause, {"source": "single-run", "status": status}, generation=generation, sequence=time.monotonic_ns()
     ):
         output.error(output.Tag.SESSIONS, "exit", "session exit persistence failed; retrying local safety write")
         time.sleep(1)
+    # A once-only session ends with this process. A client `ai c` switched into it from another
+    # tmux session goes back there first, rather than leaving tmux when the session closes.
+    pane = os.environ.get("TMUX_PANE", "")
+    if os.environ.get("TMUX") and pane:
+        from .tmux_ownership import return_switched_client, session_id_of
+
+        own_session = session_id_of(pane)
+        if own_session is not None:
+            return_switched_client(own_session)
     sys.exit(status)
+
+
+@sessions.command(
+    "render-title",
+    help="Render a plain-text terminal window title from Antigravity stdin JSON",
+)
+def render_title():
+    from .agy_quota import cmd_render_agy_title
+
+    sys.exit(cmd_render_agy_title())

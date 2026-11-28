@@ -1,0 +1,1 @@
+- Detect a plain-text Antigravity headless print auto-denial indented under a list item, and on a line after a no-break-space line, instead of reading it as an indented code block; an indented example right after a heading is still skipped.

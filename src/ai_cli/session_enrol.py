@@ -13,7 +13,7 @@ import click
 import portalocker
 import psutil
 
-from . import config, output, session_reconcile, tmux_binary
+from . import config, output, session_naming, session_reconcile, tmux_binary
 from . import session_registry as registry
 from . import session_run_state as state
 from .output import Untagged
@@ -24,7 +24,7 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
     try:
         result = subprocess.run(
             tmux_binary.argv(
-                "list-panes", "-t", f"={name}", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"
+                "list-panes", "-t", f"={name}:", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"
             ),
             capture_output=True,
             text=True,
@@ -39,7 +39,9 @@ def _pane_snapshot(name: str) -> tuple[str, list[str], int]:
         if session != name or not Path(cwd).is_absolute() or int(pid) <= 1:
             raise ValueError
         return cwd, psutil.Process(int(pid)).cmdline(), int(pid)
-    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error) as exc:
+    # SystemError: psutil on macOS can raise it reading the leader's argv (sysctl
+    # KERN_PROCARGS2); an unreadable leader is not a readable one.
+    except (OSError, ValueError, subprocess.SubprocessError, psutil.Error, SystemError) as exc:
         raise ValueError("live pane check failed: expected one readable pane and leader") from exc
 
 
@@ -164,7 +166,7 @@ def enrol_session(name: str, *, dry_run: bool = False) -> None:
     cwd, leader_argv = inspect_pane(name)
     if record is not None:
         host = config.load_config().get("machine", {}).get("host_id") or snapshot["machine"]
-        if record.get("owning_host", host) != host:
+        if not session_naming.machine_identity(host).matches(record.get("owning_host", host)):
             raise ValueError("owning host check failed: registry record belongs to another host")
         recipe = _record_recipe(record, engine, host)
     else:
@@ -261,13 +263,18 @@ def _live_recipe(name: str, cwd: str, argv: list[str], host: str) -> tuple[dict,
         # Compare this engine's launch statements, not inactive branches for other
         # engines or the supervisor implementation. An old supervisor need not
         # have leases, replaceable children or generations.
-        command = {"c": "claude", "g": shlex.split(meta.get("gemini_cmd", "gemini"))[0], "p": "pi", "cx": "codex"}[
-            engine
-        ]
+        command = {
+            "c": "claude",
+            "g": shlex.split(meta.get("agy_cmd") or "agy")[0],
+            "p": "pi",
+            "cx": "codex",
+        }[engine]
 
         launch_prefix = f"run_agent {shlex.quote(command)} "
         if engine == "cx":
             launch_prefix = f"run_agent {shlex.quote(sys.executable)} -m ai_cli.codex_session launch "
+        elif engine == "g":
+            launch_prefix = f"run_agent {shlex.quote(sys.executable)} -m ai_cli.agy_session launch "
 
         def launches(text):
             return {
@@ -313,8 +320,10 @@ def _enrol_live(name: str, *, dry_run: bool) -> str:
     def local_records(doc):
         return [r for r in doc["sessions"] if r.get("name") == name and r.get("kind") == "local"]
 
+    here = session_naming.machine_identity(host)
+
     def registered(matches):
-        if len(matches) > 1 or any(r.get("owning_host", host) != host for r in matches):
+        if len(matches) > 1 or any(not here.matches(r.get("owning_host", host)) for r in matches):
             raise ValueError("conflicting local registration or owning host")
         return bool(matches and state.valid_boot_recipe(matches[0]))
 

@@ -11,6 +11,8 @@ related_docs:
 
 # Implementation Plan — `ai gemini` Research Depth Tiers
 
+Note: the Gemini CLI was deprecated; `ai g` now launches the Antigravity CLI (agy).
+
 **Research basis:** `~/projects/companion/docs/research/gemini-research-pipeline-synthesis.md` (companion R-19 — migrated from myproject R-61+R-62)
 
 ## Problem

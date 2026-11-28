@@ -1375,7 +1375,9 @@ def _git_is_clean(path: Path) -> bool:
 
 def _git_pull_rebase(path: Path) -> tuple[bool, str]:
     """Run git pull --rebase at path. Retained for direct library callers only."""
-    result = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
@@ -1386,14 +1388,19 @@ def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
         ["git", "-C", str(path), "stash", "push", "-m", "ai-sync auto-stash"],
         capture_output=True,
         text=True,
+        env=_git_env(),
         check=False,
     )
     output.append(stash.stdout.strip())
     if stash.returncode != 0:
         return False, "\n".join(output)
-    pull = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
+    pull = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     output.append(pull.stdout.strip())
-    pop = subprocess.run(["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True, check=False)
+    pop = subprocess.run(
+        ["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     output.append(pop.stdout.strip())
     return pull.returncode == 0 and pop.returncode == 0, "\n".join(part for part in output if part)
 
@@ -2847,11 +2854,43 @@ def _acquire_pid_file(name: str) -> bool:
     return True
 
 
+def _holds_pid_file(name: str) -> bool:
+    """Return True while this process's PID file still exists and names this process.
+
+    A watcher's PID file lives in the state dir of the home it was started for. When
+    that home is removed, or another instance takes the file over, the watcher has
+    nothing left to serve and must stop rather than run on as an orphan.
+    """
+    try:
+        return _pid_file_path(name).read_text().strip() == str(os.getpid())
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _release_pid_file(name: str) -> None:
-    """Remove PID file."""
-    pid_path = _pid_file_path(name)
+    """Remove the PID file, but only while it still names this process."""
+    if not _holds_pid_file(name):
+        return
     with contextlib.suppress(Exception):
-        pid_path.unlink(missing_ok=True)
+        _pid_file_path(name).unlink(missing_ok=True)
+
+
+# How often a long-running watcher re-reads its PID file.
+_PID_FILE_CHECK_SECS = 1.0
+
+
+async def _run_while_pid_file_held(name: str, work) -> None:
+    """Await *work* until it ends or this process stops holding its PID file."""
+    import asyncio
+
+    task = asyncio.ensure_future(work)
+    while not task.done():
+        if not _holds_pid_file(name):
+            task.cancel()
+            break
+        await asyncio.wait({task}, timeout=_PID_FILE_CHECK_SECS)
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 def sync_watch(flags: list[str]) -> int:
@@ -2898,7 +2937,9 @@ def sync_watch(flags: list[str]) -> int:
             return False
         if verbose:
             _out.emit(Tag.SYNC_WATCH, "watch", "connected to NATS, watching sync.pull.requested")
-        await client.subscribe_durable("sync.pull.requested", "sync-watch", on_pull_requested)
+        await _run_while_pid_file_held(
+            "sync-watch", client.subscribe_durable("sync.pull.requested", "sync-watch", on_pull_requested)
+        )
         return True
 
     _out.emit(Tag.SYNC, "watch", "ai sync watch — listening for sync.pull.requested (Ctrl+C to stop)")
