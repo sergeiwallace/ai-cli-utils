@@ -81,6 +81,8 @@ macOS host. (c) would pass a process that could be the launch itself.
 > **Decision:** ✅ Resolved — (b) narrowed fail-closed
 <!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=claude-opus-5-5; ai-effort=default; ai-profile=engineer -->
 
+> **Post-build review:** requirement-change: the brief asked that any unreadable process fail the residency check, which can never pass on macOS, so an unreadable process passes only on one readable detail that proves it is not the launch.
+
 ### D-2: A symlink that resolves outside the checkout is accepted and unlinked — `✅ Resolved by engineer (Claude): (a) accept and unlink`
 
 **Context.** A provisioning hook can create a symlink in a fresh checkout (a `.venv` pointing at
