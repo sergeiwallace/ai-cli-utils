@@ -874,6 +874,27 @@ Refused before anything is written, `-n` included, with every blocking item name
 | a checked-out commit (branch or detached HEAD) in neither the branch's upstream nor `origin/main`, whose content has not landed there either | the commit would survive only on a branch nobody pushed. A squash-merged branch passes on content: every line it added since its merge-base is on the target, was there in a commit since then, or replaced a line the target also rewrote. A binary file passes only when the target's blob is the same, and a branch that adds no line never passes this way |
 | an existing `refs/preserved/retire-session/<branch>` at a different commit | it preserves an earlier tip and is never overwritten |
 
+A locked checkout skips the uncommitted, untracked and unpushed checks above and must
+pass a dead-checkout proof instead. The proof exists for a launch killed while
+`git worktree add` was still writing the checkout. Git locks a new checkout with the
+reason `initializing` and writes the files before the index, so such a checkout has
+`index.lock` but no index. `git status` then reports every file as changed, and a plain
+`git worktree remove` refuses a locked checkout.
+
+The proof holds only when all of these are true, and a refusal names each one that is not:
+
+| Check | Holds when |
+|---|---|
+| lock reason | the admin dir's `locked` file reads exactly `initializing` |
+| quiet admin dir | nothing in `.git/worktrees/<name>/` has changed for 60 seconds |
+| no resident process | no live process has its working directory, an open file, a memory mapping (where the platform reports them; macOS does not), its `argv[0]` or its executable inside the checkout or its admin dir |
+| unreadable process | a process whose details the OS will not disclose fails the proof unless it started before the checkout existed, runs as another user, or runs an executable from `/System` or `/usr/libexec` (where macOS keeps the sandboxed system agents that refuse their details to the user they run as) |
+| contained HEAD | HEAD is an ancestor of the branch's upstream or of `origin/main` |
+| HEAD's bytes only | every file on disk is HEAD's blob or a strict prefix of it, and no file or directory exists outside HEAD's tree |
+
+A checkout that passes is anchored like any other and removed with
+`git worktree remove --force --force`.
+
 Otherwise, in order:
 
 1. The tips of the checked-out branch and of `wt-NAME` are written to
@@ -882,7 +903,8 @@ Otherwise, in order:
    reissued name reuses a branch name whose anchor already preserves an earlier
    holder's tip, that anchor is kept and the new tip goes to
    `refs/preserved/retire-session/<branch>--<first 12 hex of the tip>` beside it.
-2. `git worktree remove` without `--force` removes the checkout.
+2. `git worktree remove` without `--force` removes the checkout (with `--force --force`
+   for a locked checkout that passed the dead-checkout proof).
 3. The canonical-registry entry for the slot is dropped under the registry's lock.
 4. One JSON line is appended to `session-retirements.jsonl` in the XDG state
    directory: `time`, `name`, `repo`, `worktree`, `head`, `branch`, `anchors`
