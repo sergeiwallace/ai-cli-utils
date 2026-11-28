@@ -299,7 +299,7 @@ def test_given_dry_run_when_restoring_then_the_ordered_plan_prints_and_neither_i
     assert _lines(out) == [
         "c-myproject-9: would record exit (cause=host_reboot; tmux session no longer exists)",
         "arrangement: would restore 'layout-a' with it2",
-        "c-myproject-9: would restore (window 0 tab 0 pane 0): cd /work/myproject && AIH_LAUNCH_REASON=host_reboot ai c 9",
+        "c-myproject-9: would restore (window 0 tab 0 pane 0): cd /work/myproject && AI_CLI_LAUNCH_REASON=host_reboot ai c 9",
         "c-myproject-1: would restore (window 0 tab 0 pane 1): cd /work/myproject && ai c 1",
         "c-myproject-2: skipped (no idle shell pane at its recorded position; restore opens no new tab)",
         "c-myproject-8: skipped (cause=manual_exit; restore.relaunch.scenarios.manual_exit = false)",
@@ -777,7 +777,7 @@ def test_given_a_dead_record_with_no_exit_when_restoring_then_the_sweep_records_
     assert recorded["evidence"]["record_boot_id"] == record_boot_id
     ((where, script),) = machine.system.typed()
     assert where == "/dev/ttys300"
-    assert _typed_text(script) == f"cd /work/myproject && AIH_LAUNCH_REASON={cause} ai c 9"
+    assert _typed_text(script) == f"cd /work/myproject && AI_CLI_LAUNCH_REASON={cause} ai c 9"
 
 
 def test_given_a_dead_record_still_reading_running_when_swept_then_its_run_state_reads_exited(machine):
@@ -798,7 +798,7 @@ def test_given_a_dead_record_still_reading_running_when_swept_then_its_run_state
     assert record["transition_seq"] > 5
 
 
-def test_given_a_relaunch_command_when_typed_then_aih_launch_reason_is_in_the_environment_of_the_ai_command(machine):
+def test_given_a_relaunch_command_when_typed_then_the_launch_reason_is_in_the_environment_of_the_ai_command(machine):
     """An assignment before ``cd`` would scope it to ``cd`` alone; it must prefix ``ai`` itself."""
     machine.config("")
     machine.system.gone = {"c-myproject-9"}
@@ -808,7 +808,7 @@ def test_given_a_relaunch_command_when_typed_then_aih_launch_reason_is_in_the_en
 
     ((_, script),) = machine.system.typed()
     commands = [shlex.split(part) for part in _typed_text(script).split("&&")]
-    assert commands[-1][:2] == ["AIH_LAUNCH_REASON=host_reboot", "ai"]
+    assert commands[-1][:2] == ["AI_CLI_LAUNCH_REASON=host_reboot", "ai"]
 
 
 def test_given_a_dead_record_with_no_boot_identity_when_swept_then_it_is_unknown_and_follows_the_crash_toggle(
@@ -863,7 +863,7 @@ def test_given_manual_exit_switched_on_when_restoring_then_a_manually_exited_ses
     assert code == 0
     assert "c-myproject-9: restored (window 0 tab 0 pane 0; cause=manual_exit)" in out
     ((_, script),) = machine.system.typed()
-    assert _typed_text(script) == "cd /work/myproject && AIH_LAUNCH_REASON=manual_exit ai c 9"
+    assert _typed_text(script) == "cd /work/myproject && AI_CLI_LAUNCH_REASON=manual_exit ai c 9"
 
 
 def test_given_a_cleanly_ended_remote_record_with_no_exit_when_swept_then_it_reads_as_a_manual_exit(machine):

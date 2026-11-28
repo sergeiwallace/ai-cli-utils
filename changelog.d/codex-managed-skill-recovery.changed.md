@@ -1,0 +1,1 @@
+- Documented the package verification and session recovery prerequisites for managed Codex skills.

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Managed by project-template: formatting is off so every consumer holds the same bytes.
 # ruff: noqa: PTH123, RUF100
 # fmt: off
 """
@@ -23,7 +22,7 @@ from pathlib import Path
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 OUTPUT_DIR = Path(__file__).parent.parent / "docs" / "conversations"
-STUB_THRESHOLD = 5  # fewer than this many user turns → stubs/
+STUB_THRESHOLD = 5
 
 
 def decode_project_name(dir_name: str) -> str:
@@ -32,9 +31,7 @@ def decode_project_name(dir_name: str) -> str:
     Handles both macOS (-Users-foo-projects-myapp) and Linux (-home-foo-projects-myapp)
     path encodings, plus worktree suffixes (--worktrees-myapp-1).
     """
-    # Strip leading path up to and including "projects-" (case-insensitive)
     name = re.sub(r"^.*-(?:P|p)rojects-", "", dir_name)
-    # Strip worktree suffix --worktrees-*
     name = re.sub(r"--worktrees-.*$", "", name)
     return name or dir_name
 
@@ -57,7 +54,6 @@ def extract_text(content) -> str:
                 elif block.get("type") == "tool_use":
                     name = block.get("name", "?")
                     inp = block.get("input", {})
-                    # Compact summary
                     summary_parts = []
                     for key in (
                         "command",
@@ -76,9 +72,7 @@ def extract_text(content) -> str:
                     summary = f" → {summary_parts[0]}" if summary_parts else ""
                     parts.append(f"> `[Tool: {name}{summary}]`")
                 elif block.get("type") == "tool_result":
-                    # Skip tool results — they're noise in export
                     pass
-                # Skip: thinking, image, etc.
         return "\n".join(parts)
     return ""
 
@@ -213,10 +207,8 @@ def output_path(conv: dict, project: str, base_dir: Path) -> Path:
         return existing
 
     subdir, stem = _output_subdir_and_stem(conv, project, base_dir)
-    # No existing file — check if base name is taken by a different session
     base_candidate = subdir / f"{stem}.md"
     if base_candidate.exists():
-        # Collision with a different session — use session ID suffix
         return subdir / f"{stem}_{conv['session_id'][:8]}.md"
     return base_candidate
 
@@ -246,7 +238,6 @@ def main():
         jsonl_files = sorted(project_dir.glob("*.jsonl"))
 
         for jsonl_path in jsonl_files:
-            # Incremental: skip if output exists and is newer than source
             if not args.force:
                 existing = find_existing_output(
                     {"title": None, "session_id": jsonl_path.stem, "first_ts": None, "turns": []}, project, OUTPUT_DIR
@@ -260,7 +251,6 @@ def main():
                 skipped_empty += 1
                 continue
 
-            # Re-check with full conv data (title/date may differ from stub check above)
             if not args.force:
                 existing = find_existing_output(conv, project, OUTPUT_DIR)
                 if existing and existing.stat().st_mtime >= jsonl_path.stat().st_mtime:

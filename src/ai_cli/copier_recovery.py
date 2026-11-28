@@ -13,6 +13,7 @@ from pathlib import Path
 from .git_repair import _git_env
 
 _RECOVERY_BODY_MAX_BYTES = 20 * 1024
+_STDERR_EDGE = 300
 
 
 def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -131,9 +132,17 @@ def _clean_anchored_pushfail(root: Path, wt_dir: Path, branch: str, ref: str) ->
 
 
 def _tracker_failure(summary: str, proc: subprocess.CompletedProcess) -> str:
-    """``summary`` plus the tracker's exit status and the tail of its stderr, so the cause is visible."""
-    tail = " ".join((proc.stderr or "").split())[-300:]
-    return f"{summary} (exit {proc.returncode}: {tail})" if tail else f"{summary} (exit {proc.returncode})"
+    """``summary`` plus the tracker's exit status and the head and tail of its stderr.
+
+    A tracker states its reason first and ends with usage or retry hints, so a tail alone drops the
+    reason. Stderr over twice ``_STDERR_EDGE`` keeps its first and last ``_STDERR_EDGE`` characters
+    around an elision marker that counts what was left out.
+    """
+    text = " ".join((proc.stderr or "").split())
+    if len(text) > 2 * _STDERR_EDGE:
+        elided = len(text) - 2 * _STDERR_EDGE
+        text = f"{text[:_STDERR_EDGE]} [{elided} chars elided] {text[-_STDERR_EDGE:]}"
+    return f"{summary} (exit {proc.returncode}: {text})" if text else f"{summary} (exit {proc.returncode})"
 
 
 def _file_recovery_issue(

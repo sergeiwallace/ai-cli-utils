@@ -1038,7 +1038,7 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
 # --- the adoption itself ----------------------------------------------------
 
 
-def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path, bool]:
+def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool, *, reserve_name: bool = False) -> tuple[Path, bool]:
     """Return ``(worktree_path, created)``, creating it from the resolved worktree base if absent.
 
     An existing destination is only reused when it really is a worktree *of this
@@ -1061,7 +1061,7 @@ def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path
         from .session_naming import validate_artifact_name
 
         try:
-            validate_artifact_name(ai_name, repo_root, allow_legacy=wt_dir.is_dir())
+            validate_artifact_name(ai_name, repo_root, allow_legacy=wt_dir.is_dir(), reserved_name=reserve_name)
         except RuntimeError as exc:
             raise AdoptionError(str(exc)) from exc
 

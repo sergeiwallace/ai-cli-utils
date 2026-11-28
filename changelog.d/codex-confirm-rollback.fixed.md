@@ -1,1 +1,1 @@
-Restore the prior Codex slot identity when its live control bridge rejects a confirmation, preserving unconfirmed-launch recovery and keeping the slot locked throughout the handshake and rollback.
+- Restore the prior Codex slot identity when its live control bridge rejects a confirmation, preserving unconfirmed-launch recovery and keeping the slot locked throughout the handshake and rollback.

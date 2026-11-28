@@ -33,7 +33,6 @@ there, not here.
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
   - [Removed ai gemini command](#removed-ai-gemini-command)
-  - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
@@ -60,7 +59,7 @@ started.
 | Command | What it does |
 |---|---|
 | `ai c NAME` | Start a Claude Code session named NAME. When NAME's tmux session is already running, attach to it instead; `ai attach` is not needed for a session `ai` started |
-| `ai g NAME` | The same for Gemini CLI; `ai p NAME` for Pi and `ai cx NAME` for Codex |
+| `ai g NAME` | The same for Antigravity (`agy`); `ai p NAME` for Pi and `ai cx NAME` for Codex |
 | `ai c NAME -r` | Resume NAME's existing session, running or stopped (NAME is its title, first name or index); refuses, creating nothing, when no session holds NAME |
 | `ai c NAME -R -r` | The same on the default remote machine; -m ALIAS picks another configured machine |
 | `ai c -t NAME` | Start a throwaway probe session: it holds no first name, its worktree lives outside the repo, it is never a session home and it is never relaunched at boot |
@@ -77,7 +76,7 @@ section of the [CLI reference](../reference/cli.md).
 | Command | Summary |
 |---|---|
 | [`ai add-name`](../reference/cli.md#ai-add-name) | Session names: add a name to the name database without a prompt |
-| [`ai adopt-session`](../reference/cli.md#ai-adopt-session) | Register a Claude Code session started outside `ai` so `ai c <n>` resumes it. |
+| [`ai adopt-session`](../reference/cli.md#ai-adopt-session) | Register a Claude Code or Antigravity session started outside `ai` for managed resume. |
 | [`ai attach`](../reference/cli.md#ai-attach) | Attach to a tmux session by name |
 | [`ai audit-sessions`](../reference/cli.md#ai-audit-sessions) | Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume |
 | [`ai backfill-trust`](../reference/cli.md#ai-backfill-trust) | Register Claude Code workspace trust for every repo under a root (fixes 'workspace has not been trusted' permission drops, GH #72896) |
@@ -99,7 +98,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai doctor`](../reference/cli.md#ai-doctor) | Check the native binaries ai-cli-utils needs, installing what it can |
 | [`ai exit-session`](../reference/cli.md#ai-exit-session) | Persist a final exit and stop the exact recorded session processes. |
 | [`ai find-names`](../reference/cli.md#ai-find-names) | Session names: find pool names by status, verdict scope, holder and hold state, or show a name's history |
-| [`ai g`](../reference/cli.md#ai-g) | Launch a Gemini CLI session |
+| [`ai g`](../reference/cli.md#ai-g) | Launch an Antigravity (agy) session. |
 | [`ai import-names`](../reference/cli.md#ai-import-names) | Session names: copy the old git-tree registry (pool, manual names, held rows, renames) into the fleet's Dolt database in one commit; a second run finds nothing to import |
 | [`ai iterm2`](../reference/cli.md#ai-iterm2) | iTerm2 session tracking |
 | [`ai iterm2 restore`](../reference/cli.md#ai-iterm2-restore) | Re-attach the recorded sessions in iTerm2 (macOS) |
@@ -130,8 +129,9 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai quota history`](../reference/cli.md#ai-quota-history) | Print quota history |
 | [`ai quota publish`](../reference/cli.md#ai-quota-publish) | Publish the statusline's current native quota reading to NATS |
 | [`ai quota record`](../reference/cli.md#ai-quota-record) | Record a single AI-usage event into the quota DB |
+| [`ai quota render-statusline`](../reference/cli.md#ai-quota-render-statusline) | Render a single-line TUI statusline from Antigravity stdin JSON and persist quota state |
 | [`ai quota status`](../reference/cli.md#ai-quota-status) | Print current quota snapshot |
-| [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of the CC statusline |
+| [`ai quota statusline-part`](../reference/cli.md#ai-quota-statusline-part) | Emit the quota section of a client statusline |
 | [`ai quota sync`](../reference/cli.md#ai-quota-sync) | Sync quota snapshot from the remote server |
 | [`ai reassign-name`](../reference/cli.md#ai-reassign-name) | Session names: move a name's reconciliation to another host id; the name stays held |
 | [`ai reconcile-names`](../reference/cli.md#ai-reconcile-names) | Session names: publish offline activations, release names whose worktree and transcript are gone |
@@ -160,6 +160,7 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai sessions publish-timer status`](../reference/cli.md#ai-sessions-publish-timer-status) | Report whether the publication timer is installed, current and active |
 | [`ai sessions publish-timer uninstall`](../reference/cli.md#ai-sessions-publish-timer-uninstall) | Disable and remove the publication timer |
 | [`ai sessions relaunch`](../reference/cli.md#ai-sessions-relaunch) | Relaunch recorded sessions detached, without a terminal application. |
+| [`ai sessions render-title`](../reference/cli.md#ai-sessions-render-title) | Render a plain-text terminal window title from Antigravity stdin JSON |
 | [`ai sessions repair-policy`](../reference/cli.md#ai-sessions-repair-policy) | Give this host's sessions left at an unattributed never the default boot policy auto. |
 | [`ai sessions stop`](../reference/cli.md#ai-sessions-stop) | Stop a managed session so its wrapper does not relaunch the agent |
 | [`ai sessions wind-down`](../reference/cli.md#ai-sessions-wind-down) | Stop a running session for a maintenance window, recording maintenance_wind_down so the boot relaunch or a named relaunch brings it back |
@@ -167,8 +168,6 @@ section of the [CLI reference](../reference/cli.md).
 | [`ai set-name-verdict`](../reference/cli.md#ai-set-name-verdict) | Session names: approve or reject names for one repository, host or session only; a scoped rejection keeps the name out of picks there, a session approval lets that session take it by hand |
 | [`ai setup`](../reference/cli.md#ai-setup) | Run interactive setup wizard |
 | [`ai show-name-config`](../reference/cli.md#ai-show-name-config) | Session names: print each naming setting, its value and the layer that set it |
-| [`ai spend`](../reference/cli.md#ai-spend) | Usage-cost reports |
-| [`ai spend gemini`](../reference/cli.md#ai-spend-gemini) | Report historical Gemini CLI spend from local logs |
 | [`ai ssh`](../reference/cli.md#ai-ssh) | Open an interactive SSH shell on ALIAS, or the configured default when omitted |
 | [`ai sync`](../reference/cli.md#ai-sync) | Sync CC session data (JSONL + memory files) across machines |
 | [`ai sync cleanup`](../reference/cli.md#ai-sync-cleanup) | Remove stale transcript copies and orphan lock dirs from worktree CC dirs |
@@ -196,7 +195,7 @@ section of the [CLI reference](../reference/cli.md).
 
 ## Overview
 
-`ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
+`ai` is the unified CLI for Claude Code, Antigravity (`agy`), Pi, and Codex sessions. Entry point: `src/ai_cli/main.py:cli()`.
 
 ```bash
 ai --version   # print installed version
@@ -217,7 +216,8 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | Module | Purpose |
 |--------|---------|
 | `ai_cli.config` | XDG paths, `load_config`, session map, project registry |
-| `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
+| `ai_cli.session` | session naming, worktree ops, transcript/checkpoint helpers |
+| `ai_cli.agy_session` | Antigravity (`agy`) subscription guard, slot confirmation, exact `--conversation` resume |
 | `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
@@ -378,7 +378,8 @@ if it still cannot be used the launch continues in bare mode with a notice namin
 was lost. A missing tmux is not by itself fatal — tmux is an enhancement, and a missing
 enhancement must not block a launch — but the launch still has to come away with *some*
 way to submit the auto-compact prompt; see "The submission transport is required" below.
-Windows skips the recovery because no native tmux exists there. The
+Windows skips the recovery because nothing installs a tmux there unattended; psmux,
+the native one, is installed by hand and used when present. The
 decision is made **after argument validation and before any worktree is created**, so a
 launch that has to fall back does not leave a worktree behind first.
 
@@ -493,7 +494,8 @@ session and returns to the shell you launched from. `ai exit-session` ends it fr
 from another terminal. A clean exit in the first three seconds of a run ends the session
 without a restart. Set the window with `[session] restart_stop_window_seconds` (default 3,
 0 restarts at once) and turn restarts off with `[session] auto_restart = false`; both are
-read at each exit, so an edit applies at the next one.
+read at each exit, so an edit applies at the next one. With restarts off, an exit ends the
+session and returns to the shell you launched from, the same as every other ending.
 
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 
@@ -508,11 +510,13 @@ The result: the Session Name field in iTerm2's Edit Session → General tab is a
 ai g [N] [-p PROJECT] [-R] [-d|--dry-run] [--verbose]
 ```
 
-Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
+Launch (or resume) an Antigravity (`agy`) session in a tmux loop. Same flags as `ai c`.
 
-**Session resume:** on each launch or restart, `ai g` checks `~/.gemini/tmp/{name}/chats/` for the most recent session file. If a `checkpoint-{name}.json` exists and is newer than the latest chat file (or no chat files exist), it is automatically converted to a chat session file and resumed via `gemini -r {uuid}`. No manual `/resume load` required.
+**Subscription-only billing guard:** before handing off to `agy`, `ai g` verifies that the Antigravity OAuth token exists at `~/.gemini/antigravity-cli/antigravity-oauth-token`, refuses custom `modelProvider` API-key overrides in `~/.gemini/antigravity-cli/settings.json`, and strips `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `GOOGLE_GENAI_USE_VERTEXAI` from the child environment so sessions cannot silently fall back to pay-per-token API billing.
 
-**Checkpoint conversion:** the conversion is idempotent — the same checkpoint always produces the same UUID. Once converted, Gemini auto-saves all future messages to the chat file natively. The original checkpoint is never deleted and remains as a fallback.
+**Exact conversation binding and resume:** `ai g` installs an idempotent global `SessionStart` confirmation plugin (`~/.gemini/config/plugins/ai-cli-slot-confirm/`) and stores each slot's verified native conversation ID in its per-slot state file. On restart or resume, `ai g` passes `--conversation <id>` only for a client-confirmed binding owned by that slot and refuses unconfirmed or colliding slots rather than guessing by recency. Pass `--start-fresh` or `--adopt-conversation <id>` to recover explicitly.
+
+**Headless print mode:** when `-p`/`--print` is passed through to `agy`, an explicit `--mode` flag is required so unattended runs never inherit the interactive default.
 
 ### ai cos
 
@@ -678,7 +682,7 @@ ai memory watch
 
 Starts the memory file watcher daemon. Watches `~/.claude/` for write activity and publishes `dream.started` / `dream.completed` events to NATS JetStream. Used to coordinate sync pausing during active memory writes.
 
-Acquires PID file `memory-watch` — only one instance runs at a time.
+Acquires PID file `memory-watch` — only one instance runs at a time. It stops on its own once that PID file is removed or names another process, for example when the home it was started for is deleted.
 
 ### ai telemetry writer
 
@@ -726,7 +730,7 @@ This boundary exists because `ai sync` is for CC session migration (conversation
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
 - `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.
-- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off.
+- `watch` — long-running listener: runs `ai sync pull --force` each time another machine asks for a pull over NATS. A session launch starts it with `--auto`, which exits at once when `[sync] auto_watch` is off. It holds PID file `sync-watch` and stops on its own once that file is removed or names another process.
 
 Each action's options: [CLI reference](../reference/cli.md#ai-sync).
 
@@ -790,35 +794,9 @@ In an isolated update, Git submodules are initialized recursively before depende
 
 ### Removed ai gemini command
 
-`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
+`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Antigravity (`agy`) CLI in a managed tmux session.
 
 The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
-
-### ai spend gemini
-
-```bash
-ai spend gemini
-```
-
-Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
-
-**BigQuery setup** (one-time, optional historical billing data):
-
-1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
-2. Add to `~/.config/ai-cli/config.toml`:
-
-```toml
-[gemini_billing]
-gcp_project_id = "your-gcp-project"
-billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
-```
-
-3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
-
-When BigQuery is not configured, `ai spend gemini` reports the local historical logs that are available.
-
-**State files:**
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical per-run log, if retained from a version before v0.7.0
 
 ### ai cc-usage
 

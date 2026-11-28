@@ -33,6 +33,13 @@ def test_given_default_config_when_read_then_sidecar_is_off():
     assert sidecar == {"enabled": False, "mode": "machine", "boot": False}
 
 
+def test_given_default_config_when_parsed_then_advertises_only_the_agy_launcher():
+    config = tomllib.loads(DEFAULT_CONFIG)
+
+    assert "agy" in config
+    assert not any(table.startswith("gemini") for table in config)
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [("enabled", "yes"), ("mode", "invalid"), ("boot", 1)],

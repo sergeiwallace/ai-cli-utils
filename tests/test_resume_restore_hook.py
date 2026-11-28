@@ -97,7 +97,7 @@ def _write_config(table: dict) -> None:
 
 def _bare(target: Path, config: dict) -> list[str]:
     with patch("ai_cli.config.load_config", return_value=config):
-        return _bare_engine_command("c", TITLE, target, None, "gemini", "--no-sandbox", [])
+        return _bare_engine_command("c", TITLE, target, None, "--no-sandbox", [])
 
 
 def test_given_an_archived_transcript_and_a_restore_command_when_bare_claude_resumes_then_it_is_restored_first(
@@ -216,7 +216,6 @@ def test_given_a_failing_restore_command_when_a_bare_launch_resumes_then_it_stop
 
     with (
         patch("ai_cli.config.load_config", return_value={"resume_restore": hook["resume_restore"]}),
-        patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.main.shutil.which", return_value=None),

@@ -162,6 +162,7 @@ class TestMemoryWatch:
 
         with (
             patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._holds_pid_file", return_value=True),
             patch("ai_cli.sync._release_pid_file"),
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
         ):
@@ -185,6 +186,7 @@ class TestMemoryWatch:
 
         with (
             patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._holds_pid_file", return_value=True),
             patch("ai_cli.sync._release_pid_file") as mock_release,
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.memory._find_memory_dirs", return_value=[]),
@@ -215,6 +217,7 @@ class TestMemoryWatch:
 
         with (
             patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._holds_pid_file", return_value=True),
             patch("ai_cli.sync._release_pid_file") as mock_release,
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),
@@ -270,6 +273,7 @@ class TestMemoryWatch:
 
         with (
             patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._holds_pid_file", return_value=True),
             patch("ai_cli.sync._release_pid_file"),
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),
@@ -326,6 +330,7 @@ class TestMemoryWatch:
 
         with (
             patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._holds_pid_file", return_value=True),
             patch("ai_cli.sync._release_pid_file"),
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),

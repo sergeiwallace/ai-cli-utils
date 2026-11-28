@@ -132,6 +132,10 @@ pattern = "*.py"
 reason = "Python source, documented through the generated CLI reference"
 
 [[exclude]]
+pattern = "comment-skip.txt"
+reason = "Comment ratchet configuration listing installer-managed hooks"
+
+[[exclude]]
 pattern = "py.typed"
 reason = "Typing marker file with no content"
 

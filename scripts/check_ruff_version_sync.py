@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Managed by project-template: formatting is off so every consumer holds the same bytes.
 # fmt: off
 """Fail if pyproject.toml's ruff pin and .pre-commit-config.yaml's ruff rev
 disagree (SW ruff-unification sweep, 2026-07-27).
@@ -17,9 +16,9 @@ resolved lockfile version happens to match today: a floor lets `uv lock
 pre-commit pin. Only an exact `ruff==X.Y.Z` pin is accepted.
 
 Agreeing pins are necessary but not sufficient (BUG-006): the version actually
-*installed* in the project venv is a third, independent value, and a pin bump
+installed in the project venv is a third, independent value, and a pin bump
 does not touch an already-provisioned venv. A venv one minor behind reported
-"All checks passed!" for a tree the pinned binary found 1075 errors in, so
+all-clear for a tree the pinned binary found 1000+ errors in, so
 `check_installed_version` compares the pin against the venv's own ruff.
 """
 
@@ -52,13 +51,16 @@ def check(root: Path) -> list[str]:
     pyproject_text = pyproject_path.read_text()
 
     if "astral-sh/ruff-pre-commit" not in precommit_text:
-        return []  # non-python tech stack, or ruff hook not present here
+        return []
 
     errors: list[str] = []
 
     precommit_rev = PRECOMMIT_REV_RE.search(precommit_text)
     if precommit_rev is None:
-        errors.append("ruff-version-sync: could not parse the ruff-pre-commit rev out of .pre-commit-config.yaml")
+        errors.append(
+            "ruff-version-sync: could not parse the ruff-pre-commit rev out of "
+            ".pre-commit-config.yaml"
+        )
         return errors
 
     pyproject_pin = PYPROJECT_PIN_RE.search(pyproject_text)
@@ -90,14 +92,7 @@ def check(root: Path) -> list[str]:
 
 
 def _main_worktree(root: Path) -> Path | None:
-    """Return the main working tree's root when `root` is a linked worktree.
-
-    Linked worktrees do not carry their own `.venv`, so a guard that only looks
-    at `root/.venv` reports "not installed" for every commit made from one --
-    an inconclusive verdict in the ordinary case, which teaches contributors to
-    bypass the hook. Mirrors `session.detect_repo_root`'s `--git-common-dir`
-    approach.
-    """
+    """Return the main working tree's root when `root` is a linked worktree."""
     try:
         out = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
@@ -117,33 +112,25 @@ def _main_worktree(root: Path) -> Path | None:
 
 
 def _venv_ruff(root: Path) -> Path | None:
-    """Locate the project venv's ruff executable.
-
-    Deliberately does not use `shutil.which`: a pre-commit `language: system`
-    hook runs under whatever `python3` is first on the committing shell's PATH
-    (a conda interpreter with no ruff at all, on at least one supported
-    workstation), so resolving through PATH measures the wrong environment --
-    the exact conflation this guard exists to catch.
-
-    `root`'s own environment is authoritative, then the main worktree's (a
-    linked worktree has no `.venv`). The running interpreter is consulted only
-    as a last resort, for a venv at a non-conventional path: preferring it
-    would make the guard report on whatever environment happens to be running
-    rather than on the repo being checked.
-    """
+    """Locate the project venv's ruff executable without consulting PATH."""
     exe = "ruff" + (sysconfig.get_config_var("EXE") or "")
     executable_names = [exe]
     if sys.platform == "win32":
-        # A venv normally provides ruff.exe, but command wrappers are also
-        # executable from Windows shells and are common in lightweight setups.
         executable_names.append("ruff.cmd")
     roots = [root]
     main_tree = _main_worktree(root)
     if main_tree is not None and main_tree != root:
         roots.append(main_tree)
 
-    candidates = [r / ".venv" / sub / name for r in roots for sub in ("bin", "Scripts") for name in executable_names]
-    candidates.extend(Path(sysconfig.get_path("scripts")) / name for name in executable_names)
+    candidates = [
+        r / ".venv" / sub / name
+        for r in roots
+        for sub in ("bin", "Scripts")
+        for name in executable_names
+    ]
+    candidates.extend(
+        Path(sysconfig.get_path("scripts")) / name for name in executable_names
+    )
 
     return next((c for c in candidates if c.is_file()), None)
 
@@ -153,7 +140,13 @@ def _installed_ruff_version(root: Path) -> str | None:
     if ruff is None:
         return None
     try:
-        out = subprocess.run([str(ruff), "--version"], capture_output=True, text=True, timeout=30, check=False)
+        out = subprocess.run(
+            [str(ruff), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
@@ -163,18 +156,14 @@ def _installed_ruff_version(root: Path) -> str | None:
 
 
 def check_installed_version(root: Path, installed: str | None = _UNSET) -> list[str]:
-    """Return errors if the installed ruff disagrees with pyproject.toml's pin.
-
-    `installed` is injectable so the mismatch branches are testable without
-    provisioning a second venv; left unset, the real venv is measured.
-    """
+    """Return errors if the installed ruff disagrees with pyproject.toml's pin."""
     pyproject_path = root / "pyproject.toml"
     if not pyproject_path.exists():
         return []
 
     pyproject_pin = PYPROJECT_PIN_RE.search(pyproject_path.read_text())
     if pyproject_pin is None:
-        return []  # `check()` already reports a missing/floor pin
+        return []
 
     pin = pyproject_pin.group(1)
     if installed is _UNSET:
@@ -182,19 +171,23 @@ def check_installed_version(root: Path, installed: str | None = _UNSET) -> list[
 
     if installed is None:
         return [
-            f"ruff-version-sync: pyproject.toml pins ruff {pin} but ruff is "
-            "not installed in the project environment -- run `uv sync --dev`. "
-            "Until then `ruff check` resolves to some other binary (or none), "
-            "so the hard gate's verdict says nothing about this repo."
+            (
+                f"ruff-version-sync: pyproject.toml pins ruff {pin} but ruff is "
+                "not installed in the project environment -- run `uv sync --dev`. "
+                "Until then `ruff check` resolves to some other binary (or none), "
+                "so the hard gate's verdict says nothing about this repo."
+            )
         ]
 
     if installed != pin:
         return [
-            f"ruff-version-sync: pyproject.toml pins ruff {pin} but the "
-            f"project environment has ruff {installed} installed -- run "
-            "`uv sync --dev`. A stale venv makes the documented hard gate "
-            "report a different verdict than the pinned pre-commit hook, so "
-            "a green gate proves nothing about whether the commit survives."
+            (
+                f"ruff-version-sync: pyproject.toml pins ruff {pin} but the "
+                f"project environment has ruff {installed} installed -- run "
+                "`uv sync --dev`. A stale venv makes the documented hard gate "
+                "report a different verdict than the pinned pre-commit hook, so "
+                "a green gate proves nothing about whether the commit survives."
+            )
         ]
 
     return []

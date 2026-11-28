@@ -1,0 +1,1 @@
+- Guard pytest runs against leaking `circusd` daemons: block unmocked `circusd` spawns at the test process boundary, provide pidfile-based daemon+watcher teardown helpers, and fail/reap any surviving pytest-path `circusd` at session finish.

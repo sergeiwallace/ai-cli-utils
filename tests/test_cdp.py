@@ -481,6 +481,40 @@ class TestCmdCdpStartMacOS:
         assert pid_file.exists()
         assert json.loads(pid_file.read_text()) == {"pid": 55555, "port": 9222}
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="spawns and reaps a real process under the class's darwin patch; reap needs a real POSIX host",
+    )
+    def test_given_other_processes_argv_raising_system_error_when_started_then_the_browser_pid_is_still_found(
+        self, tmp_path, monkeypatch
+    ):
+        """psutil on macOS can raise SystemError, not AccessDenied, reading another process's argv
+        (``sysctl(KERN_PROCARGS2)``); one such process must not end the scan for the browser."""
+        browser = spawn_owned_sleeper(60, "--remote-debugging-port=9222")
+        try:
+            real_cmdline = psutil.Process.cmdline
+
+            def cmdline(self):
+                if self.pid != browser.pid:
+                    raise SystemError("<built-in function proc_cmdline> returned a result with an exception set")
+                return real_cmdline(self)
+
+            monkeypatch.setattr(psutil.Process, "cmdline", cmdline)
+            with (
+                patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+                patch(
+                    "ai_cli.tunnel._find_chrome_binary",
+                    return_value="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                ),
+                patch("subprocess.run"),
+                patch("urllib.request.urlopen"),
+            ):
+                _cmd_cdp_start(9222, True, {})
+        finally:
+            reap(browser)
+
+        assert json.loads((tmp_path / "cdp-9222.pid").read_text()) == {"pid": browser.pid, "port": 9222}
+
     def test_when_on_macos_and_no_pid_found_then_no_pid_file(self, tmp_path, capsys):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),

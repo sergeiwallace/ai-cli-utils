@@ -1,0 +1,1 @@
+- Preserve the caller's working directory when `-W`/`--no-worktree` is explicitly passed on `ai g -r`, and fall back cleanly if a saved Antigravity slot record contains an invalid path (such as an embedded NUL byte).

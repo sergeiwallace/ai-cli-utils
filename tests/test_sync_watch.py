@@ -41,6 +41,14 @@ class TestPidFileGuard:
                 _release_pid_file("test")
                 assert not pid_path.exists()
 
+    def test_given_pid_file_taken_over_when_released_then_other_instance_keeps_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pid_path = Path(tmpdir) / "test.pid"
+            pid_path.write_text(str(os.getpid() + 1))
+            with patch("ai_cli.sync._pid_file_path", return_value=pid_path):
+                _release_pid_file("test")
+                assert pid_path.read_text() == str(os.getpid() + 1)
+
     def test_release_when_no_pid_then_no_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("ai_cli.sync._pid_file_path", return_value=Path(tmpdir) / "nonexistent.pid"):

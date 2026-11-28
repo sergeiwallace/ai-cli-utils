@@ -1,0 +1,1 @@
+- Relaunching a session whose agent was moved to the background no longer fails on macOS when another process's arguments cannot be read. psutil can raise `SystemError` there rather than `AccessDenied`, and that one process ended the search for the host of the background copy; it is now skipped.

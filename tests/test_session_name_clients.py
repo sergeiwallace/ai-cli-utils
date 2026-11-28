@@ -9,7 +9,7 @@ from name_fleet import HOST, OTHER_HOST, REPO, STEM, build_fleet, quiet_reporter
 
 from ai_cli import main
 
-CLIENTS = {"c": "claude-code", "g": "gemini", "p": "pi", "cx": "codex"}
+CLIENTS = {"c": "claude-code", "g": "agy", "p": "pi", "cx": "codex"}
 
 
 @pytest.fixture

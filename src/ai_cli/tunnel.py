@@ -43,7 +43,9 @@ def _capture_process_identity(pid: int, port: int) -> _ManagedProcessIdentity | 
         create_time = process.create_time()
         executable = process.exe()
         command = tuple(process.cmdline())
-    except (OSError, psutil.Error):
+    # SystemError: psutil on macOS can raise it reading a process's argv (sysctl
+    # KERN_PROCARGS2). Without the argv there is no identity, so the tunnel is not recorded.
+    except (OSError, psutil.Error, SystemError):
         return None
     if (
         pid <= 0
@@ -123,7 +125,9 @@ def _matching_process(identity: _ManagedProcessIdentity) -> psutil.Process | Non
             or tuple(process.cmdline()) != identity.command
         ):
             return None
-    except (OSError, psutil.Error):
+    # SystemError: see _capture_process_identity. A process whose argv cannot be read is
+    # not proven to be the recorded one, so it is never signalled.
+    except (OSError, psutil.Error, SystemError):
         return None
     return process
 
@@ -302,12 +306,15 @@ def _find_chrome_binary(config: dict) -> str | None:
 def _find_chrome_pid_by_port(port: int) -> int | None:
     """Find a Chrome/Chromium process PID by its --remote-debugging-port argument."""
     flag = f"--remote-debugging-port={port}"
-    for proc in psutil.process_iter(["pid", "cmdline"]):
+    # Each process's arguments are read here, not by process_iter, so a failing read skips that
+    # process instead of ending the scan. psutil on macOS can raise SystemError reading another
+    # process's arguments (sysctl KERN_PROCARGS2), not only AccessDenied.
+    for proc in psutil.process_iter():
         try:
-            if proc.info["cmdline"] and flag in proc.info["cmdline"]:
-                return proc.info["pid"]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+            if flag in proc.cmdline():
+                return proc.pid
+        except (psutil.Error, OSError, SystemError):
+            continue
     return None
 
 

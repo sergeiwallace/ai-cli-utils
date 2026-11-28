@@ -209,6 +209,7 @@ def _wait(seconds: float) -> None:
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_raw_mode_pty_when_ai_c_r_reattaches_then_every_transport_line_starts_at_column_0(terminal, tmp_path):
     def ssh(_args, stderr=None, **_kwargs):
         assert stderr is not None
@@ -228,6 +229,7 @@ def test_given_a_raw_mode_pty_when_ai_c_r_reattaches_then_every_transport_line_s
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_foreign_partial_line_when_a_record_follows_then_both_are_on_separate_rows(terminal, tmp_path):
     def ssh(_args, **_kwargs):
         os.write(terminal.slave, b"remote:~$ partial")
@@ -241,6 +243,7 @@ def test_given_a_foreign_partial_line_when_a_record_follows_then_both_are_on_sep
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_bare_carriage_return_over_a_long_line_when_dolt_server_reports_then_no_stale_tail_remains(
     terminal, tmp_path
 ):
@@ -265,6 +268,7 @@ def test_given_a_bare_carriage_return_over_a_long_line_when_dolt_server_reports_
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_returned_attempt_when_the_next_record_is_written_then_output_flags_are_restored(terminal, tmp_path):
     flags_at_backoff: list[int] = []
 
@@ -290,6 +294,7 @@ def test_given_a_returned_attempt_when_the_next_record_is_written_then_output_fl
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_termios_failing_when_a_record_is_written_then_it_is_still_written_and_nothing_raises(terminal, tmp_path):
     def ssh(_args, **_kwargs):
         terminal.clear_output_flags(termios.OPOST)
@@ -342,6 +347,7 @@ _DRIVER = textwrap.dedent(
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_a_reattach_loop_that_gives_up_when_the_process_exits_then_the_prompt_starts_its_own_row(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     driver = tmp_path / "driver.py"
@@ -401,6 +407,7 @@ def test_given_a_reattach_loop_that_gives_up_when_the_process_exits_then_the_pro
 
 
 @posix_pty
+@pytest.mark.real_pty
 def test_given_child_output_with_control_bytes_when_relayed_then_it_renders_on_one_row_without_escapes(
     terminal, tmp_path, capsys
 ):

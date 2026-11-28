@@ -1,0 +1,1 @@
+- Stop `ai c` session launch from rebasing a worktree whose branch is already pushed to the remote: fetch and report commits behind the integration branch by default (`[worktree] published_branch_sync = "report"`, or `"merge"` to merge instead of rebasing), pass `--autostash` only when the tree is dirty, and include stranded stash SHAs in the launch banner.
