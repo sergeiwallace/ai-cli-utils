@@ -81,6 +81,14 @@ def tmux_server():
         yield libtmux.Server(socket_path=sock)
 
 
+def _new_live_session(
+    server: "libtmux.Server", session_name: str, start_directory: str | None = None
+) -> "libtmux.Session":
+    """Create a detached session running the live child, and return it."""
+    kwargs = {"start_directory": start_directory} if start_directory else {}
+    return server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND, **kwargs)
+
+
 @pytest.fixture
 def patched_subprocess(tmux_server, tmp_path):
     """Intercept tmux calls made by ``_do_session_launch`` and route them
@@ -159,9 +167,7 @@ def patched_subprocess(tmux_server, tmp_path):
                 except (ValueError, IndexError):
                     session_name = "unknown"
                 try:
-                    created = server.new_session(
-                        session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND
-                    )
+                    created = _new_live_session(server, session_name)
                 except Exception:
                     return _FAIL()
                 return type("TmuxCreated", (), {"returncode": 0, "stdout": f"{created.id}\n", "stderr": ""})()
@@ -347,7 +353,7 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     not create a new one."""
     server = patched_subprocess
     # Pre-create the target session directly via libtmux
-    server.new_session(session_name="c-myproject-tst-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    _new_live_session(server, "c-myproject-tst-2")
     before_ids = {s.id for s in server.sessions}
     assert any(s.name == "c-myproject-tst-2" for s in server.sessions)
 
@@ -390,7 +396,7 @@ def test_given_existing_session_when_reattached_on_a_terminal_then_its_input_mod
     from ai_cli.transport import _TERMINAL_RESTORE
 
     server = patched_subprocess
-    server.new_session(session_name="c-myproject-tst-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    _new_live_session(server, "c-myproject-tst-2")
     leader, follower = pty.openpty()
     terminal = os.fdopen(os.dup(follower), "w", encoding="utf-8")
     monkeypatch.setattr(sys, "stdout", terminal)
@@ -487,7 +493,7 @@ def test_given_slot_10_live_when_free_slot_1_is_launched_then_slot_1_is_created_
     through the same target and killed it as the session "to replace".
     """
     server = patched_subprocess
-    neighbour = server.new_session(session_name="c-myproject-tst-10", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    neighbour = _new_live_session(server, "c-myproject-tst-10")
     neighbour_id = neighbour.id
     # Owned, as every session this launcher creates is, so --sandbox would accept it.
     marked = server.cmd("set-option", "-t", neighbour_id, "@ai_cli_session_generation", "test-generation")
@@ -526,7 +532,7 @@ def test_given_locally_launched_session_when_remote_client_relaunches_it_then_at
     (`c-hub-chief-1`) must be attached, never duplicated as `c-r-hub-chief-1`,
     and its script must stay the local one it was launched with (AI-CLI-wyku)."""
     server = patched_subprocess
-    server.new_session(session_name="c-hub-chief-1", detach=True, window_command=_LIVE_CHILD_COMMAND)
+    _new_live_session(server, "c-hub-chief-1")
     before_ids = {s.id for s in server.sessions}
     kwargs = _base_launch_kwargs(name="c-hub-chief-1")
     kwargs.update(is_remote=True, resume=resume, project_prefix_override="hub")
@@ -569,9 +575,7 @@ def test_given_live_remote_session_when_project_dir_is_absent_then_attaches_in_o
 ):
     server = patched_subprocess
     target = "c-r-myproject-tst-2"
-    existing = server.new_session(
-        session_name=target, detach=True, start_directory=str(tmp_path), window_command=_LIVE_CHILD_COMMAND
-    )
+    existing = _new_live_session(server, target, start_directory=str(tmp_path))
     before_id = existing.id
     absent = tmp_path / "projects" / "otherproject"
     kwargs = _base_launch_kwargs(name=name)
@@ -646,9 +650,7 @@ def test_given_live_remote_worktree_when_launched_from_elsewhere_then_reuses_own
     worktree = repo / ".worktrees" / "myproject-tst-2"
     git("worktree", "add", "--detach", str(worktree))
     target = "c-r-myproject-tst-2"
-    existing = server.new_session(
-        session_name=target, detach=True, start_directory=str(worktree), window_command=_LIVE_CHILD_COMMAND
-    )
+    existing = _new_live_session(server, target, start_directory=str(worktree))
     before_id = existing.id
     register_canonical_worktree(worktree, engine="c", session_name=target)
     unrelated = tmp_path / "elsewhere"
@@ -811,9 +813,7 @@ def test_given_session_running_in_its_worktree_when_reattached_then_its_git_stat
     assert staged_deletions() == 51
     target = "c-myproject-tst-2"
     if pane == "live":
-        server.new_session(
-            session_name=target, detach=True, start_directory=str(worktree), window_command=_LIVE_CHILD_COMMAND
-        )
+        _new_live_session(server, target, start_directory=str(worktree))
     else:
         _create_dead_session(server, target)
     monkeypatch.chdir(repo)
@@ -1007,7 +1007,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
         nonlocal replacement_id
         original = next(session for session in server.sessions if session.name == session_name)
         original.kill()
-        replacement = server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+        replacement = _new_live_session(server, session_name)
         assert (
             server.cmd(
                 "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
@@ -1054,7 +1054,7 @@ def test_given_new_session_replaced_after_configuration_failure_when_cleanup_run
         original = next(iter(server.sessions))
         session_name = original.name
         original.kill()
-        replacement = server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+        replacement = _new_live_session(server, session_name)
         assert (
             server.cmd(
                 "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
@@ -1100,10 +1100,8 @@ def test_given_new_session_replaced_before_ownership_mark_when_launching_then_re
         original = next(iter(server.sessions))
         session_name = original.name
         original.kill()
-        consumed_id = server.new_session(
-            session_name="creation-race-consumer", detach=True, window_command=_LIVE_CHILD_COMMAND
-        )
-        replacement = server.new_session(session_name=original.name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+        consumed_id = _new_live_session(server, "creation-race-consumer")
+        replacement = _new_live_session(server, original.name)
         consumed_id.kill()
         replacement_id = replacement.id
 
@@ -1149,7 +1147,7 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         original_name = original.name
         original_pane = original.panes[0].id
         assert server.cmd("rename-session", "-t", original_id, f"{original_name}-renamed").returncode == 0
-        replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+        replacement = _new_live_session(server, original_name)
         replacement_id = replacement.id
         post_capture_command_index = len(server._tmux_commands)
 
@@ -1199,11 +1197,11 @@ def test_given_renamed_supervisor_when_clean_exit_fence_runs_then_old_name_repla
     """The real tmux compare-and-kill fence targets the supervisor's opaque ID."""
     server = tmux_server
     original_name = "c-session-1"
-    original = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+    original = _new_live_session(server, original_name)
     generation = "supervisor-generation"
     assert server.cmd("set-option", "-t", original.id, "@ai_cli_session_generation", generation).returncode == 0
     assert server.cmd("rename-session", "-t", original.id, "c-session-1-renamed").returncode == 0
-    replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
+    replacement = _new_live_session(server, original_name)
 
     predicate = f"#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},{original.id}|{generation}}}"
     result = server.cmd(
@@ -1829,3 +1827,27 @@ def test_given_ai_c_run_inside_tmux_when_its_session_ends_then_the_client_is_swi
         time.sleep(0.05)
     assert launched not in sessions(), "the ended session stayed up in tmux"
     assert client_on() == [caller], "the client was not returned to the session it came from"
+
+
+def test_given_tmux_cuts_short_the_new_session_record_when_a_test_creates_a_session_then_it_is_still_created(
+    tmux_server, monkeypatch
+):
+    """The macOS runner twice failed a test's setup inside libtmux's parse of the record
+    `new-session -P` prints: `zip() argument 2 is shorter than argument 1` (AI-CLI-5jcep).
+    A record cut short reproduces that parse failure on any host, so the setup helper is
+    held to creating the session without depending on that record."""
+    real_cmd = tmux_server.cmd
+
+    def cut_short(*args, **kwargs):
+        result = real_cmd(*args, **kwargs)
+        if args and args[0] == "new-session" and "-P" in args and result.stdout:
+            first = result.stdout[0]
+            result.stdout = [first[: len(first) // 2], *result.stdout[1:]]
+        return result
+
+    monkeypatch.setattr(tmux_server, "cmd", cut_short)
+
+    created = _new_live_session(tmux_server, "test-session")
+
+    assert created.name == "test-session"
+    assert [s.name for s in tmux_server.sessions] == ["test-session"]
