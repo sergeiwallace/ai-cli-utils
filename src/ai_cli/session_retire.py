@@ -666,7 +666,7 @@ def retire_session(
     branch = _current_branch(wt)
     admin = _admin_dir(wt)
     dead_checkout = admin is not None and (admin / "locked").exists()
-    if dead_checkout:
+    if dead_checkout and admin is not None:
         failures = _dead_checkout_failures(wt, admin, head, branch)
         if failures:
             raise RetireError(
