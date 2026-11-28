@@ -39,7 +39,7 @@ double force only when the proof holds.
 
 ## The fix
 
-[PR 726](https://github.com/sergeiwallace/ai-cli-utils/pull/726) adds the dead-checkout proof to
+PR #726 adds the dead-checkout proof to
 `src/ai_cli/session_retire.py`. A locked checkout is removed with `--force --force` only when every
 check holds, and is refused otherwise, before anything is written, with a message naming each
 check that failed:
@@ -52,7 +52,7 @@ check that failed:
 5. Every file on disk is HEAD's bytes or a strict prefix of them, and no file is outside HEAD's
    tree.
 
-[PR 727](https://github.com/sergeiwallace/ai-cli-utils/pull/727) follows up on check 5. A
+PR #727 follows up on check 5. A
 post-checkout hook in the host repository had already linked `.venv` to a shared environment
 store, so the first live dry run refused the home on `.venv is not in HEAD's tree`.
 
