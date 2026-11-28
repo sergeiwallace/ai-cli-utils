@@ -1,0 +1,1 @@
+- A Ctrl+C pressed while the "restarting in Ns" notice is still being drawn now ends an `ai c` session at once. The wrapper slept out the whole restart window after a clean exit, so a press that landed before that sleep began was recorded but the session still waited the full window before stopping. It now checks for the recorded stop throughout the window.
