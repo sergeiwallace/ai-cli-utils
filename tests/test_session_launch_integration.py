@@ -84,9 +84,18 @@ def tmux_server():
 def _new_live_session(
     server: "libtmux.Server", session_name: str, start_directory: str | None = None
 ) -> "libtmux.Session":
-    """Create a detached session running the live child, and return it."""
-    kwargs = {"start_directory": start_directory} if start_directory else {}
-    return server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND, **kwargs)
+    """Create a detached session running the live child, and return it.
+
+    The session is created without `-P` and then read back by name. libtmux's own
+    `new_session` parses the record `new-session -P` prints, and on the macOS runner
+    that parse twice failed in test setup with a record shorter than its format
+    (AI-CLI-5jcep). Reading the session back goes through the same list the
+    assertions already use, on a server that is up by then.
+    """
+    directory = ("-c", start_directory) if start_directory else ()
+    created = server.cmd("new-session", "-d", "-s", session_name, *directory, _LIVE_CHILD_COMMAND)
+    assert created.returncode == 0, created.stderr
+    return server.sessions.get(session_name=session_name)
 
 
 @pytest.fixture
